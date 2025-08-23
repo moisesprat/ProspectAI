@@ -114,9 +114,8 @@ Make the rationale informative for other investment analysts to understand Reddi
 Rationale:"""
         
         try:
-            # Use the agent's LLM to generate rationale
-            agent = self.get_agent()
-            llm = agent.llm
+            # Use the agent's LLM directly from the base agent
+            llm = self._get_llm()
             
             # Generate rationale using the LLM
             response = llm.invoke(prompt)
@@ -130,6 +129,7 @@ Rationale:"""
             return rationale
             
         except Exception as e:
+            print(f"⚠️  LLM reasoning failed for {ticker}: {str(e)}")
             # Fallback rationale if LLM reasoning fails
             return f"{ticker} is discussed on Reddit with {mention_count} mentions and {sentiment:.3f} sentiment. "
     
@@ -168,9 +168,8 @@ Make this summary useful for investment analysts and portfolio managers.
 Sector Summary:"""
         
         try:
-            # Use the agent's LLM to generate summary
-            agent = self.get_agent()
-            llm = agent.llm
+            # Use the agent's LLM directly from the base agent
+            llm = self._get_llm()
             
             # Generate summary using the LLM
             response = llm.invoke(prompt)
@@ -184,6 +183,7 @@ Sector Summary:"""
             return summary
             
         except Exception as e:
+            print(f"⚠️  LLM reasoning failed for sector summary: {str(e)}")
             # Fallback summary if LLM reasoning fails
             fallback_summary = f"Reddit sentiment analysis for {sector} sector reveals {len(stocks)} trending stocks. "
             fallback_summary += f"Top performer is {top_stock['ticker']} with {top_stock['mention_count']} mentions and "
