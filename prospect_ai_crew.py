@@ -42,21 +42,49 @@ class ProspectAICrew:
     def create_tasks(self, market_criteria: Dict[str, Any]) -> List[Task]:
         """Create the sequence of tasks for the investment analysis workflow"""
         
+        sector = market_criteria.get("sector", "Technology")
+        
         # Task 1: Market Analysis
         market_analysis_task = Task(
-            description="""
-            Analyze the market to identify potential investment opportunities.
-            Consider market trends, sector performance, and initial screening criteria.
-            Output: List of stocks with basic market data and initial assessment.
+            description=f"""
+            Analyze Reddit discussions to identify trending stocks in the {sector} sector.
+            
+            You have access to specialized Reddit analysis tools:
+            - analyze_sector_sentiment: Complete sector analysis (recommended for this task)
+            - fetch_reddit_posts: Get Reddit posts for a sector
+            - analyze_stock_mentions: Find stock ticker mentions in posts
+            - calculate_sentiment: Calculate sentiment scores for stocks
+            
+            Your task is to:
+            1. Use the analyze_sector_sentiment tool to get comprehensive analysis
+            2. Review the results and ensure they meet the requirements
+            3. If needed, use other tools for deeper analysis
+            
+            The tool will return a Python dictionary with the exact schema:
+            {{
+                "sector": "{sector}",
+                "candidate_stocks": [
+                    {{
+                        "ticker": "AAPL",
+                        "mention_count": 45,
+                        "average_sentiment": 0.7,
+                        "relevance_score": 0.82,
+                        "rationale": "AAPL is highly discussed on Reddit with bullish sentiment, indicating strong retail investor interest."
+                    }}
+                ],
+                "summary": "Reddit sentiment for {sector} sector is bullish. Top trending stock is AAPL with 45 mentions and bullish sentiment. Retail investors are showing strong interest in 3 stocks in this sector."
+            }}
+            
+            IMPORTANT: Use the tools provided and return ONLY the Python dictionary, no additional text or explanations.
             """,
             agent=self.market_analyst.get_agent(),
-            expected_output="List of identified stocks with market analysis"
+            expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks"
         )
         
         # Task 2: Technical Analysis
         technical_analysis_task = Task(
-            description="""
-            Perform technical analysis on the identified stocks.
+            description=f"""
+            Perform technical analysis on the identified stocks from the {sector} sector.
             Calculate technical indicators, analyze price patterns, and assess technical outlook.
             Output: Technical analysis report for each stock.
             """,
@@ -67,8 +95,8 @@ class ProspectAICrew:
         
         # Task 3: Fundamental Analysis
         fundamental_analysis_task = Task(
-            description="""
-            Perform fundamental analysis on the stocks with technical analysis.
+            description=f"""
+            Perform fundamental analysis on the {sector} sector stocks with technical analysis.
             Analyze financial statements, calculate valuation metrics, and assess company fundamentals.
             Output: Comprehensive analysis combining technical and fundamental factors.
             """,
@@ -79,8 +107,8 @@ class ProspectAICrew:
         
         # Task 4: Investment Strategy
         investment_strategy_task = Task(
-            description="""
-            Provide final investment recommendations based on all previous analysis.
+            description=f"""
+            Provide final investment recommendations for the {sector} sector based on all previous analysis.
             Assess risk-reward profiles, suggest portfolio allocation, and provide actionable insights.
             Output: Final investment recommendations with risk assessment.
             """,

@@ -21,6 +21,8 @@ Examples:
   python main.py --ollama                  # Use Ollama with default model
   python main.py --ollama --model llama3.2:8b  # Use specific Ollama model
   python main.py --ollama --url http://192.168.1.100:11434  # Use remote Ollama
+  python main.py --sector Healthcare       # Analyze Healthcare sector
+  python main.py --ollama --sector Finance # Use Ollama to analyze Finance sector
         """
     )
     
@@ -42,6 +44,14 @@ Examples:
         type=str,
         default="http://localhost:11434",
         help="Ollama base URL (default: http://localhost:11434)"
+    )
+    
+    parser.add_argument(
+        "--sector",
+        type=str,
+        default="Technology",
+        choices=["Technology", "Healthcare", "Finance", "Energy", "Consumer"],
+        help="Sector to analyze (default: Technology)"
     )
     
     return parser.parse_args()
@@ -71,13 +81,15 @@ def main():
             sys.exit(1)
         print("🤖 Using OpenAI model")
     
+    print(f"🏭 Analyzing sector: {args.sector}")
+    
     # Initialize ProspectAI
     print("🚀 Initializing ProspectAI...")
     prospect_ai = ProspectAICrew()
     
-    # Define market criteria (example)
+    # Define market criteria with sector focus
     market_criteria = {
-        "sectors": ["Technology", "Healthcare", "Finance"],
+        "sector": args.sector,
         "market_cap_range": {"min": 1000000000, "max": 100000000000},  # 1B to 100B
         "risk_tolerance": "Medium",
         "investment_horizon": "Long-term",

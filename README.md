@@ -6,20 +6,26 @@ ProspectAI is a sophisticated multi-agent investment analysis system built on th
 
 ## Features
 
-- **Multi-Agent Architecture**: Four specialized AI agents working in sequence
-- **Dual Model Support**: OpenAI API or local Ollama models
-- **Command-Line Interface**: Easy switching between model providers
-- **Comprehensive Analysis**: Market, technical, fundamental, and strategic analysis
-- **Flexible Configuration**: Environment-based configuration with command-line overrides
+- **🤖 Multi-Agent System**: Specialized AI agents for different aspects of investment analysis
+- **🦙 Dual Model Support**: Choose between OpenAI and Ollama local models
+- **📊 Real Reddit Integration**: Live Reddit sentiment analysis for trending stocks
+- **🏭 Sector Analysis**: Analyze 5 major sectors (Technology, Healthcare, Finance, Energy, Consumer)
+- **⚡ Command-Line Interface**: Easy-to-use CLI with flexible configuration
+- **🔒 Environment-Based Config**: Secure configuration management
+- **📈 Structured Output**: Consistent, machine-readable analysis results
+- **🚀 CrewAI Framework**: Professional multi-agent orchestration
 
 ## Architecture
 
 The system consists of four specialized agents working in sequence:
 
-### 1. Market Analyst Agent
-- **Role**: Market Research Specialist
-- **Responsibility**: Identifies potential investment opportunities based on market trends and criteria
-- **Output**: List of screened stocks with initial market assessment
+### Market Analyst Agent 📊
+- **Purpose**: Entry point of the investment pipeline
+- **Function**: Analyzes Reddit discussions to identify trending stocks
+- **Data Sources**: Real Reddit API integration (r/investing, r/stocks, r/wallstreetbets, etc.)
+- **Output**: Top 5 candidate stocks with sentiment scores and relevance metrics
+- **Sectors**: Technology, Healthcare, Finance, Energy, Consumer
+- **Features**: Live sentiment analysis, mention counting, relevance scoring
 
 ### 2. Technical Analyst Agent
 - **Role**: Technical Analysis Specialist
@@ -40,67 +46,58 @@ The system consists of four specialized agents working in sequence:
 
 ```
 ProspectAI/
-├── agents/                 # Agent implementations
-│   ├── __init__.py
-│   ├── base_agent.py      # Base agent class
-│   ├── market_analyst_agent.py
-│   ├── technical_analyst_agent.py
-│   ├── fundamental_analyst_agent.py
-│   └── investor_strategic_agent.py
-├── config/                 # Configuration files
-│   ├── __init__.py
-│   └── config.py          # Main configuration
-├── data/                   # Data storage and processing
-│   └── __init__.py
-├── utils/                  # Utility functions
-│   └── __init__.py
-├── prospect_ai_crew.py     # Main crew orchestrator
-├── main.py                 # Application entry point
-├── test_skeleton.py        # Test script
-├── run_help.py            # Help and usage guide
-├── requirements.txt        # Python dependencies
-├── env.example            # Environment variables template
-├── .gitignore             # Git ignore file
-└── README.md              # This file
+├── agents/                    # AI agent implementations
+│   ├── __init__.py           # Agent package initialization
+│   ├── base_agent.py         # Abstract base class for all agents
+│   ├── market_analyst_agent.py    # Reddit sentiment analysis agent
+│   ├── technical_analyst_agent.py # Technical analysis agent
+│   ├── fundamental_analyst_agent.py # Fundamental analysis agent
+│   └── investor_strategic_agent.py # Investment strategy agent
+├── config/                   # Configuration management
+│   ├── __init__.py           # Config package initialization
+│   └── config.py             # Centralized configuration class
+├── data/                     # Data storage and management
+│   └── __init__.py           # Data package initialization
+├── tests/                    # Test suite and utilities
+│   ├── __init__.py           # Tests package initialization
+│   ├── test_skeleton.py      # Basic functionality tests
+│   ├── test_reddit_output.py # Reddit API integration tests
+│   └── run_help.py           # Command-line help utility
+├── utils/                    # Utility functions and helpers
+│   └── __init__.py           # Utils package initialization
+├── main.py                   # Main application entry point
+├── prospect_ai_crew.py       # CrewAI workflow orchestration
+├── requirements.txt          # Python dependencies
+├── .env                      # Environment variables (create from .env.example)
+├── .env.example             # Environment variables template
+├── .gitignore               # Git ignore patterns
+├── REDDIT_API_SETUP.md      # Reddit API configuration guide
+└── README.md                 # This file
 ```
 
 ## Installation
 
 ### Prerequisites
+- Python 3.9+
+- Ollama (for local models)
+- Reddit API credentials (for Market Analyst Agent)
 
-- Python 3.9+ (3.12+ recommended)
-- pip package manager
-- Git (for cloning)
+### 1. Clone and Setup
+```bash
+git clone <your-repo-url>
+cd ProspectAI
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-### Option 1: OpenAI Setup (Default)
+### 2. Reddit API Setup (Required for Market Analyst)
+1. **Create Reddit App**: Visit [Reddit App Preferences](https://www.reddit.com/prefs/apps)
+2. **Get Credentials**: Create a "script" app and note your Client ID and Secret
+3. **Configure Environment**: Copy `env.example` to `.env` and add your Reddit credentials
+4. **Test**: Run `python main.py --sector Technology` to verify Reddit integration
 
-1. **Clone the repository**
-   ```bash
-   git clone <your-repo-url>
-   cd ProspectAI
-   ```
-
-2. **Create and activate virtual environment**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Set up environment variables**
-   ```bash
-   cp env.example .env
-   # Edit .env and add your OpenAI API key
-   ```
-
-5. **Run the application**
-   ```bash
-   python main.py
-   ```
+📖 **Detailed Setup**: See [REDDIT_API_SETUP.md](REDDIT_API_SETUP.md) for complete instructions.
 
 ### Option 2: Ollama Setup (Local Models)
 
@@ -127,36 +124,44 @@ ProspectAI/
 
 ## Usage
 
-### Command-Line Options
+### Basic Usage
 
 ```bash
-# Use OpenAI (default)
+# Analyze Technology sector with OpenAI (default)
 python main.py
 
-# Use Ollama with default model (llama3.2:3b)
-python main.py --ollama
+# Analyze specific sector with OpenAI
+python main.py --sector Healthcare
+python main.py --sector Finance
+python main.py --sector Energy
+python main.py --sector Consumer
 
-# Use specific Ollama model
-python main.py --ollama --model llama3.2:8b
+# Use Ollama local models
+python main.py --ollama --sector Technology
+python main.py --ollama --model llama3:latest --sector Healthcare
 
-# Use remote Ollama instance
-python main.py --ollama --url http://192.168.1.100:11434 --model mistral:7b
+# Use remote Ollama server
+python main.py --ollama --url http://192.168.1.100:11434 --sector Finance
 ```
 
 ### Testing
 
 ```bash
-# Test with OpenAI
-python test_skeleton.py
+# Test basic functionality
+python tests/test_skeleton.py
 
 # Test with Ollama
-python test_skeleton.py --ollama --model llama3.2:3b
-```
+python tests/test_skeleton.py --ollama --model llama3:latest
 
-### Help
+# Test Reddit API integration
+python tests/test_reddit_output.py
 
-```bash
-python run_help.py
+# Test specific sector
+python tests/test_reddit_output.py Technology
+python tests/test_reddit_output.py Healthcare
+
+# Get help and usage information
+python tests/run_help.py
 ```
 
 ## Configuration
@@ -198,10 +203,14 @@ OLLAMA_MODEL=llama3.2:3b
 - ✅ Command-line interface
 - ✅ Testing framework
 
-### Phase 2: Market Analyst Implementation
-- [ ] Market data source integration
-- [ ] Stock screening algorithms
-- [ ] Market trend analysis
+### Phase 2: Market Analyst Implementation ✅
+- ✅ Real Reddit API integration (no more simulation!)
+- ✅ Sector-based stock identification
+- ✅ Live sentiment analysis from Reddit posts
+- ✅ Top 5 stock selection algorithm
+- ✅ Structured output format
+- ✅ Integration with CrewAI workflow
+- ✅ Comprehensive Reddit API setup guide
 
 ### Phase 3: Technical Analysis
 - [ ] Price data collection
