@@ -242,6 +242,9 @@ $RECYCLE.BIN/
 .env.production
 .env.staging
 
+# PDF files
+*.pdf
+
 # Data files (if you have any)
 data/*.csv
 data/*.json
