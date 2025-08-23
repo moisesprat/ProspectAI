@@ -1,9 +1,21 @@
 from typing import Dict, Any, List
 from crewai.tools.base_tool import Tool
+from pydantic import BaseModel, Field
 import requests
 import re
 import time
 import os
+
+# Pydantic models for tool arguments
+class SectorInput(BaseModel):
+    sector: str = Field(description="The industry sector to analyze (e.g., 'Technology', 'Healthcare', 'Finance')")
+
+class PostsInput(BaseModel):
+    posts: List[Dict[str, Any]] = Field(description="List of Reddit posts to analyze")
+    sector: str = Field(description="The sector being analyzed")
+
+class TickerAnalysisInput(BaseModel):
+    ticker_analysis: Dict[str, Any] = Field(description="Dictionary of stock ticker analysis data")
 
 class RedditAnalysisTool:
     """Tool for analyzing Reddit discussions and sentiment"""
@@ -38,7 +50,8 @@ class RedditAnalysisTool:
                 - candidate_stocks: List of top 5 trending stocks with sentiment scores
                 - summary: Overall sector sentiment summary
             """,
-            func=self._analyze_sector_sentiment
+            func=self._analyze_sector_sentiment,
+            args_schema=SectorInput
         )
     
     def fetch_reddit_posts_tool(self) -> Tool:
@@ -53,7 +66,8 @@ class RedditAnalysisTool:
             Returns:
                 List of Reddit posts with titles, content, and engagement metrics
             """,
-            func=self._fetch_reddit_posts
+            func=self._fetch_reddit_posts,
+            args_schema=SectorInput
         )
     
     def analyze_stock_mentions_tool(self) -> Tool:
@@ -69,7 +83,8 @@ class RedditAnalysisTool:
             Returns:
                 Dictionary mapping stock tickers to mention counts and sentiment data
             """,
-            func=self._analyze_stock_mentions
+            func=self._analyze_stock_mentions,
+            args_schema=PostsInput
         )
     
     def calculate_sentiment_tool(self) -> Tool:
@@ -84,7 +99,8 @@ class RedditAnalysisTool:
             Returns:
                 List of candidate stocks with relevance scores and rationale
             """,
-            func=self._calculate_sentiment_scores
+            func=self._calculate_sentiment_scores,
+            args_schema=TickerAnalysisInput
         )
     
     def _analyze_sector_sentiment(self, sector: str) -> Dict[str, Any]:
