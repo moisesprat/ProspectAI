@@ -2,7 +2,15 @@
 
 ## Overview
 
-ProspectAI is a sophisticated multi-agent investment analysis system built on the CrewAI framework. It leverages four specialized AI agents to provide comprehensive investment recommendations through a systematic analysis workflow.
+ProspectAI is a sophisticated multi-agent investment analysis system built on the CrewAI framework. It leverages four specialized AI agents to provide comprehensive investment recommendations through a systematic analysis workflow. The system supports both OpenAI and local Ollama models for flexibility and cost control.
+
+## Features
+
+- **Multi-Agent Architecture**: Four specialized AI agents working in sequence
+- **Dual Model Support**: OpenAI API or local Ollama models
+- **Command-Line Interface**: Easy switching between model providers
+- **Comprehensive Analysis**: Market, technical, fundamental, and strategic analysis
+- **Flexible Configuration**: Environment-based configuration with command-line overrides
 
 ## Architecture
 
@@ -48,42 +56,136 @@ ProspectAI/
 │   └── __init__.py
 ├── prospect_ai_crew.py     # Main crew orchestrator
 ├── main.py                 # Application entry point
+├── test_skeleton.py        # Test script
+├── run_help.py            # Help and usage guide
 ├── requirements.txt        # Python dependencies
-├── .env.example           # Environment variables template
+├── env.example            # Environment variables template
+├── .gitignore             # Git ignore file
 └── README.md              # This file
 ```
 
 ## Installation
 
-1. **Clone or create the project directory**
+### Prerequisites
+
+- Python 3.9+ (3.12+ recommended)
+- pip package manager
+- Git (for cloning)
+
+### Option 1: OpenAI Setup (Default)
+
+1. **Clone the repository**
    ```bash
+   git clone <your-repo-url>
    cd ProspectAI
    ```
 
-2. **Install dependencies**
+2. **Create and activate virtual environment**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Set up environment variables**
+4. **Set up environment variables**
    ```bash
-   cp .env.example .env
+   cp env.example .env
    # Edit .env and add your OpenAI API key
    ```
 
-4. **Run the application**
+5. **Run the application**
    ```bash
    python main.py
    ```
 
+### Option 2: Ollama Setup (Local Models)
+
+1. **Install Ollama**
+   ```bash
+   curl -fsSL https://ollama.ai/install.sh | sh
+   ```
+
+2. **Start Ollama service**
+   ```bash
+   ollama serve
+   ```
+
+3. **Pull a model**
+   ```bash
+   ollama pull llama3.2:3b
+   # or any other model like: llama3.2:8b, mistral:7b, codellama:7b
+   ```
+
+4. **Run with Ollama**
+   ```bash
+   python main.py --ollama --model llama3.2:3b
+   ```
+
+## Usage
+
+### Command-Line Options
+
+```bash
+# Use OpenAI (default)
+python main.py
+
+# Use Ollama with default model (llama3.2:3b)
+python main.py --ollama
+
+# Use specific Ollama model
+python main.py --ollama --model llama3.2:8b
+
+# Use remote Ollama instance
+python main.py --ollama --url http://192.168.1.100:11434 --model mistral:7b
+```
+
+### Testing
+
+```bash
+# Test with OpenAI
+python test_skeleton.py
+
+# Test with Ollama
+python test_skeleton.py --ollama --model llama3.2:3b
+```
+
+### Help
+
+```bash
+python run_help.py
+```
+
 ## Configuration
 
-The system can be customized through the `config/config.py` file:
+### Environment Variables
 
-- **Market Data Sources**: Configure data sources for market information
-- **Technical Indicators**: Define which technical indicators to calculate
-- **Fundamental Metrics**: Specify financial metrics for analysis
-- **Risk Assessment**: Customize risk and reward evaluation criteria
+Create a `.env` file based on `env.example`:
+
+```bash
+# Model Provider Configuration
+MODEL_PROVIDER=openai  # or "ollama"
+
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-4
+
+# Ollama Configuration
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+```
+
+### Popular Ollama Models
+
+- **llama3.2:3b** - Fast, lightweight (default)
+- **llama3.2:8b** - Good balance of speed/quality
+- **llama3.2:70b** - High quality, slower
+- **mistral:7b** - Good for analysis tasks
+- **codellama:7b** - Good for code-related tasks
+- **neural-chat:7b** - Good for conversation
 
 ## Development Workflow
 
@@ -92,100 +194,59 @@ The system can be customized through the `config/config.py` file:
 - ✅ Agent class definitions
 - ✅ Crew orchestration framework
 - ✅ Configuration framework
+- ✅ Dual model support (OpenAI + Ollama)
+- ✅ Command-line interface
+- ✅ Testing framework
 
 ### Phase 2: Market Analyst Implementation
 - [ ] Market data source integration
 - [ ] Stock screening algorithms
 - [ ] Market trend analysis
 
-### Phase 3: Technical Analyst Implementation
+### Phase 3: Technical Analysis
 - [ ] Price data collection
 - [ ] Technical indicator calculations
 - [ ] Chart pattern recognition
 
-### Phase 4: Fundamental Analyst Implementation
+### Phase 4: Fundamental Analysis
 - [ ] Financial data integration
-- [ ] Valuation metric calculations
-- [ ] Industry comparison analysis
+- [ ] Valuation metrics calculation
+- [ ] Company fundamental assessment
 
-### Phase 5: Investment Strategist Implementation
-- [ ] Risk-reward assessment
-- [ ] Portfolio allocation logic
-- [ ] Final recommendation generation
+### Phase 5: Integration & Testing
+- [ ] End-to-end workflow testing
+- [ ] Performance optimization
+- [ ] User interface development
 
-## Usage
+## Troubleshooting
 
-### Basic Usage
-```python
-from prospect_ai_crew import ProspectAICrew
+### Common Issues
 
-# Initialize the system
-prospect_ai = ProspectAICrew()
+1. **Import errors**: Ensure you're using the virtual environment where packages are installed
+2. **Ollama connection**: Verify Ollama is running with `ollama serve`
+3. **Model not found**: Pull the model first with `ollama pull <model-name>`
+4. **API key errors**: Check your `.env` file and API key validity
 
-# Define market criteria
-market_criteria = {
-    "sectors": ["Technology", "Healthcare"],
-    "market_cap_range": {"min": 1000000000, "max": 100000000000},
-    "risk_tolerance": "Medium"
-}
+### Getting Help
 
-# Run analysis
-result = prospect_ai.run_analysis(market_criteria)
-```
-
-### Customizing Agents
-Each agent can be customized by extending the base classes and implementing the required methods:
-
-```python
-from agents.base_agent import BaseAgent
-
-class CustomAgent(BaseAgent):
-    def create_agent(self):
-        # Custom agent creation logic
-        pass
-    
-    def execute_task(self, input_data):
-        # Custom task execution logic
-        pass
-```
-
-## Dependencies
-
-- **CrewAI**: Multi-agent orchestration framework
-- **LangChain**: LLM integration and tools
-- **OpenAI**: Language model API
-- **Pandas/Numpy**: Data processing and analysis
-- **YFinance**: Financial data access
-- **Plotly**: Data visualization
-
-## Environment Variables
-
-- `OPENAI_API_KEY`: Your OpenAI API key (required)
-- `OPENAI_MODEL`: OpenAI model to use (default: gpt-4)
+- Run `python run_help.py` for usage examples
+- Check the test script: `python test_skeleton.py`
+- Verify your Python environment and package installation
 
 ## Contributing
 
-This is a skeleton implementation. To contribute:
-
-1. Implement the TODO sections in each agent
-2. Add proper error handling and validation
-3. Implement data source integrations
-4. Add comprehensive testing
-5. Enhance the configuration system
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
 
 ## License
 
-This project is for educational and development purposes.
+[Add your license information here]
 
-## Next Steps
+## Acknowledgments
 
-1. **Set up your OpenAI API key** in the `.env` file
-2. **Test the basic skeleton** by running `python main.py`
-3. **Implement the Market Analyst Agent** first
-4. **Iteratively develop** each agent with proper testing
-5. **Add data source integrations** for real market data
-6. **Enhance the analysis algorithms** based on your requirements
-
-## Support
-
-For questions or issues, please refer to the CrewAI documentation and ensure all dependencies are properly installed.
+- Built on the [CrewAI](https://github.com/joaomdmoura/crewAI) framework
+- Inspired by modern multi-agent AI systems
+- Community contributions welcome
