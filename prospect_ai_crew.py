@@ -44,10 +44,9 @@ class ProspectAICrew:
         
         sector = market_criteria.get("sector", "Technology")
         
-        # Task 1: Market Analysis
+        # Market Analysis Task
         market_analysis_task = Task(
-            description=f"""
-            Analyze Reddit discussions to identify trending stocks in the {sector} sector.
+            description=f"""Analyze Reddit discussions to identify trending stocks in the {sector} sector.
             
             You have access to specialized Reddit analysis tools:
             - analyze_sector_sentiment: Complete sector analysis (recommended for this task)
@@ -57,10 +56,14 @@ class ProspectAICrew:
             
             Your task is to:
             1. Use the analyze_sector_sentiment tool to get comprehensive analysis
-            2. Review the results and ensure they meet the requirements
-            3. If needed, use other tools for deeper analysis
+            2. Generate detailed rationales for each stock using LLM reasoning based on actual Reddit posts
+            3. Provide insights about user perceptions, concerns, and excitement points from Reddit discussions
+            4. Create a comprehensive sector summary that other agents can use for investment decisions
             
-            The tool will return a Python dictionary with the exact schema:
+            The tool will return Reddit data and calculations, but YOU must generate the rationales using your LLM reasoning capabilities.
+            Focus on extracting real user insights and perceptions from the actual Reddit content.
+            
+            Output must be a Python dictionary with the exact schema:
             {{
                 "sector": "{sector}",
                 "candidate_stocks": [
@@ -69,16 +72,16 @@ class ProspectAICrew:
                         "mention_count": 45,
                         "average_sentiment": 0.7,
                         "relevance_score": 0.82,
-                        "rationale": "AAPL is highly discussed on Reddit with bullish sentiment, indicating strong retail investor interest."
+                        "rationale": "Comprehensive analysis of Reddit user perceptions, concerns, and excitement points about AAPL based on actual post content"
                     }}
                 ],
-                "summary": "Reddit sentiment for {sector} sector is bullish. Top trending stock is AAPL with 45 mentions and bullish sentiment. Retail investors are showing strong interest in 3 stocks in this sector."
+                "summary": "Detailed sector analysis with key themes, trends, and market implications from Reddit discussions"
             }}
             
-            IMPORTANT: Use the tools provided and return ONLY the Python dictionary, no additional text or explanations.
-            """,
+            IMPORTANT: Use the tools for data collection and calculations, but generate rationales yourself using LLM reasoning.
+            The rationale should contain all perceptions Reddit users have about each stock, extracted from actual post content.""",
             agent=self.market_analyst.get_agent(),
-            expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks"
+            expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks with comprehensive rationales"
         )
         
         # Task 2: Technical Analysis

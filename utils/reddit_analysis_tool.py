@@ -6,16 +6,23 @@ import re
 import time
 import os
 
-# Pydantic models for tool arguments
+# Simple Pydantic models for CrewAI 0.5.0 compatibility
 class SectorInput(BaseModel):
-    sector: str = Field(description="The industry sector to analyze (e.g., 'Technology', 'Healthcare', 'Finance')")
+    sector: str
 
 class PostsInput(BaseModel):
-    posts: List[Dict[str, Any]] = Field(description="List of Reddit posts to analyze")
-    sector: str = Field(description="The sector being analyzed")
+    posts: List[Dict[str, Any]]
+    sector: str
 
 class TickerAnalysisInput(BaseModel):
-    ticker_analysis: Dict[str, Any] = Field(description="Dictionary of stock ticker analysis data")
+    ticker_analysis: Dict[str, Any]
+
+class CustomRedditTool(Tool):
+    """Custom tool that overrides description generation to avoid confusion"""
+    
+    def _generate_description(self):
+        """Override to provide cleaner tool description"""
+        return f"Tool Name: {self.name}\nTool Arguments: {{'sector': 'string'}}\nTool Description: {self.description}"
 
 class RedditAnalysisTool:
     """Tool for analyzing Reddit discussions and sentiment"""
@@ -34,9 +41,9 @@ class RedditAnalysisTool:
             self.calculate_sentiment_tool()
         ]
     
-    def analyze_sector_sentiment_tool(self) -> Tool:
-        """Tool for analyzing Reddit sentiment for a specific sector"""
-        return Tool(
+    def analyze_sector_sentiment_tool(self) -> CustomRedditTool:
+        """Tool for analyzing sector sentiment"""
+        return CustomRedditTool(
             name="analyze_sector_sentiment",
             description="""Analyze Reddit discussions to identify trending stocks in a specific sector.
             This tool fetches Reddit posts, analyzes sentiment, and returns the top trending stocks.
@@ -48,98 +55,113 @@ class RedditAnalysisTool:
                 A dictionary containing:
                 - sector: The analyzed sector
                 - candidate_stocks: List of top 5 trending stocks with sentiment scores
-                - summary: Overall sector sentiment summary
-            """,
+                - summary: Overall sector sentiment summary""",
             func=self._analyze_sector_sentiment,
             args_schema=SectorInput
         )
     
-    def fetch_reddit_posts_tool(self) -> Tool:
-        """Tool for fetching Reddit posts for a sector"""
-        return Tool(
+    def fetch_reddit_posts_tool(self) -> CustomRedditTool:
+        """Tool for fetching Reddit posts"""
+        return CustomRedditTool(
             name="fetch_reddit_posts",
-            description="""Fetch Reddit posts related to a specific sector.
+            description="""Fetch Reddit posts for a specific sector.
             
             Args:
-                sector: The industry sector to search for
+                sector: The industry sector to analyze
                 
             Returns:
-                List of Reddit posts with titles, content, and engagement metrics
-            """,
-            func=self._fetch_reddit_posts,
+                List of Reddit posts with title, content, upvotes, and comments""",
+            func=self._fetch_reddit_data,
             args_schema=SectorInput
         )
     
-    def analyze_stock_mentions_tool(self) -> Tool:
-        """Tool for analyzing stock ticker mentions in Reddit posts"""
-        return Tool(
+    def analyze_stock_mentions_tool(self) -> CustomRedditTool:
+        """Tool for analyzing stock mentions"""
+        return CustomRedditTool(
             name="analyze_stock_mentions",
-            description="""Analyze Reddit posts to find and count stock ticker mentions.
+            description="""Analyze stock ticker mentions in Reddit posts.
             
             Args:
                 posts: List of Reddit posts to analyze
                 sector: The sector being analyzed
                 
             Returns:
-                Dictionary mapping stock tickers to mention counts and sentiment data
-            """,
-            func=self._analyze_stock_mentions,
+                Dictionary of stock ticker analysis data""",
+            func=self._analyze_reddit_sentiment,
             args_schema=PostsInput
         )
     
-    def calculate_sentiment_tool(self) -> Tool:
-        """Tool for calculating sentiment scores for stocks"""
-        return Tool(
+    def calculate_sentiment_tool(self) -> CustomRedditTool:
+        """Tool for calculating sentiment scores"""
+        return CustomRedditTool(
             name="calculate_sentiment",
-            description="""Calculate sentiment scores and relevance for stocks based on Reddit data.
+            description="""Calculate sentiment scores for stocks.
             
             Args:
                 ticker_analysis: Dictionary of stock ticker analysis data
                 
             Returns:
-                List of candidate stocks with relevance scores and rationale
-            """,
-            func=self._calculate_sentiment_scores,
+                List of candidate stocks with relevance scores""",
+            func=self._calculate_relevance_scores,
             args_schema=TickerAnalysisInput
         )
     
     def _analyze_sector_sentiment(self, sector: str) -> Dict[str, Any]:
-        """Main function to analyze sector sentiment"""
+        """Analyze Reddit discussions to identify trending stocks in a specific sector"""
+        print(f"🔍 DEBUG: _analyze_sector_sentiment called with sector: {sector}")
+        print(f"🔍 DEBUG: sector type: {type(sector)}")
+        print(f"🔍 DEBUG: sector value: {repr(sector)}")
+        
+        # Handle case where sector might be a dict or other type
+        if isinstance(sector, dict):
+            if 'sector' in sector:
+                sector = sector['sector']
+            elif 'description' in sector:
+                sector = sector['description']
+            else:
+                print(f"⚠️  WARNING: Unexpected sector format: {sector}")
+                sector = "Technology"  # fallback
+        
+        print(f"🔍 DEBUG: Final sector value: {sector}")
+        
         try:
-            # Check if Reddit API credentials are available
-            if not self.reddit_client_id or not self.reddit_client_secret:
-                return {
-                    "sector": sector,
-                    "candidate_stocks": [],
-                    "summary": f"Reddit API credentials not configured. Please set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in your .env file."
-                }
-            
-            # Fetch real Reddit data
+            # Fetch Reddit data for the sector
             reddit_data = self._fetch_reddit_data(sector)
             
             if not reddit_data:
                 return {
                     "sector": sector,
                     "candidate_stocks": [],
-                    "summary": f"No Reddit data found for {sector} sector. Please check your API credentials and try again."
+                    "summary": f"No Reddit data found for {sector} sector. Please check Reddit API credentials and try again."
                 }
             
-            # Parse tickers and analyze sentiment
+            # Analyze sentiment for stock tickers
             ticker_analysis = self._analyze_reddit_sentiment(reddit_data, sector)
             
-            # Calculate relevance scores and select top stocks
+            if not ticker_analysis:
+                return {
+                    "sector": sector,
+                    "candidate_stocks": [],
+                    "summary": f"No stock mentions found for {sector} sector in Reddit discussions."
+                }
+            
+            # Calculate relevance scores and get top candidates
             candidate_stocks = self._calculate_relevance_scores(ticker_analysis)
             
-            # Generate summary
-            summary = self._generate_sector_summary(candidate_stocks, sector)
+            # Limit to top 5 stocks
+            candidate_stocks = candidate_stocks[:5]
+            
+            # Generate sector summary
+            sector_summary = self._generate_sector_summary(candidate_stocks, sector)
             
             return {
                 "sector": sector,
-                "candidate_stocks": candidate_stocks[:5],  # Top 5 stocks
-                "summary": summary
+                "candidate_stocks": candidate_stocks,
+                "summary": sector_summary
             }
             
         except Exception as e:
+            print(f"❌ ERROR in _analyze_sector_sentiment: {str(e)}")
             return {
                 "sector": sector,
                 "candidate_stocks": [],
@@ -283,6 +305,7 @@ class RedditAnalysisTool:
         for ticker in tickers:
             mention_count = 0
             sentiment_scores = []
+            reddit_posts = []  # Store actual Reddit posts for this ticker
             
             # Search for ticker mentions in Reddit data
             for post in reddit_data:
@@ -291,6 +314,16 @@ class RedditAnalysisTool:
                 # Look for ticker mentions (with word boundaries)
                 if re.search(rf'\b{ticker}\b', text):
                     mention_count += 1
+                    
+                    # Store the actual Reddit post
+                    reddit_posts.append({
+                        "title": post["title"],
+                        "content": post["content"],
+                        "upvotes": post["upvotes"],
+                        "comments": post["comments"],
+                        "subreddit": post["subreddit"],
+                        "url": post["url"]
+                    })
                     
                     # Calculate sentiment based on post engagement and keywords
                     sentiment = self._calculate_post_sentiment(post, ticker)
@@ -301,7 +334,8 @@ class RedditAnalysisTool:
                     "ticker": ticker,
                     "mention_count": mention_count,
                     "sentiment_scores": sentiment_scores,
-                    "average_sentiment": sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+                    "average_sentiment": sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0,
+                    "reddit_posts": reddit_posts  # Include the actual posts
                 }
         
         return ticker_analysis
@@ -356,19 +390,13 @@ class RedditAnalysisTool:
             # Calculate relevance score: 60% frequency + 40% sentiment
             relevance_score = (0.6 * frequency_score) + (0.4 * sentiment_score)
             
-            # Generate rationale based on sentiment and mentions
-            rationale = self._generate_rationale(
-                ticker_data["ticker"], 
-                ticker_data["mention_count"], 
-                ticker_data["average_sentiment"]
-            )
-            
             candidates.append({
                 "ticker": ticker_data["ticker"],
                 "mention_count": ticker_data["mention_count"],
                 "average_sentiment": round(ticker_data["average_sentiment"], 3),
                 "relevance_score": round(relevance_score, 3),
-                "rationale": rationale
+                "reddit_posts": ticker_data.get("reddit_posts", []),  # Include actual Reddit posts
+                "sentiment_scores": ticker_data.get("sentiment_scores", [])  # Include individual sentiment scores
             })
         
         # Sort by relevance score (highest first)
@@ -376,22 +404,7 @@ class RedditAnalysisTool:
         
         return candidates
     
-    def _generate_rationale(self, ticker: str, mention_count: int, sentiment: float) -> str:
-        """Generate rationale for why a stock is trending"""
-        if sentiment > 0.5:
-            sentiment_desc = "bullish"
-        elif sentiment < -0.5:
-            sentiment_desc = "bearish"
-        else:
-            sentiment_desc = "mixed"
-        
-        if mention_count > 30:
-            popularity = "highly discussed"
-        elif mention_count > 15:
-            popularity = "moderately discussed"
-        else:
-            popularity = "discussed"
-        
+      
         return f"{ticker} is {popularity} on Reddit with {sentiment_desc} sentiment, indicating strong retail investor interest."
     
     def _generate_sector_summary(self, candidate_stocks: List[Dict], sector: str) -> str:

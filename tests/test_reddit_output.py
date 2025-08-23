@@ -65,7 +65,6 @@ def test_reddit_output():
                     print(f"     Mentions: {stock['mention_count']:>3}")
                     print(f"     Sentiment: {stock['average_sentiment']:>6.3f}")
                     print(f"     Relevance: {stock['relevance_score']:>6.3f}")
-                    print(f"     Rationale: {stock['rationale']}")
                     print()
                 
                 print(f"📝 SECTOR SUMMARY:")
