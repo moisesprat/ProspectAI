@@ -51,118 +51,55 @@ The system consists of four specialized agents working in sequence:
 
 ## Example Output
 
-Here's an example of the comprehensive investment analysis output from ProspectAI (showing a sample with 3 stocks, but the system analyzes up to 5 stocks per sector):
+ProspectAI generates output through a multi-agent workflow. Here are examples of what each agent produces:
+
+### Market Analyst Agent Output
 
 ```json
 {
   "sector": "Technology",
-  "report_date": "August 24, 2025",
-  "analysis_date": "2025-08-24 01:06:06",
-  "overall_assessment": "The Technology sector presents exceptional investment opportunities with a strong bullish outlook driven by AI advancements, robust technical momentum, and positive social sentiment. The combination of strong fundamentals, technical indicators, and market sentiment suggests continued upward trajectory for leading tech stocks.",
-  "key_highlights": [
-    "Strong technical momentum across leading tech stocks with average scores of 6/10",
-    "Reddit sentiment analysis shows bullish outlook for AI-focused companies",
-    "Technical indicators suggest continued upward trend with low volatility",
-    "Portfolio allocation should favor growth stocks with strong fundamentals",
-    "Risk-adjusted returns favor overweighting Technology sector",
-    "AI and cloud computing leaders show strongest momentum signals"
-  ],
-  "portfolio_allocation_summary": "Recommended allocation: 40% growth stocks (NVDA, META), 30% established tech (GOOGL, AAPL), 20% emerging tech, 10% defensive positions. Focus on companies with strong technical momentum and positive social sentiment. Consider options strategies for enhanced returns on high-conviction positions.",
-  "stock_analyses": [
+  "candidate_stocks": [
     {
       "ticker": "NVDA",
-      "market_analyst_data": {
-        "mention_count": 10,
-        "average_sentiment": 0.589,
-        "relevance_score": 0.378,
-        "reddit_rationale": "Strong bullish sentiment driven by AI product launches and analyst upgrades"
-      },
-      "technical_score": {
-        "percentage": 71.43,
-        "grade": "B (Buy)",
-        "recommendation": "Buy"
-      },
-      "momentum_analysis": {
-        "momentum_score": 6,
-        "risk_level": "Low",
-        "trend_strength": "Strong",
-        "key_signals": ["Bullish momentum", "Support level identified"]
-      },
-      "investment_recommendation": "Strong buy recommendation for NVDA based on positive technical momentum, strong Reddit sentiment, and AI leadership position. Consider accumulating on pullbacks to support levels. Recommended position size: 5-8% of portfolio."
+      "mention_count": 10,
+      "average_sentiment": 0.589,
+      "relevance_score": 0.378,
+      "rationale": "Strong bullish sentiment driven by AI product launches and analyst upgrades. Reddit users are excited about Nvidia's latest AI chip announcements and see continued growth potential in the AI market."
     },
     {
       "ticker": "META",
-      "market_analyst_data": {
-        "mention_count": 17,
-        "average_sentiment": 0.32,
-        "relevance_score": 0.366,
-        "reddit_rationale": "Mixed sentiment due to regulatory concerns but strong technical setup"
-      },
-      "technical_score": {
-        "percentage": 71.43,
-        "grade": "B (Buy)",
-        "recommendation": "Buy"
-      },
-      "momentum_analysis": {
-        "momentum_score": 6,
-        "risk_level": "Low",
-        "trend_strength": "Strong",
-        "key_signals": ["Bullish momentum", "Resistance level identified"]
-      },
-      "investment_recommendation": "Cautious buy for META. Strong technical indicators offset regulatory concerns. Monitor regulatory developments and consider position sizing based on risk tolerance. Recommended position size: 3-5% of portfolio."
+      "mention_count": 17,
+      "average_sentiment": 0.32,
+      "relevance_score": 0.366,
+      "rationale": "Mixed sentiment due to regulatory concerns but strong technical setup. Users discuss both the potential of Meta's AI initiatives and concerns about privacy regulations."
     },
     {
       "ticker": "GOOGL",
-      "market_analyst_data": {
-        "mention_count": 3,
-        "average_sentiment": 0.719,
-        "relevance_score": 0.362,
-        "reddit_rationale": "Very positive sentiment around AI and cloud services"
-      },
-      "technical_score": {
-        "percentage": 85.0,
-        "grade": "A (Strong Buy)",
-        "recommendation": "Strong Buy"
-      },
-      "momentum_analysis": {
-        "momentum_score": 8,
-        "risk_level": "Low",
-        "trend_strength": "Very Strong",
-        "key_signals": ["Strong bullish momentum", "Breakout pattern"]
-      },
-      "investment_recommendation": "Strong buy for GOOGL with highest technical score and momentum. Excellent risk-reward profile with strong fundamentals. Recommended position size: 8-10% of portfolio."
+      "mention_count": 3,
+      "average_sentiment": 0.719,
+      "relevance_score": 0.362,
+      "rationale": "Very positive sentiment around AI and cloud services. Reddit users are bullish on Google's AI capabilities and cloud infrastructure growth."
     }
   ],
-  "overall_recommendation": "The Technology sector warrants increased allocation with focus on AI and cloud computing leaders. Maintain diversified exposure while overweighting stocks with strong technical momentum and positive social sentiment. Consider using covered calls on existing positions to generate additional income.",
-  "action_items": [
-    "Increase Technology sector allocation to 25-30% of portfolio",
-    "Initiate positions in GOOGL (8-10%), NVDA (5-8%), and META (3-5%)",
-    "Set stop-loss orders at identified support levels",
-    "Monitor regulatory developments for META and other social media stocks",
-    "Consider options strategies for enhanced returns on high-conviction positions",
-    "Rebalance portfolio monthly to maintain target allocations",
-    "Implement dollar-cost averaging for new positions"
-  ],
-  "portfolio_adjustments": "Rebalance portfolio to overweight Technology sector. Reduce exposure to defensive sectors and increase growth allocation. Consider using covered calls on existing tech positions to generate additional income. Maintain 10% cash for opportunistic entries.",
-  "overall_risk_level": "Medium",
-  "risk_factors": [
-    "Market volatility and potential tech sector corrections",
-    "Regulatory risks for social media and AI companies",
-    "Geopolitical tensions affecting semiconductor supply chains",
-    "Interest rate sensitivity of growth stocks",
-    "AI bubble concerns and valuation risks",
-    "Earnings volatility in high-growth tech companies"
-  ],
-  "risk_mitigation_strategies": "Implement dollar-cost averaging for new positions, maintain stop-loss orders, diversify across subsectors, and consider hedging strategies. Regular portfolio rebalancing and position sizing based on risk tolerance. Use options for downside protection.",
-  "analysis_methodology": "This analysis combines Reddit sentiment analysis, comprehensive technical indicators (13+ indicators), LLM-generated momentum analysis, and fundamental considerations. Data sources include Reddit API, Yahoo Finance, and proprietary technical analysis algorithms. Risk assessment incorporates multiple factors including volatility, correlation, and market conditions.",
-  "data_sources": [
-    "Reddit API for social sentiment analysis",
-    "Yahoo Finance for stock price data and technical indicators",
-    "Proprietary technical analysis algorithms",
-    "LLM analysis for momentum and risk assessment",
-    "Market analyst insights and Reddit community sentiment",
-    "Real-time market data and news sentiment analysis"
-  ]
+  "summary": "Technology sector shows strong retail investor interest with focus on AI and semiconductor companies. NVDA leads in mentions and sentiment, while META shows mixed feelings due to regulatory concerns."
+}
+```
+
+### Complete Workflow Output
+
+The final output from ProspectAI includes:
+
+```json
+{
+  "status": "success",
+  "workflow_completed": true,
+  "result": {
+    "market_analysis": "Market analyst output above",
+    "technical_analysis": "Technical indicators and patterns for each stock",
+    "fundamental_analysis": "Financial metrics and company fundamentals",
+    "investment_strategy": "Final recommendations and portfolio allocation"
+  },
+  "summary": "ProspectAI analysis completed successfully"
 }
 ```
 
@@ -466,7 +403,42 @@ OLLAMA_MODEL=llama3.2:3b
 
 ## License
 
-[Add your license information here]
+This project is licensed under the **MIT License** - the most permissive and business-friendly open source license available.
+
+```
+MIT License
+
+Copyright (c) 2025 ProspectAI
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### What MIT License Means for You:
+
+✅ **Use freely** - Personal, commercial, or educational use  
+✅ **Modify and adapt** - Customize for your needs  
+✅ **Distribute** - Share with others  
+✅ **Commercial use** - Use in business applications  
+✅ **No attribution required** - Though appreciated  
+✅ **No warranty** - Use at your own risk  
+
+This license makes ProspectAI accessible to everyone while protecting contributors from liability.
 
 ## Acknowledgments
 
