@@ -6,6 +6,12 @@ ProspectAI is a sophisticated multi-agent investment analysis system built on th
 
 **🎉 First Official Release - v1.0.0**
 
+### ⚠️ Important Disclaimer
+
+**ProspectAI is built for educational purposes to help developers get initiated in Agentic AI development.** 
+
+**🚨 INVESTMENT WARNING: This tool should NOT be used as an investment tool without proper knowledge of the investment domain. The analysis provided is for educational demonstration of AI capabilities and should not be considered as financial advice. Always consult with qualified financial professionals before making investment decisions.**
+
 ## Features
 
 - **🤖 Multi-Agent System**: Specialized AI agents for different aspects of investment analysis
