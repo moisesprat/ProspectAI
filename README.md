@@ -89,6 +89,48 @@ Here's an example of the comprehensive investment analysis output from ProspectA
         "key_signals": ["Bullish momentum", "Support level identified"]
       },
       "investment_recommendation": "Strong buy recommendation for NVDA based on positive technical momentum, strong Reddit sentiment, and AI leadership position. Consider accumulating on pullbacks to support levels. Recommended position size: 5-8% of portfolio."
+    },
+    {
+      "ticker": "META",
+      "market_analyst_data": {
+        "mention_count": 17,
+        "average_sentiment": 0.32,
+        "relevance_score": 0.366,
+        "reddit_rationale": "Mixed sentiment due to regulatory concerns but strong technical setup"
+      },
+      "technical_score": {
+        "percentage": 71.43,
+        "grade": "B (Buy)",
+        "recommendation": "Buy"
+      },
+      "momentum_analysis": {
+        "momentum_score": 6,
+        "risk_level": "Low",
+        "trend_strength": "Strong",
+        "key_signals": ["Bullish momentum", "Resistance level identified"]
+      },
+      "investment_recommendation": "Cautious buy for META. Strong technical indicators offset regulatory concerns. Monitor regulatory developments and consider position sizing based on risk tolerance. Recommended position size: 3-5% of portfolio."
+    },
+    {
+      "ticker": "GOOGL",
+      "market_analyst_data": {
+        "mention_count": 3,
+        "average_sentiment": 0.719,
+        "relevance_score": 0.362,
+        "reddit_rationale": "Very positive sentiment around AI and cloud services"
+      },
+      "technical_score": {
+        "percentage": 85.0,
+        "grade": "A (Strong Buy)",
+        "recommendation": "Strong Buy"
+      },
+      "momentum_analysis": {
+        "momentum_score": 8,
+        "risk_level": "Low",
+        "trend_strength": "Very Strong",
+        "key_signals": ["Strong bullish momentum", "Breakout pattern"]
+      },
+      "investment_recommendation": "Strong buy for GOOGL with highest technical score and momentum. Excellent risk-reward profile with strong fundamentals. Recommended position size: 8-10% of portfolio."
     }
   ],
   "overall_recommendation": "The Technology sector warrants increased allocation with focus on AI and cloud computing leaders. Maintain diversified exposure while overweighting stocks with strong technical momentum and positive social sentiment. Consider using covered calls on existing positions to generate additional income.",
@@ -122,6 +164,50 @@ Here's an example of the comprehensive investment analysis output from ProspectA
     "Real-time market data and news sentiment analysis"
   ]
 }
+```
+
+### Command-Line Output Example
+
+When you run ProspectAI, you'll see real-time output like this:
+
+```bash
+$ python main.py --sector Technology
+
+🤖 ProspectAI - Multi-Agent Investment Analysis System
+====================================================
+
+🔍 MARKET ANALYST AGENT: Analyzing Reddit sentiment for Technology sector...
+📊 Fetching Reddit posts from r/investing, r/stocks, r/wallstreetbets...
+📈 Analyzing sentiment for 15+ stock mentions...
+🎯 Top 5 trending stocks identified:
+   • NVDA: 10 mentions, sentiment: 0.589, relevance: 0.378
+   • META: 17 mentions, sentiment: 0.32, relevance: 0.366
+   • GOOGL: 3 mentions, sentiment: 0.719, relevance: 0.362
+   • AAPL: 8 mentions, sentiment: 0.45, relevance: 0.35
+   • TSLA: 12 mentions, sentiment: 0.28, relevance: 0.34
+
+🔧 TECHNICAL ANALYST AGENT: Performing technical analysis...
+📊 Calculating 13+ technical indicators for each stock...
+📈 Momentum analysis and risk assessment...
+✅ Technical analysis completed for 5 stocks
+
+🏢 FUNDAMENTAL ANALYST AGENT: Analyzing company fundamentals...
+📊 Financial ratios and valuation metrics...
+📈 Growth projections and competitive analysis...
+✅ Fundamental analysis completed
+
+🎯 INVESTOR STRATEGIC AGENT: Generating investment strategy...
+📊 Portfolio allocation recommendations...
+⚖️ Risk-reward assessment...
+📋 Action plan and monitoring schedule...
+✅ Investment strategy completed
+
+📄 GENERATING PROFESSIONAL PDF REPORT...
+✅ Enhanced investment report generated: enhanced_investment_report_Technology_20250824_012804.pdf
+
+🎉 ANALYSIS COMPLETE! 
+📁 Results saved to: enhanced_investment_report_Technology_20250824_012804.pdf
+📊 Summary: Technology sector shows strong bullish momentum with 3 buy recommendations
 ```
 
 ## Project Structure
