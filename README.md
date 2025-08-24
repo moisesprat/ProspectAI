@@ -50,46 +50,50 @@ The system consists of four specialized agents working in sequence:
 
 ## Example Output
 
-ProspectAI generates comprehensive investment analysis through a multi-agent workflow. Here's the final output from the complete application:
+ProspectAI generates comprehensive investment analysis through a multi-agent workflow. The final output comes from the Investor Strategic Agent, which synthesizes all previous analysis into actionable investment recommendations. Here's the actual final output from the complete application:
 
-```json
-{
-  "status": "success",
-  "workflow_completed": true,
-  "result": {
-    "market_analysis": {
-      "sector": "Technology",
-      "candidate_stocks": [
-        {
-          "ticker": "NVDA",
-          "mention_count": 10,
-          "average_sentiment": 0.589,
-          "relevance_score": 0.378,
-          "rationale": "Strong bullish sentiment driven by AI product launches and analyst upgrades. Reddit users are excited about Nvidia's latest AI chip announcements and see continued growth potential in the AI market."
-        },
-        {
-          "ticker": "META",
-          "mention_count": 17,
-          "average_sentiment": 0.32,
-          "relevance_score": 0.366,
-          "rationale": "Mixed sentiment due to regulatory concerns but strong technical setup. Users discuss both the potential of Meta's AI initiatives and concerns about privacy regulations."
-        },
-        {
-          "ticker": "GOOGL",
-          "mention_count": 3,
-          "average_sentiment": 0.719,
-          "relevance_score": 0.362,
-          "rationale": "Very positive sentiment around AI and cloud services. Reddit users are bullish on Google's AI capabilities and cloud infrastructure growth."
-        }
-      ],
-      "summary": "Technology sector shows strong retail investor interest with focus on AI and semiconductor companies. NVDA leads in mentions and sentiment, while META shows mixed feelings due to regulatory concerns."
-    },
-    "technical_analysis": "Comprehensive technical analysis including 13+ indicators, momentum scoring, and risk assessment for each identified stock",
-    "fundamental_analysis": "Financial statement analysis, valuation metrics, growth projections, and competitive positioning for each stock",
-    "investment_strategy": "Final investment recommendations with portfolio allocation, risk assessment, and actionable insights"
-  },
-  "summary": "ProspectAI analysis completed successfully"
-}
+```
+### Final Investment Recommendations for the Technology Sector
+
+Based on the comprehensive analysis of selected technology stocks, the following investment recommendations are made, including risk-reward profiles, suggested portfolio allocations, and actionable insights.
+
+#### 1. **Nvidia Corporation (NVDA)**
+- **Recommendation:** Buy
+- **Risk-Reward Profile:** High growth potential with moderate risk. The high P/E ratio indicates potential overvaluation, but strong fundamentals and market leadership in AI and GPU technology support future growth.
+- **Portfolio Allocation:** 20%
+- **Actionable Insight:** Consider entering a position on any pullbacks to the $160-$170 range to capitalize on long-term growth in AI and gaming sectors.
+
+#### 2. **Meta Platforms, Inc. (META)**
+- **Recommendation:** Buy
+- **Risk-Reward Profile:** Moderate risk with solid growth prospects. The reasonable P/E ratio and strong cash flow provide a buffer against market volatility.
+- **Portfolio Allocation:** 25%
+- **Actionable Insight:** Accumulate shares gradually, especially if the stock dips below $700, to take advantage of its strong advertising revenue and potential in the metaverse.
+
+#### 3. **Alphabet Inc. (GOOGL)**
+- **Recommendation:** Buy
+- **Risk-Reward Profile:** Moderate risk with stable growth. The low debt levels and strong cash flow support continued investment in innovation, despite a slightly overvalued stock.
+- **Portfolio Allocation:** 20%
+- **Actionable Insight:** Look for entry points around $200-$205, as Alphabet continues to dominate the online advertising space and expand its cloud services.
+
+#### 4. **Amazon.com, Inc. (AMZN)**
+- **Recommendation:** Buy
+- **Risk-Reward Profile:** High risk due to high P/E ratio and low operating margins, but significant growth potential in e-commerce and AWS. The aggressive growth strategy may lead to volatility.
+- **Portfolio Allocation:** 15%
+- **Actionable Insight:** Consider dollar-cost averaging into the position, especially if the stock retraces to the $210-$220 range, to mitigate risk while benefiting from long-term growth.
+
+#### 5. **Salesforce, Inc. (CRM)**
+- **Recommendation:** Buy
+- **Risk-Reward Profile:** Moderate risk with potential for growth. The solid gross margin indicates pricing power, but the low operating margin suggests ongoing investment in growth may limit short-term profitability.
+- **Portfolio Allocation:** 20%
+- **Actionable Insight:** Look for opportunities to buy on dips, particularly if the stock approaches the $230 mark, as Salesforce continues to expand its market share in CRM solutions.
+
+### Overall Portfolio Strategy
+- **Total Allocation:** 100%
+- **Diversification:** The portfolio is diversified across various technology sub-sectors, including AI (Nvidia), social media and advertising (Meta), search and cloud services (Alphabet), e-commerce and cloud computing (Amazon), and CRM solutions (Salesforce).
+- **Risk Management:** Regularly review the portfolio and adjust allocations based on market conditions and individual stock performance. Consider setting stop-loss orders to protect against significant downturns.
+
+### Conclusion
+The technology sector presents strong investment opportunities with a favorable risk-reward profile. The recommended stocks are well-positioned for growth, supported by solid fundamentals and positive technical indicators. Investors should consider these recommendations as part of a diversified investment strategy to capitalize on the ongoing advancements in technology.
 ```
 
 ### Command-Line Output Example
