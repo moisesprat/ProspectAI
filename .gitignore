@@ -245,6 +245,9 @@ $RECYCLE.BIN/
 # PDF files
 *.pdf
 
+# Documentation and announcements
+LINKEDIN_ANNOUNCEMENT.md
+
 # Data files (if you have any)
 data/*.csv
 data/*.json
