@@ -10,6 +10,8 @@ from config.config import Config
 from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM
 
+from utils.technical_analysis_tool import TechnicalAnalysisTool
+
 class ProspectAICrew:
     """Main orchestrator for ProspectAI multi-agent investment analysis"""
 
@@ -109,6 +111,7 @@ class ProspectAICrew:
             """,
             agent=self.technical_analyst.get_agent(),
             expected_output="Technical analysis report with indicators and patterns",
+            tools=[TechnicalAnalysisTool()],
             context=[market_analysis_task]
         )
         
