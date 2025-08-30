@@ -22,16 +22,10 @@ from crewai import Agent
 class TechnicalAnalystAgent(BaseAgent):
     """Technical Analyst Agent that analyzes stock momentum using technical indicators"""
     
-    def __init__(self):
+    def __init__(self, config_path: str = None):
         super().__init__(
-            name="Technical Analyst Agent",
-            role="Technical momentum analyst specializing in chart patterns and indicators",
-            goal="Analyze technical indicators to assess stock momentum and provide comprehensive technical analysis for investment decisions",
-            backstory="""You are an expert technical analyst with over 15 years of experience in 
-            analyzing stock market momentum using advanced technical indicators. You excel at interpreting 
-            RSI, MACD, moving averages, Bollinger Bands, and other technical tools to identify trend 
-            strength, momentum shifts, and potential entry/exit points. Your analysis combines quantitative 
-            data with market psychology to provide actionable insights for traders and investors."""
+            agent_key="technical_analyst",
+            config_path=config_path
         )
         
         # Initialize technical analysis tools

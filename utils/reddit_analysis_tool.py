@@ -285,7 +285,7 @@ class RedditAnalysisTool:
         """Analyze Reddit sentiment for stock tickers in the sector"""
         # Common stock tickers by sector
         sector_tickers = {
-            "Technology": ["EPAM", "ALAB", "NET", "ANET", "MRVL"],
+            "Technology": ["EPAM"],
             "Healthcare": ["JNJ", "PFE", "UNH", "ABBV", "TMO", "ABT", "LLY", "DHR", "BMY", "AMGN", "GILD", "CVS", "WBA", "CI", "ANTM"],
             "Finance": ["JPM", "BAC", "WFC", "GS", "MS", "C", "USB", "PNC", "TFC", "COF", "AXP", "BLK", "SCHW", "V", "MA"],
             "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "VLO", "PSX", "MPC", "OXY", "HAL", "KMI", "WMB", "OKE", "DVN", "EOG"],

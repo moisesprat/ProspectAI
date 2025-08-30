@@ -5,15 +5,10 @@ from crewai import Agent
 class FundamentalAnalystAgent(BaseAgent):
     """Agent responsible for fundamental analysis of selected stocks"""
     
-    def __init__(self):
+    def __init__(self, config_path: str = None):
         super().__init__(
-            name="Fundamental Analyst",
-            role="Fundamental Analysis Specialist",
-            goal="Perform comprehensive fundamental analysis on selected stocks using financial metrics",
-            backstory="""You are an expert fundamental analyst with deep understanding of 
-            financial statements, valuation metrics, and company fundamentals. You excel at 
-            evaluating company health, growth potential, and intrinsic value based on 
-            financial data and industry analysis."""
+            agent_key="fundamental_analyst",
+            config_path=config_path
         )
     
     def create_agent(self) -> Agent:

@@ -5,15 +5,10 @@ from crewai import Agent
 class InvestorStrategicAgent(BaseAgent):
     """Agent responsible for final investment recommendations and strategy"""
     
-    def __init__(self):
+    def __init__(self, config_path: str = None):
         super().__init__(
-            name="Investment Strategist",
-            role="Investment Strategy Specialist",
-            goal="Provide comprehensive investment recommendations based on technical and fundamental analysis",
-            backstory="""You are a seasoned investment strategist with expertise in 
-            portfolio management and risk assessment. You excel at synthesizing technical 
-            and fundamental analysis to provide actionable investment recommendations 
-            with clear risk-reward profiles."""
+            agent_key="investor_strategic",
+            config_path=config_path
         )
     
     def create_agent(self) -> Agent:
