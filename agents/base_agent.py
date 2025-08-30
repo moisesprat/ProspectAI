@@ -39,10 +39,6 @@ class BaseAgent(ABC):
         """Create and return a CrewAI Agent instance"""
         pass
     
-    @abstractmethod
-    def execute_task(self, input_data: Any) -> Dict[str, Any]:
-        """Execute the agent's main task"""
-        pass
     
     def get_agent(self) -> Agent:
         """Get the CrewAI Agent instance"""

@@ -17,7 +17,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from crewai.tools.base_tool import Tool
+from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 # Pydantic models for tool arguments
@@ -28,6 +28,83 @@ class TechnicalIndicatorsInput(BaseModel):
     ticker: str = Field(description="Stock ticker symbol")
     period: str = Field(description="Analysis period (e.g., '1y', '6mo', '3mo')", default="1y")
 
+# Tool classes that inherit from BaseTool
+class CalculateTechnicalIndicatorsTool(BaseTool):
+    name: str = "calculate_technical_indicators"
+    description: str = """Calculate comprehensive technical indicators for a stock.
+    
+    Args:
+        ticker: Stock ticker symbol to analyze
+        period: Analysis period (e.g., '1y', '6mo', '3mo')
+        
+    Returns:
+        Dictionary containing all technical indicators and analysis"""
+    
+    def _run(self, ticker: str, period: str = "1y") -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        tech_tool = TechnicalAnalysisTool()
+        return tech_tool._calculate_comprehensive_indicators(ticker, period)
+
+class GetStockDataTool(BaseTool):
+    name: str = "get_stock_data"
+    description: str = """Fetch historical stock data for analysis.
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        Historical price data for the stock"""
+    
+    def _run(self, ticker: str) -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        tech_tool = TechnicalAnalysisTool()
+        return tech_tool._get_stock_data(ticker)
+
+class CalculateMomentumIndicatorsTool(BaseTool):
+    name: str = "calculate_momentum_indicators"
+    description: str = """Calculate momentum-based technical indicators.
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        Momentum indicators including RSI, MACD, Stochastic, etc."""
+    
+    def _run(self, ticker: str) -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        tech_tool = TechnicalAnalysisTool()
+        return tech_tool._calculate_momentum_indicators(ticker)
+
+class CalculateTrendIndicatorsTool(BaseTool):
+    name: str = "calculate_trend_indicators"
+    description: str = """Calculate trend-based technical indicators.
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        Trend indicators including moving averages, ADX, etc."""
+    
+    def _run(self, ticker: str) -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        tech_tool = TechnicalAnalysisTool()
+        return tech_tool._calculate_trend_indicators(ticker)
+
+class CalculateVolatilityIndicatorsTool(BaseTool):
+    name: str = "calculate_volatility_indicators"
+    description: str = """Calculate volatility-based technical indicators.
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        Volatility indicators including Bollinger Bands, ATR, etc."""
+    
+    def _run(self, ticker: str) -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        tech_tool = TechnicalAnalysisTool()
+        return tech_tool._calculate_volatility_indicators(ticker)
+
 class TechnicalAnalysisTool:
     """Tool for calculating comprehensive technical indicators"""
     
@@ -35,91 +112,17 @@ class TechnicalAnalysisTool:
         self.default_period = "1y"
         self.default_interval = "1d"
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> List[BaseTool]:
         """Get all technical analysis tools"""
         return [
-            self.calculate_technical_indicators_tool(),
-            self.get_stock_data_tool(),
-            self.calculate_momentum_indicators_tool(),
-            self.calculate_trend_indicators_tool(),
-            self.calculate_volatility_indicators_tool()
+            CalculateTechnicalIndicatorsTool(),
+            GetStockDataTool(),
+            CalculateMomentumIndicatorsTool(),
+            CalculateTrendIndicatorsTool(),
+            CalculateVolatilityIndicatorsTool()
         ]
     
-    def calculate_technical_indicators_tool(self) -> Tool:
-        """Tool for calculating comprehensive technical indicators"""
-        return Tool(
-            name="calculate_technical_indicators",
-            description="""Calculate comprehensive technical indicators for a stock.
-            
-            Args:
-                ticker: Stock ticker symbol to analyze
-                period: Analysis period (e.g., '1y', '6mo', '3mo')
-                
-            Returns:
-                Dictionary containing all technical indicators and analysis""",
-            func=self._calculate_comprehensive_indicators,
-            args_schema=TechnicalIndicatorsInput
-        )
-    
-    def get_stock_data_tool(self) -> Tool:
-        """Tool for fetching stock data"""
-        return Tool(
-            name="get_stock_data",
-            description="""Fetch historical stock data for analysis.
-            
-            Args:
-                ticker: Stock ticker symbol
-                
-            Returns:
-                Historical price data for the stock""",
-            func=self._get_stock_data,
-            args_schema=StockInput
-        )
-    
-    def calculate_momentum_indicators_tool(self) -> Tool:
-        """Tool for calculating momentum indicators"""
-        return Tool(
-            name="calculate_momentum_indicators",
-            description="""Calculate momentum-based technical indicators.
-            
-            Args:
-                ticker: Stock ticker symbol
-                
-            Returns:
-                Momentum indicators including RSI, MACD, Stochastic, etc.""",
-            func=self._calculate_momentum_indicators,
-            args_schema=StockInput
-        )
-    
-    def calculate_trend_indicators_tool(self) -> Tool:
-        """Tool for calculating trend indicators"""
-        return Tool(
-            name="calculate_trend_indicators",
-            description="""Calculate trend-based technical indicators.
-            
-            Args:
-                ticker: Stock ticker symbol
-                
-            Returns:
-                Trend indicators including moving averages, ADX, etc.""",
-            func=self._calculate_trend_indicators,
-            args_schema=StockInput
-        )
-    
-    def calculate_volatility_indicators_tool(self) -> Tool:
-        """Tool for calculating volatility indicators"""
-        return Tool(
-            name="calculate_volatility_indicators",
-            description="""Calculate volatility-based technical indicators.
-            
-            Args:
-                ticker: Stock ticker symbol
-                
-            Returns:
-                Volatility indicators including Bollinger Bands, ATR, etc.""",
-            func=self._calculate_volatility_indicators,
-            args_schema=StockInput
-        )
+
     
     def _get_stock_data(self, ticker: str) -> Dict[str, Any]:
         """Fetch historical stock data"""

@@ -1,5 +1,5 @@
 from typing import Dict, Any, List
-from crewai.tools.base_tool import Tool
+from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 import requests
 import re
@@ -17,12 +17,68 @@ class PostsInput(BaseModel):
 class TickerAnalysisInput(BaseModel):
     ticker_analysis: Dict[str, Any]
 
-class CustomRedditTool(Tool):
-    """Custom tool that overrides description generation to avoid confusion"""
+# Tool classes that inherit from BaseTool
+class AnalyzeSectorSentimentTool(BaseTool):
+    name: str = "analyze_sector_sentiment"
+    description: str = """Analyze Reddit discussions to identify trending stocks in a specific sector.
+    This tool fetches Reddit posts, analyzes sentiment, and returns the top trending stocks.
     
-    def _generate_description(self):
-        """Override to provide cleaner tool description"""
-        return f"Tool Name: {self.name}\nTool Arguments: {{'sector': 'string'}}\nTool Description: {self.description}"
+    Args:
+        sector: The industry sector to analyze (e.g., "Technology", "Healthcare", "Finance")
+        
+    Returns:
+        A dictionary containing:
+        - sector: The analyzed sector
+        - candidate_stocks: List of top 5 trending stocks with sentiment scores
+        - summary: Overall sector sentiment summary"""
+    
+    def _run(self, sector: str) -> Dict[str, Any]:
+        # Create a temporary instance to access the methods
+        reddit_tool = RedditAnalysisTool()
+        return reddit_tool._analyze_sector_sentiment(sector)
+
+class FetchRedditPostsTool(BaseTool):
+    name: str = "fetch_reddit_posts"
+    description: str = """Fetch Reddit posts for a specific sector.
+    
+    Returns:
+        List of Reddit posts with title, content, upvotes, and comments"""
+    
+    def _run(self, sector: str) -> List[Dict[str, Any]]:
+        # Create a temporary instance to access the methods
+        reddit_tool = RedditAnalysisTool()
+        return reddit_tool._fetch_reddit_data(sector)
+
+class AnalyzeStockMentionsTool(BaseTool):
+    name: str = "analyze_stock_mentions"
+    description: str = """Analyze stock ticker mentions in Reddit posts.
+    
+    Args:
+        posts: List of Reddit posts to analyze
+        sector: The sector being analyzed
+        
+    Returns:
+        Dictionary of stock ticker analysis data"""
+    
+    def _run(self, posts: List[Dict[str, Any]], sector: str) -> Dict[str, Dict]:
+        # Create a temporary instance to access the methods
+        reddit_tool = RedditAnalysisTool()
+        return reddit_tool._analyze_reddit_sentiment(posts, sector)
+
+class CalculateSentimentTool(BaseTool):
+    name: str = "calculate_sentiment"
+    description: str = """Calculate sentiment scores for stocks.
+    
+    Args:
+        ticker_analysis: Dictionary of stock ticker analysis data
+        
+    Returns:
+        List of candidate stocks with relevance scores"""
+    
+    def _run(self, ticker_analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # Create a temporary instance to access the methods
+        reddit_tool = RedditAnalysisTool()
+        return reddit_tool._calculate_relevance_scores(ticker_analysis)
 
 class RedditAnalysisTool:
     """Tool for analyzing Reddit discussions and sentiment"""
@@ -32,79 +88,16 @@ class RedditAnalysisTool:
         self.reddit_client_secret = os.getenv("REDDIT_CLIENT_SECRET")
         self.reddit_user_agent = os.getenv("REDDIT_USER_AGENT", "ProspectAI/1.0")
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> List[BaseTool]:
         """Get all Reddit analysis tools"""
         return [
-            self.analyze_sector_sentiment_tool(),
-            self.fetch_reddit_posts_tool(),
-            self.analyze_stock_mentions_tool(),
-            self.calculate_sentiment_tool()
+            AnalyzeSectorSentimentTool(),
+            FetchRedditPostsTool(),
+            AnalyzeStockMentionsTool(),
+            CalculateSentimentTool()
         ]
     
-    def analyze_sector_sentiment_tool(self) -> CustomRedditTool:
-        """Tool for analyzing sector sentiment"""
-        return CustomRedditTool(
-            name="analyze_sector_sentiment",
-            description="""Analyze Reddit discussions to identify trending stocks in a specific sector.
-            This tool fetches Reddit posts, analyzes sentiment, and returns the top trending stocks.
-            
-            Args:
-                sector: The industry sector to analyze (e.g., "Technology", "Healthcare", "Finance")
-                
-            Returns:
-                A dictionary containing:
-                - sector: The analyzed sector
-                - candidate_stocks: List of top 5 trending stocks with sentiment scores
-                - summary: Overall sector sentiment summary""",
-            func=self._analyze_sector_sentiment,
-            args_schema=SectorInput
-        )
-    
-    def fetch_reddit_posts_tool(self) -> CustomRedditTool:
-        """Tool for fetching Reddit posts"""
-        return CustomRedditTool(
-            name="fetch_reddit_posts",
-            description="""Fetch Reddit posts for a specific sector.
-            
-            Args:
-                sector: The industry sector to analyze
-                
-            Returns:
-                List of Reddit posts with title, content, upvotes, and comments""",
-            func=self._fetch_reddit_data,
-            args_schema=SectorInput
-        )
-    
-    def analyze_stock_mentions_tool(self) -> CustomRedditTool:
-        """Tool for analyzing stock mentions"""
-        return CustomRedditTool(
-            name="analyze_stock_mentions",
-            description="""Analyze stock ticker mentions in Reddit posts.
-            
-            Args:
-                posts: List of Reddit posts to analyze
-                sector: The sector being analyzed
-                
-            Returns:
-                Dictionary of stock ticker analysis data""",
-            func=self._analyze_reddit_sentiment,
-            args_schema=PostsInput
-        )
-    
-    def calculate_sentiment_tool(self) -> CustomRedditTool:
-        """Tool for calculating sentiment scores"""
-        return CustomRedditTool(
-            name="calculate_sentiment",
-            description="""Calculate sentiment scores for stocks.
-            
-            Args:
-                ticker_analysis: Dictionary of stock ticker analysis data
-                
-            Returns:
-                List of candidate stocks with relevance scores""",
-            func=self._calculate_relevance_scores,
-            args_schema=TickerAnalysisInput
-        )
+
     
     def _analyze_sector_sentiment(self, sector: str) -> Dict[str, Any]:
         """Analyze Reddit discussions to identify trending stocks in a specific sector"""
@@ -292,7 +285,7 @@ class RedditAnalysisTool:
         """Analyze Reddit sentiment for stock tickers in the sector"""
         # Common stock tickers by sector
         sector_tickers = {
-            "Technology": ["AAPL", "MSFT", "GOOGL", "NVDA", "TSLA", "META", "AMZN", "NFLX", "AMD", "INTC", "CRM", "ADBE", "ORCL", "CSCO", "QCOM"],
+            "Technology": ["EPAM", "ALAB", "NET", "ANET", "MRVL"],
             "Healthcare": ["JNJ", "PFE", "UNH", "ABBV", "TMO", "ABT", "LLY", "DHR", "BMY", "AMGN", "GILD", "CVS", "WBA", "CI", "ANTM"],
             "Finance": ["JPM", "BAC", "WFC", "GS", "MS", "C", "USB", "PNC", "TFC", "COF", "AXP", "BLK", "SCHW", "V", "MA"],
             "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "VLO", "PSX", "MPC", "OXY", "HAL", "KMI", "WMB", "OKE", "DVN", "EOG"],

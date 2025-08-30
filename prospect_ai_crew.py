@@ -7,6 +7,7 @@ from agents.investor_strategic_agent import InvestorStrategicAgent
 from config.config import Config
 from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM
+from utils.reddit_analysis_tool import RedditAnalysisTool
 
 class ProspectAICrew:
     """Main orchestrator for ProspectAI multi-agent investment analysis"""
@@ -81,6 +82,7 @@ class ProspectAICrew:
             IMPORTANT: Use the tools for data collection and calculations, but generate rationales yourself using LLM reasoning.
             The rationale should contain all perceptions Reddit users have about each stock, extracted from actual post content.""",
             agent=self.market_analyst.get_agent(),
+            tools=RedditAnalysisTool().get_tools(),
             expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks with comprehensive rationales"
         )
         
