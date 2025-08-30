@@ -1,5 +1,7 @@
 from crewai import Crew, Task
 from typing import Dict, Any, List
+
+from crewai.tools import BaseTool
 from agents.market_analyst_agent import MarketAnalystAgent
 from agents.technical_analyst_agent import TechnicalAnalystAgent
 from agents.fundamental_analyst_agent import FundamentalAnalystAgent
@@ -7,11 +9,10 @@ from agents.investor_strategic_agent import InvestorStrategicAgent
 from config.config import Config
 from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM
-from utils.reddit_analysis_tool import RedditAnalysisTool
 
 class ProspectAICrew:
     """Main orchestrator for ProspectAI multi-agent investment analysis"""
-    
+
     def __init__(self):
         """Initialize all agents"""
         self.config = Config()
@@ -39,7 +40,20 @@ class ProspectAICrew:
                 temperature=0.1,
                 api_key=self.config.OPENAI_API_KEY
             )
-        
+      
+    def create_market_analysys_tools() -> List[BaseTool]:
+        """Create the tools for the market analysis"""
+        return [ 
+            SerperDevTool(),
+            ScrapeWebsiteTool(),
+            YouTubeSearchTool(),
+            PDFSearchTool(),
+            CSVSearchTool(),
+            CodeInterpreterTool(),
+            RagTool(),
+            YoutubeVideoSearchTool()
+        ]
+
     def create_tasks(self, market_criteria: Dict[str, Any]) -> List[Task]:
         """Create the sequence of tasks for the investment analysis workflow"""
         
@@ -82,7 +96,7 @@ class ProspectAICrew:
             IMPORTANT: Use the tools for data collection and calculations, but generate rationales yourself using LLM reasoning.
             The rationale should contain all perceptions Reddit users have about each stock, extracted from actual post content.""",
             agent=self.market_analyst.get_agent(),
-            tools=RedditAnalysisTool().get_tools(),
+            tools=[],
             expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks with comprehensive rationales"
         )
         
