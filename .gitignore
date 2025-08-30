@@ -241,6 +241,13 @@ $RECYCLE.BIN/
 .env.local
 .env.production
 .env.staging
+.env.development
+*.key
+*.pem
+*.p12
+secrets.json
+config.json
+credentials.json
 
 # PDF files
 *.pdf
@@ -254,6 +261,16 @@ data/*.json
 data/*.xlsx
 data/*.db
 data/*.sqlite
+
+# Database files and directories
+db/
+*.db
+*.sqlite
+*.sqlite3
+crewai-rag-tool.lock
+
+# RAG tool specific files
+crewai-rag-tool.lock
 
 # Logs
 *.log

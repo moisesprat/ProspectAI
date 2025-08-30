@@ -22,28 +22,3 @@ class FundamentalAnalystAgent(BaseAgent):
             llm=self._get_llm()
         )
     
-    def execute_task(self, analysis_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute fundamental analysis on stocks with technical analysis
-        
-        Args:
-            analysis_data: Dictionary containing technical analysis and stock data
-            
-        Returns:
-            Dictionary containing fundamental analysis results
-        """
-        # TODO: Implement fundamental analysis logic
-        # This will include:
-        # - Financial statement analysis
-        # - Valuation metrics calculation (P/E, P/B, ROE, etc.)
-        # - Industry comparison
-        # - Growth potential assessment
-        # - Risk factor analysis
-        # - Fundamental analysis report generation
-        
-        return {
-            "status": "success",
-            "fundamental_analysis": {},
-            "analysis_summary": "Fundamental analysis completed",
-            "next_steps": "Proceed to investment strategy"
-        }

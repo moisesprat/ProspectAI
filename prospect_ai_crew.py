@@ -2,6 +2,7 @@ from crewai import Crew, Task
 from typing import Dict, Any, List
 
 from crewai.tools import BaseTool
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool, PDFSearchTool, CSVSearchTool, CodeInterpreterTool, RagTool, YoutubeVideoSearchTool
 from agents.market_analyst_agent import MarketAnalystAgent
 from agents.technical_analyst_agent import TechnicalAnalystAgent
 from agents.fundamental_analyst_agent import FundamentalAnalystAgent
@@ -43,12 +44,11 @@ class ProspectAICrew:
                 api_key=self.config.OPENAI_API_KEY
             )
       
-    def create_market_analysys_tools() -> List[BaseTool]:
+    def create_market_analysys_tools(self) -> List[BaseTool]:
         """Create the tools for the market analysis"""
         return [ 
             SerperDevTool(),
             ScrapeWebsiteTool(),
-            YouTubeSearchTool(),
             PDFSearchTool(),
             CSVSearchTool(),
             CodeInterpreterTool(),
@@ -98,7 +98,7 @@ class ProspectAICrew:
             IMPORTANT: Use the tools for data collection and calculations, but generate rationales yourself using LLM reasoning.
             The rationale should contain all perceptions Reddit users have about each stock, extracted from actual post content.""",
             agent=self.market_analyst.get_agent(),
-            tools=[],
+            tools=self.create_market_analysys_tools(),
             expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks with comprehensive rationales"
         )
         
