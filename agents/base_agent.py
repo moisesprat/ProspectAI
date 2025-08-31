@@ -32,6 +32,7 @@ class BaseAgent(ABC):
         self.verbose = self.settings.get('verbose', True)
         self.allow_delegation = self.settings.get('allow_delegation', False)
         self.temperature = self.settings.get('temperature', 0.1)
+        self.max_tokens = self.settings.get('max_tokens', None)
         
         self.agent = None
         self.config = Config()
@@ -51,7 +52,8 @@ class BaseAgent(ABC):
             return ChatOpenAI(
                 model=self.config.OPENAI_MODEL,
                 temperature=self.temperature,
-                api_key=self.config.OPENAI_API_KEY
+                api_key=self.config.OPENAI_API_KEY,
+                max_tokens=self.max_tokens
             )
         
     @abstractmethod
