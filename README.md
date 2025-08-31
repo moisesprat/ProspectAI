@@ -193,7 +193,21 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Reddit API Setup (Required for Market Analyst)
+### 2. OpenAI API Setup (Required for OpenAI Models)
+
+The system uses OpenAI models by default and requires an OpenAI API key for operation.
+
+1. **Get OpenAI API Key**: Visit [OpenAI Platform](https://platform.openai.com/api-keys)
+2. **Create API Key**: Click "Create new secret key" and copy the generated key
+3. **Configure Environment**: Add the following to your `.env` file:
+   ```bash
+   OPENAI_API_KEY=your_openai_api_key_here
+   ```
+4. **Test**: Run `python main.py --sector Technology` to verify OpenAI integration
+
+**Note**: Keep your API key secure and never commit it to version control.
+
+### 3. Reddit API Setup (Required for Market Analyst)
 1. **Create Reddit App**: Visit [Reddit App Preferences](https://www.reddit.com/prefs/apps)
 2. **Get Credentials**: Create a "script" app and note your Client ID and Secret
 3. **Configure Environment**: Copy `env.example` to `.env` and add your Reddit credentials
@@ -201,7 +215,20 @@ pip install -r requirements.txt
 
 📖 **Detailed Setup**: See [REDDIT_API_SETUP.md](REDDIT_API_SETUP.md) for complete instructions.
 
-### Option 2: Ollama Setup (Local Models)
+### 4. Serper Dev API Setup (Required for Web Search Tools)
+
+The Market Analyst Agent uses web search tools that require a Serper Dev API key for internet search capabilities.
+
+1. **Get Serper API Key**: Visit [serper.dev](https://serper.dev) and create an account
+2. **Copy API Key**: From your dashboard, copy your API key
+3. **Add to Environment**: Add the following to your `.env` file:
+   ```bash
+   SERPER_API_KEY=your_serper_api_key_here
+   ```
+
+**Note**: The `.env` file is already in `.gitignore` to protect your API keys.
+
+### 5. Ollama Setup (Local Models)
 
 1. **Install Ollama**
    ```bash
@@ -283,6 +310,9 @@ OPENAI_MODEL=gpt-4
 # Ollama Configuration
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2:3b
+
+# Serper Dev API (Required for web search tools)
+SERPER_API_KEY=your_serper_api_key_here
 ```
 
 ### Popular Ollama Models
@@ -363,9 +393,11 @@ OLLAMA_MODEL=llama3.2:3b
 ### Common Issues
 
 1. **Import errors**: Ensure you're using the virtual environment where packages are installed
-2. **Ollama connection**: Verify Ollama is running with `ollama serve`
-3. **Model not found**: Pull the model first with `ollama pull <model-name>`
-4. **API key errors**: Check your `.env` file and API key validity
+2. **OpenAI API errors**: Verify your `OPENAI_API_KEY` is set in `.env` and is valid
+3. **Ollama connection**: Verify Ollama is running with `ollama serve`
+4. **Model not found**: Pull the model first with `ollama pull <model-name>`
+5. **API key errors**: Check your `.env` file and API key validity
+6. **Serper API errors**: Verify your `SERPER_API_KEY` is set in `.env` and is valid
 
 ### Getting Help
 
