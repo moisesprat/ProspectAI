@@ -23,6 +23,14 @@ class ProspectAICrew:
         self.technical_analyst = TechnicalAnalystAgent()
         self.fundamental_analyst = FundamentalAnalystAgent()
         self.investor_strategist = InvestorStrategicAgent()
+
+        self.search_tool = SerperDevTool()
+        self.scrape_tool = ScrapeWebsiteTool()
+        self.pdf_tool = PDFSearchTool()
+        self.csv_tool = CSVSearchTool()
+        self.code_tool = CodeInterpreterTool()
+        self.rag_tool = RagTool()
+        self.youtube_tool = YoutubeVideoSearchTool()
         
         self.crew = None
         
@@ -44,17 +52,6 @@ class ProspectAICrew:
                 api_key=self.config.OPENAI_API_KEY
             )
       
-    def create_market_analysys_tools(self) -> List[BaseTool]:
-        """Create the tools for the market analysis"""
-        return [ 
-            SerperDevTool(),
-            ScrapeWebsiteTool(),
-            PDFSearchTool(),
-            CSVSearchTool(),
-            CodeInterpreterTool(),
-            RagTool(),
-            YoutubeVideoSearchTool()
-        ]
 
     def create_tasks(self, market_criteria: Dict[str, Any]) -> List[Task]:
         """Create the sequence of tasks for the investment analysis workflow"""
@@ -98,7 +95,7 @@ class ProspectAICrew:
             IMPORTANT: Use the tools for data collection and calculations, but generate rationales yourself using LLM reasoning.
             The rationale should contain all perceptions Reddit users have about each stock, extracted from actual post content.""",
             agent=self.market_analyst.get_agent(),
-            tools=self.create_market_analysys_tools(),
+            tools=[self.search_tool, self.scrape_tool, self.pdf_tool, self.csv_tool, self.code_tool, self.rag_tool, self.youtube_tool],
             expected_output=f"Python dictionary with {sector} sector analysis and top 5 candidate stocks with comprehensive rationales"
         )
         

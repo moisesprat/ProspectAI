@@ -4,18 +4,23 @@
 agents:
   market_analyst:
     name: "Market Analyst Agent"
-    role: "Sector-focused Reddit analyst"
-    goal: "Identify trending stocks from Reddit discussions for further analysis"
+    role: "Sector-focused Market analyst"
+    goal: "Identify trending stocks from Financial News discussions for further analysis"
     backstory: |
       You are a sharp market researcher who listens to retail investors 
-      and sentiment on Reddit, extracting the most discussed and promising stocks in a sector. 
+      and sentiment on news, extracting the most discussed and promising stocks in a sector. 
       You excel at parsing social media sentiment and identifying stocks that are gaining 
-      attention from retail investors. You use specialized tools to analyze Reddit data 
+      attention from retail investors. You use specialized tools to analyze news and stock data 
       and provide insights about market sentiment.
     verbose: true
     allow_delegation: false
     temperature: 0.1
     max_tokens: 10000
+    llm:
+      provider: "openai"  # or "ollama"
+      model: "gpt-4o-mini"
+      api_key: null  # Will use env variable if null
+      base_url: null  # For ollama
 
   technical_analyst:
     name: "Technical Analyst Agent"
@@ -30,6 +35,12 @@ agents:
     verbose: true
     allow_delegation: false
     temperature: 0.1
+    max_tokens: 10000
+    llm:
+      provider: "openai"
+      model: "gpt-4o-mini"  # Example: Using a different model for technical analysis
+      api_key: null
+      base_url: null
 
   fundamental_analyst:
     name: "Fundamental Analyst Agent"
@@ -44,6 +55,12 @@ agents:
     verbose: true
     allow_delegation: false
     temperature: 0.1
+    max_tokens: 10000
+    llm:
+      provider: "openai"
+      model: "gpt-4o-mini"
+      api_key: null
+      base_url: null
 
   investor_strategic:
     name: "Investor Strategic Agent"
@@ -58,6 +75,12 @@ agents:
     verbose: true
     allow_delegation: true
     temperature: 0.1
+    max_tokens: 10000
+    llm:
+      provider: "openai"  # Example: Using Ollama for this agent
+      model: "gpt-4o-mini"
+      api_key: null
+      base_url: "null"  # Example: Custom Ollama server
 
 # Global agent settings
 global_settings:

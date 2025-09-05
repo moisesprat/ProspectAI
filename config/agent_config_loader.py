@@ -97,11 +97,16 @@ class AgentConfigLoader:
         return config.get('backstory', '')
     
     def get_agent_settings(self, agent_key: str) -> Dict[str, Any]:
-        """Get additional settings for an agent (verbose, allow_delegation, etc.)"""
+        """Get additional settings for an agent (verbose, allow_delegation, llm, etc.)"""
         config = self.get_agent_config(agent_key)
         # Return only the settings, not the core identity fields
         core_fields = {'name', 'role', 'goal', 'backstory'}
         return {k: v for k, v in config.items() if k not in core_fields}
+    
+    def get_agent_llm_config(self, agent_key: str) -> Dict[str, Any]:
+        """Get LLM configuration for a specific agent"""
+        settings = self.get_agent_settings(agent_key)
+        return settings.get('llm', {})
     
     def reload_config(self):
         """Reload the configuration from file (useful for development)"""

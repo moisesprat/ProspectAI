@@ -34,25 +34,39 @@ class BaseAgent(ABC):
         self.temperature = self.settings.get('temperature', 0.1)
         self.max_tokens = self.settings.get('max_tokens', None)
         
+        # Get LLM configuration
+        self.llm_config = self.settings.get('llm', {})
+        self.llm_provider = self.llm_config.get('provider', 'openai')
+        self.llm_model = self.llm_config.get('model', 'gpt-4')
+        self.llm_api_key = self.llm_config.get('api_key')
+        self.llm_base_url = self.llm_config.get('base_url')
+        
         self.agent = None
         self.config = Config()
         
     def _get_llm(self):
-        """Get the appropriate LLM based on configuration"""
-        if self.config.MODEL_PROVIDER == "ollama":
-            # Use the format that litellm expects for Ollama
+        """Get the appropriate LLM based on agent-specific configuration"""
+        # Use agent-specific LLM configuration if available, otherwise fall back to global config
+        provider = self.llm_provider if self.llm_provider else self.config.MODEL_PROVIDER
+        model = self.llm_model if self.llm_model else (self.config.OLLAMA_MODEL if provider == "ollama" else self.config.OPENAI_MODEL)
+        
+        if provider == "ollama":
+            # Use agent-specific base URL or fall back to global config
+            base_url = self.llm_base_url if self.llm_base_url else self.config.OLLAMA_BASE_URL
             return OllamaLLM(
-                base_url=self.config.OLLAMA_BASE_URL,
-                model=f"ollama/{self.config.OLLAMA_MODEL}",  # Add ollama/ prefix
+                base_url=base_url,
+                model=f"ollama/{model}",  # Add ollama/ prefix
                 temperature=self.temperature,
-                format="json"
+                format="json",
+                num_predict=self.max_tokens  # Ollama uses num_predict instead of max_tokens
             )
         else:
-            # Default to OpenAI
+            # Use agent-specific API key or fall back to global config
+            api_key = self.llm_api_key if self.llm_api_key else self.config.OPENAI_API_KEY
             return ChatOpenAI(
-                model=self.config.OPENAI_MODEL,
+                model=model,
                 temperature=self.temperature,
-                api_key=self.config.OPENAI_API_KEY,
+                api_key=api_key,
                 max_tokens=self.max_tokens
             )
         
