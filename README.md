@@ -457,3 +457,4 @@ This license makes ProspectAI accessible to everyone while protecting contributo
 - Built on the [CrewAI](https://github.com/joaomdmoura/crewAI) framework
 - Inspired by modern multi-agent AI systems
 - Community contributions welcome
+- [Author webpage](moisesprat.github.io)
