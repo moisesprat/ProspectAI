@@ -1,5 +1,9 @@
 # Reddit API Setup Guide
 
+> **Note (April 2026):** Reddit ended self-service app registration in November 2025.
+> ProspectAI now uses Reddit's public JSON endpoints — no credentials required.
+> The setup steps below are preserved for reference if you obtain approved API access.
+
 ## Overview
 The Market Analyst Agent uses the Reddit API to fetch live posts and analyze real-time sentiment. If Reddit credentials are not configured, the agent automatically falls back to Serper web search — but at least one of the two must be set up for the pipeline to run.
 
