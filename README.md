@@ -1,5 +1,9 @@
 # ProspectAI - Multi-Agent Investment Analysis System
 
+## 🚀 Try It Now
+
+**[Try the ProspectAI Web Demo](https://prospectai-web.pages.dev)** — Experience the agentic system in action!
+
 ## Overview
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages four specialized AI agents to provide comprehensive investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
@@ -286,4 +290,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 - Built on the [CrewAI](https://github.com/joaomdmoura/crewAI) framework
 - LLM routing via [LiteLLM](https://github.com/BerriAI/litellm)
 - Inspired by modern multi-agent AI systems
-- [Author webpage](https://moisesprat.github.io)
+- [Author webpage](https://moisesprat.github.io
