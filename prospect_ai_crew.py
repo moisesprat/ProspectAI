@@ -1,6 +1,7 @@
 import json
+import os
 from datetime import datetime
-from crewai import Crew, Task
+from crewai import Crew, LLM, Task
 from typing import Any, Callable, Dict, List, Optional
 
 from crewai_tools import SerperDevTool
@@ -9,8 +10,6 @@ from agents.technical_analyst_agent import TechnicalAnalystAgent
 from agents.fundamental_analyst_agent import FundamentalAnalystAgent
 from agents.investor_strategic_agent import InvestorStrategicAgent
 from config.config import Config
-from langchain_openai import ChatOpenAI
-from langchain_ollama import OllamaLLM
 
 from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
@@ -37,16 +36,17 @@ class ProspectAICrew:
     # LLM helper (used at the Crew level as a fallback default)
     # ─────────────────────────────────────────────────────────────────────────
     def _get_llm(self):
-        if self.config.MODEL_PROVIDER == "ollama":
-            return OllamaLLM(
-                base_url=self.config.OLLAMA_BASE_URL,
+        provider = os.getenv("MODEL_PROVIDER", "anthropic")
+        if provider == "ollama":
+            return LLM(
                 model=f"ollama/{self.config.OLLAMA_MODEL}",
+                base_url=self.config.OLLAMA_BASE_URL,
                 temperature=0.1,
             )
-        return ChatOpenAI(
-            model=self.config.OPENAI_MODEL,
+        return LLM(
+            model=f"anthropic/{self.config.ANTHROPIC_MODEL}",
+            api_key=self.config.ANTHROPIC_API_KEY,
             temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ STEP 1 — Call the Reddit tool:
 
 STEP 2 — Handle fallback if needed:
   If fallback_required is True, use 'search_internet' (SerperDevTool) with query:
-    "{sector} sector stocks reddit investors discussing 2025"
+    "{sector} sector stocks investors discussing {today}"
   Extract up to 5 stock tickers from the search snippets. Assign:
     mention_count = 0, relevance_score = 0.5
     average_sentiment: positive news = 0.65, mixed = 0.40, negative = 0.15
@@ -76,27 +76,31 @@ STEP 2 — Handle fallback if needed:
 
 STEP 3 — Write LLM rationales (200-400 words each):
   For each stock, write a 'rationale' covering:
-  a) Key themes retail investors are discussing
+  a) Key themes retail investors are discussing right now
   b) Sentiment tone (bullish / bearish / mixed) and the specific reasons
   c) Catalysts or concerns mentioned (products, earnings, regulation, competition)
   d) Red flags or risks visible in community sentiment
+  e) How current macroeconomic conditions, geopolitical events, or sector trends
+     are influencing investor sentiment at this moment in time
+  Today's date is {today}. All analysis must reflect the current market environment.
   For Reddit data: base rationale on the 'sample_posts' field from the tool output.
   For Serper fallback: base rationale on the search result snippets.
 
-STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
+STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper).
+Use the actual tickers identified in STEP 1 or STEP 2 — do NOT substitute example tickers:
 {{
   "sector": "{sector}",
   "data_source": "reddit",
   "candidate_stocks": [
     {{
-      "ticker": "NVDA",
-      "mention_count": 42,
-      "average_sentiment": 0.65,
-      "relevance_score": 0.92,
-      "rationale": "..."
+      "ticker": "<TICKER_FROM_STEP_1_OR_2>",
+      "mention_count": <integer>,
+      "average_sentiment": <float>,
+      "relevance_score": <float>,
+      "rationale": "<200-400 words>"
     }}
   ],
-  "summary": "2-3 paragraph overview of overall sector sentiment, key themes, and notable patterns (minimum 150 words)"
+  "summary": "<2-3 paragraph overview of overall sector sentiment as of {today}, key themes, current macro/geopolitical context, and notable patterns — minimum 150 words>"
 }}
 
 RULES:

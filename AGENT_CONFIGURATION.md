@@ -4,143 +4,99 @@ This guide explains how to use the YAML-based configuration system for ProspectA
 
 ## Overview
 
-The YAML configuration system allows you to:
-- **Centralize** all agent parameters in one place
-- **Easily modify** agent roles, goals, and backstories without code changes
-- **Maintain consistency** across all agents
-- **Quickly iterate** on agent personalities and behaviors
+All agent behavior is defined in `config/agents.yaml`. You can change roles, goals, backstories, temperature, and LLM settings without touching any Python code.
 
-## Configuration Files
-
-### Main Configuration: `config/agents.yaml`
-
-This file contains all agent configurations:
+## Configuration File: `config/agents.yaml`
 
 ```yaml
 agents:
   market_analyst:
     name: "Market Analyst Agent"
-    role: "Sector-focused Reddit analyst"
-    goal: "Identify trending stocks from Reddit discussions for further analysis"
+    role: "Reddit Sentiment Analyst and Stock Screener"
+    goal: "Identify the top 5 most-discussed stocks..."
     backstory: |
-      You are a sharp market researcher who listens to retail investors 
-      and sentiment on Reddit, extracting the most discussed and promising stocks in a sector.
+      You are a specialist in retail investor sentiment analysis...
     verbose: true
     allow_delegation: false
     temperature: 0.1
-
-  technical_analyst:
-    name: "Technical Analyst Agent"
-    role: "Technical analysis specialist"
-    goal: "Provide comprehensive technical analysis and trading signals for stocks"
-    backstory: |
-      You are an expert technical analyst with deep knowledge of chart patterns, 
-      indicators, and market dynamics.
-    verbose: true
-    allow_delegation: false
-    temperature: 0.1
-
-# ... more agents
+    max_tokens: 10000
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+      api_key: null       # null = use ANTHROPIC_API_KEY env var
+      base_url: null
 
 global_settings:
   default_temperature: 0.1
   default_verbose: true
   default_allow_delegation: false
-  max_iterations: 3
-  memory: true
+  max_iterations: 5
+  memory: false
 ```
 
 ## Configuration Fields
 
-### Required Fields (for each agent)
-- **`name`**: Display name of the agent
-- **`role`**: The agent's role in the system
-- **`goal`**: What the agent is trying to accomplish
-- **`backstory`**: The agent's personality and expertise
+### Required (per agent)
+| Field | Description |
+|---|---|
+| `name` | Display name of the agent |
+| `role` | The agent's role in the system |
+| `goal` | What the agent is trying to accomplish |
+| `backstory` | The agent's expertise and workflow instructions |
 
-### Optional Fields (for each agent)
-- **`verbose`**: Whether the agent should be verbose (default: true)
-- **`allow_delegation`**: Whether the agent can delegate tasks (default: false)
-- **`temperature`**: LLM temperature for creativity (default: 0.1)
+### Optional (per agent)
+| Field | Default | Description |
+|---|---|---|
+| `verbose` | `true` | Print agent reasoning |
+| `allow_delegation` | `false` | Whether the agent can delegate sub-tasks |
+| `temperature` | `0.1` | LLM temperature (0.1 = focused, 0.7 = creative) |
+| `max_tokens` | `null` | Max tokens per LLM response |
+| `llm.provider` | `"anthropic"` | `"anthropic"` or `"ollama"` |
+| `llm.model` | from `.env` | Model name; used when provider matches active provider |
+| `llm.api_key` | `null` | Override API key (null = use env var) |
+| `llm.base_url` | `null` | Override Ollama base URL |
 
 ### Global Settings
-- **`default_temperature`**: Default temperature for all agents
-- **`default_verbose`**: Default verbosity setting
-- **`default_allow_delegation`**: Default delegation setting
-- **`max_iterations`**: Maximum iterations for agent tasks
-- **`memory`**: Whether to enable agent memory
+| Field | Description |
+|---|---|
+| `default_temperature` | Fallback temperature for agents that don't specify one |
+| `max_iterations` | Maximum tool-use iterations per task |
+| `memory` | Enable CrewAI agent memory |
 
-## Usage Examples
+## Adding a New Agent
 
-### Basic Agent Creation
+**Step 1** — Add to `config/agents.yaml`:
 
-```python
-from agents.market_analyst_agent import MarketAnalystAgent
-
-# Create agent with default configuration
-agent = MarketAnalystAgent()
-
-# Access configuration values
-print(f"Agent: {agent.name}")
-print(f"Role: {agent.role}")
-print(f"Goal: {agent.goal}")
-print(f"Temperature: {agent.temperature}")
-```
-
-### Custom Configuration Path
-
-```python
-# Use a custom configuration file
-agent = MarketAnalystAgent(config_path="path/to/custom_agents.yaml")
-```
-
-### Accessing Full Configuration
-
-```python
-# Get the complete configuration
-config = agent.get_config()
-print(f"Full config: {config}")
-
-# Get specific settings
-settings = agent.settings
-print(f"Settings: {settings}")
-```
-
-### Reloading Configuration
-
-```python
-# Reload configuration from file (useful during development)
-agent.reload_config()
-```
-
-## Configuration Management
-
-### Adding New Agents
-
-1. **Add to YAML file**:
 ```yaml
 agents:
-  new_agent:
-    name: "New Agent"
-    role: "New role description"
-    goal: "New goal description"
-    backstory: "New backstory description"
+  news_analyst:
+    name: "News Analyst Agent"
+    role: "Financial News Analyst"
+    goal: "Identify market-moving news for the given sector stocks"
+    backstory: |
+      You are a financial journalist who scans news sources for
+      catalysts, earnings surprises, and regulatory developments.
     verbose: true
     allow_delegation: false
     temperature: 0.1
+    max_tokens: 8000
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+      api_key: null
+      base_url: null
 ```
 
-2. **Create agent class**:
+**Step 2** — Create `agents/news_analyst_agent.py`:
+
 ```python
 from .base_agent import BaseAgent
+from crewai import Agent
 
-class NewAgent(BaseAgent):
+class NewsAnalystAgent(BaseAgent):
     def __init__(self, config_path: str = None):
-        super().__init__(
-            agent_key="new_agent",
-            config_path=config_path
-        )
-    
+        super().__init__(agent_key="news_analyst", config_path=config_path)
+
     def create_agent(self) -> Agent:
         return Agent(
             role=self.role,
@@ -152,121 +108,56 @@ class NewAgent(BaseAgent):
         )
 ```
 
-### Modifying Existing Agents
+**Step 3** — Wire into `ProspectAICrew` in `prospect_ai_crew.py`:
 
-Simply edit the YAML file - no code changes needed:
+```python
+from agents.news_analyst_agent import NewsAnalystAgent
+
+class ProspectAICrew:
+    def __init__(self):
+        ...
+        self.news_analyst = NewsAnalystAgent()
+```
+
+Then add a `Task` for it in `create_tasks()` with appropriate `context=`.
+
+## Modifying Existing Agents
+
+Edit `config/agents.yaml` — no code changes needed:
 
 ```yaml
 agents:
   market_analyst:
-    # Change the role
-    role: "Enhanced Reddit sentiment analyst with social media expertise"
-    
-    # Update the goal
-    goal: "Identify trending stocks and analyze social media sentiment across multiple platforms"
-    
-    # Modify temperature for more creative responses
-    temperature: 0.3
+    temperature: 0.3          # More creative rationales
+    max_tokens: 15000         # Longer output
+    llm:
+      model: "claude-opus-4-6" # Upgrade to Opus for this agent only
 ```
 
-### Validation
+## Temperature Guidelines
 
-The system automatically validates configurations:
+| Value | Use Case |
+|---|---|
+| `0.1` | Analytical, data-driven tasks (recommended for all agents) |
+| `0.3` | Creative analysis and narrative writing |
+| `0.5` | Exploratory or brainstorming tasks |
+| `0.7+` | Highly creative content |
+
+## Troubleshooting
+
+| Issue | Fix |
+|---|---|
+| `KeyError: 'agent_key'` | Check that the key in `agents.yaml` matches `agent_key` in the class |
+| YAML parse error | Validate indentation — YAML is whitespace-sensitive |
+| Agent using wrong model | Check `llm.provider` matches the active `MODEL_PROVIDER` |
+| Missing required field | Ensure `name`, `role`, `goal`, and `backstory` are all present |
+
+## Validation
 
 ```python
 from config.agent_config_loader import AgentConfigLoader
 
 loader = AgentConfigLoader()
 if loader.validate_config():
-    print("✅ Configuration is valid")
-else:
-    print("❌ Configuration has errors")
+    print("Configuration is valid")
 ```
-
-## Best Practices
-
-### 1. **Descriptive Backstories**
-Write detailed, specific backstories that give agents clear personality and expertise:
-
-```yaml
-backstory: |
-  You are a senior technical analyst with 15+ years of experience in equity markets.
-  You specialize in momentum analysis using RSI, MACD, and Bollinger Bands.
-  You have a track record of identifying trend reversals and breakout opportunities.
-  Your analysis combines quantitative data with market psychology insights.
-```
-
-### 2. **Clear Goals**
-Make goals specific and actionable:
-
-```yaml
-goal: "Analyze technical indicators to identify momentum shifts and provide entry/exit recommendations with risk management guidelines"
-```
-
-### 3. **Consistent Temperature Settings**
-- **0.1**: For analytical, factual tasks
-- **0.3**: For creative analysis and insights
-- **0.5**: For brainstorming and exploration
-- **0.7+**: For highly creative content generation
-
-### 4. **Logical Delegation**
-Set `allow_delegation: true` for agents that should coordinate with others:
-
-```yaml
-investor_strategic:
-  allow_delegation: true  # Can delegate to other analysts
-  role: "Investment strategy coordinator"
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Configuration not found**:
-   - Check file path in `AgentConfigLoader`
-   - Ensure YAML syntax is correct
-
-2. **Missing required fields**:
-   - Run validation: `loader.validate_config()`
-   - Check that all agents have name, role, goal, and backstory
-
-3. **YAML syntax errors**:
-   - Use a YAML validator
-   - Check indentation and quotes
-
-### Debug Mode
-
-Enable debug output:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-loader = AgentConfigLoader()
-print(f"Config path: {loader.config_path}")
-print(f"Available agents: {loader.get_all_agent_keys()}")
-```
-
-## Migration from Hardcoded Configuration
-
-If you're migrating from hardcoded agent configurations:
-
-1. **Extract** current values to YAML
-2. **Update** agent classes to use `BaseAgent`
-3. **Test** with the new system
-4. **Remove** old hardcoded values
-
-## Benefits
-
-- **Maintainability**: Change agent behavior without code changes
-- **Consistency**: All agents follow the same configuration pattern
-- **Flexibility**: Easy to experiment with different agent personalities
-- **Scalability**: Add new agents quickly with consistent structure
-- **Version Control**: Track configuration changes separately from code
-
-## Next Steps
-
-- Customize agent configurations for your specific use case
-- Experiment with different temperature and delegation settings
-- Add new agents as needed
-- Consider environment-specific configurations (dev, staging, prod)

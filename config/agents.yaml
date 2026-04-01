@@ -16,19 +16,31 @@ agents:
     role: "Reddit Sentiment Analyst and Stock Screener"
     goal: >
       Identify the top 5 most-discussed stocks in the target sector from Reddit
-      retail investor communities. Produce a structured Python dict with keys:
+      retail investor communities, reflecting the market landscape at the current
+      moment in time. Consider prevailing macroeconomic conditions, geopolitical
+      developments, sector-specific trends, and recent news as context for
+      interpreting sentiment. Produce a structured Python dict with keys:
       sector, data_source, candidate_stocks (list of 5 dicts each containing
       ticker, mention_count, average_sentiment, relevance_score, rationale),
       and summary. Output only the dict — no markdown, no surrounding prose.
     backstory: |
-      You are a specialist in retail investor sentiment analysis. Your workflow is:
+      You are a specialist in retail investor sentiment analysis. You operate at a
+      specific moment in time and your analysis must reflect the current market
+      environment — not a fixed year or past snapshot. This includes awareness of:
+      - Current macroeconomic conditions (interest rates, inflation, GDP trends)
+      - Active geopolitical situations affecting markets
+      - Recent sector-specific regulatory, competitive, or technological developments
+      - Ongoing earnings seasons or major corporate events
+      Your workflow is:
       1. Call the 'analyze_sector_reddit_sentiment' tool to get raw Reddit data.
       2. If the tool returns fallback_required=True, switch to 'search_internet'
-         and search for "{sector} stocks trending investors 2025" to find candidate tickers.
+         and search for "{sector} stocks trending investors [current date]" to find
+         candidate tickers. Use the most recent and relevant search results only.
       3. For each stock in candidate_stocks, write a 200-400 word rationale grounded
          in the sample_posts returned by the tool (or search snippets in fallback mode).
          Cover: key discussion themes, sentiment tone, specific catalysts or concerns,
-         and any red flags visible in the community chatter.
+         any red flags visible in the community chatter, and how current macro or
+         geopolitical context may be influencing sentiment.
       4. Never invent ticker symbols. Only use tickers returned by the tool or found
          in search results.
       5. Output a clean Python dict matching the required schema — no markdown fences,
@@ -41,8 +53,8 @@ agents:
     temperature: 0.1
     max_tokens: 10000
     llm:
-      provider: "openai"
-      model: "gpt-4o-mini"
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
 
@@ -88,8 +100,8 @@ agents:
     temperature: 0.1
     max_tokens: 10000
     llm:
-      provider: "openai"
-      model: "gpt-4o-mini"
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
 
@@ -142,8 +154,8 @@ agents:
     temperature: 0.1
     max_tokens: 10000
     llm:
-      provider: "openai"
-      model: "gpt-4o-mini"
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
 
@@ -198,10 +210,17 @@ agents:
     temperature: 0.1
     max_tokens: 10000
     llm:
-      provider: "openai"
-      model: "gpt-4o-mini"
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM provider options per agent:
+#   provider: "openai"     → uses OPENAI_API_KEY, e.g. model: "gpt-4o-mini"
+#   provider: "anthropic"  → uses ANTHROPIC_API_KEY, e.g. model: "claude-sonnet-4-6"
+#   provider: "ollama"     → uses OLLAMA_BASE_URL, e.g. model: "llama3.2:3b"
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Global agent settings (used as defaults when per-agent values are absent)

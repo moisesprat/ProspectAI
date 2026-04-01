@@ -1,9 +1,5 @@
-crewai>=0.30.0
-crewai-tools>=0.1.0
-langchain>=0.2.11
-langchain-community>=0.2.11
-langchain-openai>=0.1.16
-langchain_ollama>=0.3.7
+crewai>=1.0.0
+crewai-tools>=1.0.0
 python-dotenv==1.0.0
 pandas==2.1.4
 numpy>=1.26.0

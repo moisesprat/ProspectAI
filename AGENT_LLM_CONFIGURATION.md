@@ -1,116 +1,132 @@
 # Agent-Specific LLM Configuration
 
-This document explains how to configure different LLMs for each agent in ProspectAI.
+This document explains how to configure LLMs for each agent in ProspectAI.
 
 ## Overview
 
-Each agent can now have its own LLM configuration specified in the `config/agents.yaml` file. This allows you to:
-- Use different models for different agents
-- Mix OpenAI and Ollama models
-- Set agent-specific API keys and base URLs
-- Override global environment settings per agent
+ProspectAI supports two LLM providers:
 
-## Configuration Format
+| Provider | How to activate | Requires |
+|---|---|---|
+| **Anthropic** (default) | Run normally / `--anthropic` flag | `ANTHROPIC_API_KEY` in `.env` |
+| **Ollama** (local) | `--ollama` flag | Running Ollama service + `OLLAMA_MODEL` in `.env` |
 
-Each agent can include an `llm` section in their configuration:
+All LLM calls go through `crewai.LLM`, which is backed by LiteLLM. No direct langchain dependencies.
 
-```yaml
-agent_name:
-  # ... other agent settings ...
-  llm:
-    provider: "openai"  # or "ollama"
-    model: "gpt-4"      # model name
-    api_key: null       # null = use env variable
-    base_url: null      # for ollama, null = use env variable
+## Global Provider Selection
+
+The active provider is set by the CLI flag, which writes `MODEL_PROVIDER` to the environment:
+
+```bash
+python main.py                        # Anthropic (default)
+python main.py --model claude-opus-4-6 # Anthropic with model override
+python main.py --ollama               # Ollama (uses OLLAMA_MODEL from .env)
+python main.py --ollama --model llama3.2:8b  # Ollama with model override
 ```
 
-## Configuration Options
+## Per-Agent Model Configuration (`config/agents.yaml`)
 
-### Provider Options
-- `"openai"` - Use OpenAI models
-- `"ollama"` - Use Ollama models
+Each agent has an `llm:` block. The `model` field is used when the active provider matches `provider`:
 
-### Model Examples
-- **OpenAI**: `"gpt-4"`, `"gpt-3.5-turbo"`, `"gpt-4-turbo"`
-- **Ollama**: `"llama3.2:3b"`, `"llama3.2:7b"`, `"mistral:7b"`
-
-### API Key and Base URL
-- Set to `null` to use environment variables
-- Set to specific values to override environment variables
-
-## Example Configurations
-
-### Mixed Provider Setup
 ```yaml
 agents:
   market_analyst:
-    # ... other settings ...
     llm:
-      provider: "openai"
-      model: "gpt-4"
-      api_key: null
+      provider: "anthropic"
+      model: "claude-opus-4-6"   # Used when running with Anthropic
+      api_key: null              # null = read from ANTHROPIC_API_KEY env var
       base_url: null
 
   technical_analyst:
-    # ... other settings ...
     llm:
-      provider: "openai"
-      model: "gpt-3.5-turbo"  # Cheaper model for technical analysis
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
-
-  investor_strategic:
-    # ... other settings ...
-    llm:
-      provider: "ollama"  # Local model for final recommendations
-      model: "llama3.2:7b"
-      api_key: null
-      base_url: "http://localhost:11434"
 ```
 
-### Custom API Keys
+When `--ollama` is passed, all agents use `OLLAMA_MODEL` from `.env` regardless of the yaml `model` field (since Ollama model names differ from Anthropic ones).
+
+## Provider Precedence
+
+```
+CLI flag (MODEL_PROVIDER env var)  ←  always wins
+  └── per-agent yaml model name    ←  used only when provider matches
+        └── .env ANTHROPIC_MODEL / OLLAMA_MODEL  ←  fallback
+```
+
+## Anthropic Model Options
+
+| Model ID | Notes |
+|---|---|
+| `claude-sonnet-4-6` | Default — best balance of quality and speed |
+| `claude-opus-4-6` | Highest quality, best for complex reasoning |
+| `claude-haiku-4-5-20251001` | Fastest and cheapest |
+
+Example — use Opus only for the most reasoning-heavy agent:
+
 ```yaml
 agents:
-  market_analyst:
-    # ... other settings ...
+  investor_strategic:
     llm:
-      provider: "openai"
-      model: "gpt-4"
-      api_key: "sk-your-custom-key"  # Override env variable
-      base_url: null
+      provider: "anthropic"
+      model: "claude-opus-4-6"   # Final synthesis agent gets the best model
+
+  market_analyst:
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6" # Cheaper model for data extraction tasks
+
+  technical_analyst:
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+
+  fundamental_analyst:
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
 ```
 
-### Fallback Behavior
-If an agent doesn't specify LLM configuration, it will fall back to:
-1. Global environment variables (`MODEL_PROVIDER`, `OPENAI_MODEL`, etc.)
-2. Default values from the Config class
+## Ollama Model Options
 
-## Environment Variables (Fallback)
+| Model | Notes |
+|---|---|
+| `qwen3.5:9b` | Good reasoning, recommended |
+| `llama3.2:8b` | General purpose |
+| `llama3.2:3b` | Lightweight, faster |
+| `mistral:7b` | Good for analytical tasks |
+
+Pull a model before use:
 ```bash
-# Global fallback settings
-MODEL_PROVIDER=openai
-OPENAI_API_KEY=your-key
-OPENAI_MODEL=gpt-4
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2:3b
+ollama pull qwen3.5:9b
 ```
 
-## Benefits
+## Environment Variables Reference
 
-1. **Cost Optimization**: Use cheaper models for simpler tasks
-2. **Performance Tuning**: Use faster models for real-time analysis
-3. **Privacy**: Use local Ollama models for sensitive data
-4. **Flexibility**: Mix different providers based on agent needs
-5. **Testing**: Easily switch models for testing different configurations
+| Variable | Provider | Required | Description |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic | Yes | API key |
+| `ANTHROPIC_MODEL` | Anthropic | Yes | Default model for all agents |
+| `OLLAMA_BASE_URL` | Ollama | With `--ollama` | Server URL (e.g. `http://localhost:11434`) |
+| `OLLAMA_MODEL` | Ollama | With `--ollama` | Model name (e.g. `qwen3.5:9b`) |
 
-## Usage
+## How `_get_llm()` Works
 
-The configuration is automatically loaded when creating agents. No code changes needed - just update the YAML file and restart your application.
+`BaseAgent._get_llm()` in `agents/base_agent.py`:
+
+1. Reads `MODEL_PROVIDER` from the environment (set by CLI flag, default `anthropic`)
+2. If `ollama`: builds `crewai.LLM(model="ollama/<OLLAMA_MODEL>", base_url=...)`
+3. If `anthropic`: uses the yaml `model` field if the yaml `provider` also says `anthropic`, otherwise falls back to `ANTHROPIC_MODEL` from `.env`
 
 ```python
-from agents.market_analyst_agent import MarketAnalystAgent
+provider = os.getenv("MODEL_PROVIDER", "anthropic")
 
-# Agent will automatically use its configured LLM
-agent = MarketAnalystAgent()
-llm = agent._get_llm()  # Returns the configured LLM instance
+if provider == "ollama":
+    return LLM(model=f"ollama/{self.config.OLLAMA_MODEL}", ...)
+
+# Anthropic
+model = self.llm_model if self.llm_provider == "anthropic" and self.llm_model \
+        else self.config.ANTHROPIC_MODEL
+return LLM(model=f"anthropic/{model}", ...)
 ```

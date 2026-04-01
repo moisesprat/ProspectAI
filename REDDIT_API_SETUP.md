@@ -1,7 +1,7 @@
 # Reddit API Setup Guide
 
 ## Overview
-The Market Analyst Agent now uses the real Reddit API to fetch actual posts and analyze real sentiment instead of simulated data.
+The Market Analyst Agent uses the Reddit API to fetch live posts and analyze real-time sentiment. If Reddit credentials are not configured, the agent automatically falls back to Serper web search — but at least one of the two must be set up for the pipeline to run.
 
 ## Step 1: Create a Reddit App
 

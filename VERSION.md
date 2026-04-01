@@ -1,59 +1,55 @@
 # ProspectAI Version History
 
-## v1.0.0 - First Official Release (August 2025)
+## v1.0.0 - First Official Release
 
 ### 🎉 Major Features
-- **Multi-Agent Investment Analysis System** - Four specialized AI agents working in sequence
-- **Real Reddit Integration** - Live sentiment analysis from Reddit communities
-- **Technical Analysis Engine** - 13+ technical indicators and momentum analysis
-- **Fundamental Analysis** - Financial statement analysis and valuation metrics
-- **Investment Strategy Agent** - Portfolio recommendations and risk assessment
-- **Professional PDF Generation** - Decision support tools and portfolio visualization
+- **Multi-Agent Investment Analysis System** — Four specialized AI agents working in sequence
+- **Real Reddit Integration** — Live sentiment analysis from Reddit communities
+- **Technical Analysis Engine** — 13+ technical indicators and momentum analysis
+- **Fundamental Analysis** — Financial statement analysis and valuation metrics
+- **Investment Strategy Agent** — Portfolio recommendations and risk assessment
 
 ### 🚀 Technical Capabilities
-- **Dual Model Support** - OpenAI and Ollama local models
-- **CrewAI Framework** - Professional multi-agent orchestration
-- **Sector Analysis** - Technology, Healthcare, Finance, Energy, Consumer
-- **Command-Line Interface** - Easy-to-use CLI with flexible configuration
-- **Environment-Based Config** - Secure configuration management
-- **Comprehensive Testing** - Full test suite for all components
+- **Anthropic Claude Support** — Powered by Claude Sonnet / Opus / Haiku via LiteLLM
+- **Ollama Support** — Fully local inference with any Ollama-compatible model
+- **CrewAI Framework** — Professional multi-agent orchestration
+- **Sector Analysis** — Technology, Healthcare, Finance, Energy, Consumer
+- **Command-Line Interface** — Easy-to-use CLI with provider/model flags
+- **Startup Validation** — `.env` file checked at launch; missing keys reported clearly
+- **Time-Aware Market Analysis** — Market Analyst reflects conditions at execution time, not a fixed date
 
 ### 📊 Agent Capabilities
-- **Market Analyst Agent**: Reddit sentiment analysis, trending stock identification
-- **Technical Analyst Agent**: Technical indicators, momentum scoring, risk assessment
-- **Fundamental Analyst Agent**: Financial ratios, growth projections, competitive analysis
-- **Investor Strategic Agent**: Portfolio strategy, action planning, monitoring schedules
+- **Market Analyst Agent**: Reddit sentiment analysis, trending stock identification, macro/geopolitical context
+- **Technical Analyst Agent**: 13+ technical indicators, momentum scoring (1–10), risk assessment
+- **Fundamental Analyst Agent**: Financial ratios, valuation grading, growth outlook
+- **Investor Strategic Agent**: Composite scoring, portfolio allocation (sums to 100%), STRONG_BUY → AVOID recommendations
 
 ### 🔧 Development Principles
-- **Modular Architecture** - Each agent built and tested in isolation
-- **Incremental Development** - Systematic building of orchestration layer
-- **Engineering Standards** - Production-ready quality with proper testing
-- **Balanced AI Usage** - Traditional code for calculations, AI for analysis
+- **Modular Architecture** — Each agent built and tested in isolation
+- **No Hardcoded Defaults** — All configuration comes from `.env`; no silent fallbacks
+- **LiteLLM Routing** — Single `crewai.LLM` abstraction; no direct langchain dependencies
+- **Engineering Standards** — Production-ready quality with proper testing
 
 ---
 
 ## Roadmap - Future Versions
 
-### v1.1 - Enhanced Market Analysis (Q4 2025)
-- **Improved market analysis capabilities** to obtain data from financial news APIs more reliable for investors
-- Integration with Bloomberg, Reuters, and other financial news sources
-- Real-time market sentiment analysis from multiple sources
+### v1.1 - Enhanced Market Analysis
+- Integration with financial news APIs (Bloomberg, Reuters)
+- Real-time market sentiment from multiple sources
 - Enhanced sector rotation analysis
 
-### v1.2 - Agent Improvements (Q1 2026)
-- **Improved version of Fundamental Analyst and Investor Strategist Agents**
+### v1.2 - Agent Improvements
 - Enhanced financial modeling capabilities
 - More sophisticated valuation algorithms
 - Advanced portfolio optimization algorithms
 
-### v1.3 - Investment Strategy PDFs (Q2 2026)
-- **Ability to create investment strategy in PDF**
-- Professional report templates
+### v1.3 - Investment Strategy PDFs
+- Professional PDF report generation
 - Interactive decision support tools
 - Portfolio visualization and charts
 
-### v1.4 - Advanced Risk Management (Q3 2026)
-- **Inclusion of more complex risk-rewards tools to improve the recommendations**
+### v1.4 - Advanced Risk Management
 - Monte Carlo simulations for portfolio scenarios
 - Advanced risk metrics (VaR, CVaR, Sharpe ratios)
 - Dynamic risk adjustment based on market conditions
@@ -61,27 +57,9 @@
 
 ---
 
-## Release Notes
+## Dependencies
 
-### v1.0.0 Release Notes
-- **Initial Release**: Complete multi-agent investment analysis system
-- **PDF Generation**: Professional reports with decision support tools
-- **Reddit Integration**: Live sentiment analysis from multiple communities
-- **Technical Analysis**: Comprehensive technical indicators and momentum analysis
-- **Portfolio Strategy**: Investment recommendations with risk assessment
-- **Documentation**: Complete setup guides and API documentation
-
-### Breaking Changes
-- None (Initial Release)
-
-### Known Issues
-- PDF generation requires ReportLab 4.4.3+
-- Reddit API rate limits may affect high-volume usage
-- Ollama models require local installation and configuration
-
-### Dependencies
 - Python 3.9+
-- CrewAI framework
-- ReportLab 4.4.3+
-- Reddit API credentials
-- Ollama (optional, for local models)
+- CrewAI 1.x (LiteLLM-based LLM routing)
+- Anthropic API key (or Ollama for local inference)
+- Reddit API credentials or Serper API key (at least one required)
