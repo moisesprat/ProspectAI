@@ -275,8 +275,8 @@ class TechnicalAnalysisTool(BaseTool):
     def _calculate_volume_indicators(self, hist: pd.DataFrame, ta) -> Dict[str, Any]:
         """Calculate volume indicators"""
         try:
-            # Volume SMA
-            volume_sma = ta.volume.VolumeSMAIndicator(hist['Close'], hist['Volume']).volume_sma()
+            # Volume SMA (rolling 20-period mean)
+            volume_sma = hist['Volume'].rolling(window=20).mean()
             
             # On Balance Volume
             obv = ta.volume.OnBalanceVolumeIndicator(hist['Close'], hist['Volume']).on_balance_volume()

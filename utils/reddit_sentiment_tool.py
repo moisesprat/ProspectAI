@@ -6,7 +6,7 @@ Returns the top 5 most-discussed stocks ranked by mention frequency and sentimen
 
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 from crewai.tools import BaseTool
 
 
@@ -40,7 +40,7 @@ class RedditSentimentTool(BaseTool):
 
     # Sector → candidate ticker universe.
     # Small, curated lists reduce false-positive ticker matches.
-    SECTOR_TICKERS: dict = {
+    SECTOR_TICKERS: ClassVar[dict] = {
         "Technology": [
             "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN",
             "TSLA", "AMD", "INTC", "CRM", "ORCL", "ADBE", "QCOM", "AVGO",

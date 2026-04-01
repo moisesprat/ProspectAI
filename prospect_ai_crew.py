@@ -429,7 +429,6 @@ RULES:
             ],
             tasks=tasks,
             verbose=True,
-            llm=self._get_llm(),
         )
 
         crew_result = self.crew.kickoff()

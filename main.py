@@ -112,6 +112,13 @@ def main():
 
     load_and_validate_env()
 
+    # Set the MODEL env var so crewai's internal _llm_via_environment_or_fallback()
+    # uses the active provider instead of its hardcoded default (gpt-4.1-mini / OpenAI).
+    if args.ollama:
+        os.environ["MODEL"] = f"ollama/{os.getenv('OLLAMA_MODEL')}"
+    else:
+        os.environ["MODEL"] = f"anthropic/{os.getenv('ANTHROPIC_MODEL')}"
+
     from prospect_ai_crew import ProspectAICrew
 
     if args.ollama:
