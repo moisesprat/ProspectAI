@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "prospectai"
+version = "1.0.0"
+description = "Multi-Agent Investment Analysis System powered by CrewAI and Claude"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "moisesprat" }]
+requires-python = ">=3.9"
+keywords = ["investment", "ai", "crewai", "stock-analysis", "multi-agent"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "crewai>=1.0.0",
+    "crewai-tools>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pandas>=2.1.4",
+    "numpy>=1.26.0",
+    "requests>=2.31.0",
+    "yfinance>=0.2.28",
+    "PyYAML>=6.0",
+    "ta>=0.10.2",
+    "praw>=7.7.0",
+    "anthropic>=0.40.0",
+]
+
+[project.scripts]
+prospectai = "main:main"
+
+# Root-level modules (main.py, prospect_ai_crew.py)
+[tool.setuptools]
+py-modules = ["main", "prospect_ai_crew"]
+
+# Subpackages — explicitly scoped to avoid picking up .venv or test noise
+[tool.setuptools.packages.find]
+include = ["agents*", "config*", "utils*", "data*"]
+
+# Include the YAML agent configs bundled inside the config package
+[tool.setuptools.package-data]
+config = ["*.yaml"]

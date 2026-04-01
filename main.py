@@ -12,16 +12,10 @@ from dotenv import load_dotenv
 
 
 def load_and_validate_env():
-    """Load .env and validate all required keys are present."""
+    """Load .env if present (local dev), otherwise rely on environment variables (Modal, CI)."""
     env_path = Path(".env")
-    if not env_path.exists():
-        print("Error: .env file not found.")
-        print("Copy env.example to .env and fill in your values:")
-        print()
-        print("  cp env.example .env")
-        sys.exit(1)
-
-    load_dotenv(env_path)
+    if env_path.exists():
+        load_dotenv(env_path)
 
     missing = []
 
@@ -45,12 +39,12 @@ def load_and_validate_env():
             missing.append("OLLAMA_MODEL")
 
     if missing:
-        print("Error: the following required keys are missing from your .env file:")
+        print("Error: the following required environment variables are not set:")
         print()
         for key in missing:
             print(f"  - {key}")
         print()
-        print("See env.example for reference.")
+        print("Set them in .env (local) or via Modal secrets (Modal deployment).")
         sys.exit(1)
 
 

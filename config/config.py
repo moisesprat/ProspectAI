@@ -1,7 +1,10 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+_env_path = Path(".env")
+if _env_path.exists():
+    load_dotenv(_env_path)
 
 class Config:
     """Configuration class for ProspectAI"""
