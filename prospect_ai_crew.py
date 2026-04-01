@@ -20,9 +20,10 @@ from utils.fundamental_data_tool import FundamentalDataTool
 class ProspectAICrew:
     """Main orchestrator for ProspectAI multi-agent investment analysis."""
 
-    def __init__(self, task_callback=None):
+    def __init__(self, task_callback=None, step_callback=None):
         self.config = Config()
         self.task_callback = task_callback
+        self.step_callback = step_callback
 
 
         # Agents
@@ -135,7 +136,7 @@ class ProspectAICrew:
         """
         tasks = self.create_tasks(market_criteria)
 
-        # Build a unified task_callback that fires both the instance-level hook
+        # Build unified callbacks that fire both the instance-level hooks
         # (used in tests / programmatic callers) and the per-run progress_callback
         # (used by the Modal streaming endpoint).
         _task_index = {"n": 0}
@@ -154,6 +155,10 @@ class ProspectAICrew:
                 })
                 _task_index["n"] += 1
 
+        def _on_step(step_output):
+            if self.step_callback:
+                self.step_callback(step_output)
+
         self.crew = Crew(
             agents=[
                 self.market_analyst.get_agent(),
@@ -163,6 +168,7 @@ class ProspectAICrew:
             ],
             tasks=tasks,
             task_callback=_on_task_done,
+            step_callback=_on_step,
             verbose=True,
         )
 
