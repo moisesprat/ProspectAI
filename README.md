@@ -308,4 +308,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 - Built on the [CrewAI](https://github.com/joaomdmoura/crewAI) framework
 - LLM routing via [LiteLLM](https://github.com/BerriAI/litellm)
 - Inspired by modern multi-agent AI systems
-- [Author webpage](https://moisesprat.github.io
+- [Author webpage](https://moisesprat.dev
