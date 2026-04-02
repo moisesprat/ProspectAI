@@ -56,17 +56,57 @@ def load_and_validate_env():
         sys.exit(1)
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("prospectai")
+    except Exception:
+        pass
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return "unknown"
+    try:
+        pyproject = Path(__file__).parent / "pyproject.toml"
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        return data["project"]["version"]
+    except Exception:
+        return "unknown"
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="ProspectAI - Multi-Agent Investment Analysis System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Commands / Options:
+  --sector SECTOR    Sector to analyze. Choices: Technology (default), Healthcare,
+                     Finance, Energy, Consumer
+  --model MODEL      Override the global MODEL env var for this run (raw model id,
+                     e.g. claude-opus-4-6 or qwen3.5:9b)
+  --ollama           Switch provider to Ollama (local inference)
+  --url URL          Ollama base URL; overrides OLLAMA_BASE_URL in .env
+  --version          Show version and exit
+  --help / -h        Show this help message and exit
+
 Examples:
-  python main.py                           # Anthropic (default)
-  python main.py --model claude-opus-4-6  # Override global MODEL
-  python main.py --ollama                  # Use local Ollama model
-  python main.py --sector Healthcare       # Analyze Healthcare sector
+  python main.py                                   # Anthropic, Technology sector (default)
+  python main.py --sector Healthcare               # Analyze Healthcare sector
+  python main.py --model claude-opus-4-6          # Override global MODEL
+  python main.py --ollama --model qwen3.5:9b      # Use local Ollama model
+  python main.py --ollama --url http://localhost:11434 --sector Finance
+  python main.py --version                         # Print version
         """
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"ProspectAI {_get_version()}"
     )
 
     parser.add_argument(
