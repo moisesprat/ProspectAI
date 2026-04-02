@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages four specialized AI agents to provide comprehensive investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.0.1**
+**Current release: v1.1.4**
 
 ### ⚠️ Important Disclaimer
 
