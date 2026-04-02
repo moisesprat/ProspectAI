@@ -80,6 +80,7 @@ def _get_version() -> str:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
+        prog="prospectai",
         description="ProspectAI - Multi-Agent Investment Analysis System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -94,12 +95,12 @@ Commands / Options:
   --help / -h        Show this help message and exit
 
 Examples:
-  python main.py                                   # Anthropic, Technology sector (default)
-  python main.py --sector Healthcare               # Analyze Healthcare sector
-  python main.py --model claude-opus-4-6          # Override global MODEL
-  python main.py --ollama --model qwen3.5:9b      # Use local Ollama model
-  python main.py --ollama --url http://localhost:11434 --sector Finance
-  python main.py --version                         # Print version
+  prospectai                                   # Anthropic, Technology sector (default)
+  prospectai --sector Healthcare               # Analyze Healthcare sector
+  prospectai --model claude-opus-4-6          # Override global MODEL
+  prospectai --ollama --model qwen3.5:9b      # Use local Ollama model
+  prospectai --ollama --url http://localhost:11434 --sector Finance
+  prospectai --version                         # Print version
         """
     )
 
