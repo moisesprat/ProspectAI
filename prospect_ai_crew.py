@@ -41,14 +41,15 @@ class ProspectAICrew:
     # ─────────────────────────────────────────────────────────────────────────
     def _get_llm(self):
         provider = os.getenv("MODEL_PROVIDER", "anthropic")
+        mid = self.config.effective_default_model_id
         if provider == "ollama":
             return LLM(
-                model=f"ollama/{self.config.OLLAMA_MODEL}",
+                model=f"ollama/{mid}",
                 base_url=self.config.OLLAMA_BASE_URL,
                 temperature=0.1,
             )
         return LLM(
-            model=f"anthropic/{self.config.ANTHROPIC_MODEL}",
+            model=f"anthropic/{mid}",
             api_key=self.config.ANTHROPIC_API_KEY,
             temperature=0.1,
         )

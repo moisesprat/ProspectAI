@@ -11,6 +11,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _global_model_configured() -> bool:
+    """MODEL preferred; legacy provider-specific model vars are fallback."""
+    if os.getenv("MODEL", "").strip():
+        return True
+    if os.getenv("MODEL_PROVIDER", "anthropic") == "ollama":
+        return bool(os.getenv("OLLAMA_MODEL", "").strip())
+    return bool(os.getenv("ANTHROPIC_MODEL", "").strip())
+
+
 def load_and_validate_env():
     """Load .env if present (local dev), otherwise rely on environment variables (Modal, CI)."""
     env_path = Path(".env")
@@ -19,11 +28,9 @@ def load_and_validate_env():
 
     missing = []
 
-    # Anthropic is always required
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    provider = os.getenv("MODEL_PROVIDER", "anthropic")
+    if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         missing.append("ANTHROPIC_API_KEY")
-    if not os.getenv("ANTHROPIC_MODEL"):
-        missing.append("ANTHROPIC_MODEL")
 
     # Market data — at least one source required
     has_reddit = os.getenv("REDDIT_CLIENT_ID") and os.getenv("REDDIT_CLIENT_SECRET")
@@ -31,12 +38,13 @@ def load_and_validate_env():
     if not has_reddit and not has_serper:
         missing.append("REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET  (or SERPER_API_KEY)")
 
-    # Ollama keys required only when --ollama flag is active
-    if os.getenv("MODEL_PROVIDER") == "ollama":
+    # Provider-specific required vars
+    if provider == "ollama":
         if not os.getenv("OLLAMA_BASE_URL"):
             missing.append("OLLAMA_BASE_URL")
-        if not os.getenv("OLLAMA_MODEL"):
-            missing.append("OLLAMA_MODEL")
+
+    if not _global_model_configured():
+        missing.append("MODEL (or legacy ANTHROPIC_MODEL / OLLAMA_MODEL)")
 
     if missing:
         print("Error: the following required environment variables are not set:")
@@ -55,7 +63,7 @@ def parse_arguments():
         epilog="""
 Examples:
   python main.py                           # Anthropic (default)
-  python main.py --model claude-opus-4-6  # Override Claude model
+  python main.py --model claude-opus-4-6  # Override global MODEL
   python main.py --ollama                  # Use local Ollama model
   python main.py --sector Healthcare       # Analyze Healthcare sector
         """
@@ -71,7 +79,7 @@ Examples:
         "--model",
         type=str,
         default=None,
-        help="Override the model from .env (Anthropic or Ollama)"
+        help="Override global MODEL for this run (raw model id)"
     )
 
     parser.add_argument(
@@ -93,32 +101,45 @@ Examples:
 
 
 def main():
+    env_path = Path(".env")
+    if env_path.exists():
+        load_dotenv(env_path)
+
     args = parse_arguments()
 
     # Apply CLI overrides to env before validation
     if args.ollama:
         os.environ["MODEL_PROVIDER"] = "ollama"
+    elif not os.getenv("MODEL_PROVIDER"):
+        os.environ["MODEL_PROVIDER"] = "anthropic"
     if args.model:
-        key = "OLLAMA_MODEL" if args.ollama else "ANTHROPIC_MODEL"
-        os.environ[key] = args.model
+        os.environ["MODEL"] = args.model.strip()
     if args.url:
         os.environ["OLLAMA_BASE_URL"] = args.url
 
     load_and_validate_env()
 
-    # Set the MODEL env var so crewai's internal _llm_via_environment_or_fallback()
-    # uses the active provider instead of its hardcoded default (gpt-4.1-mini / OpenAI).
-    if args.ollama:
-        os.environ["MODEL"] = f"ollama/{os.getenv('OLLAMA_MODEL')}"
-    else:
-        os.environ["MODEL"] = f"anthropic/{os.getenv('ANTHROPIC_MODEL')}"
+    # Set MODEL for CrewAI env fallback as provider/model_id.
+    raw_model = (
+        os.getenv("MODEL")
+        or (
+            os.getenv("OLLAMA_MODEL")
+            if os.getenv("MODEL_PROVIDER", "anthropic") == "ollama"
+            else os.getenv("ANTHROPIC_MODEL")
+        )
+        or ""
+    ).strip()
+    if "/" in raw_model:
+        raw_model = raw_model.split("/", 1)[1].strip()
+    provider = os.getenv("MODEL_PROVIDER", "anthropic")
+    os.environ["MODEL"] = f"{provider}/{raw_model}"
 
     from prospect_ai_crew import ProspectAICrew
 
-    if args.ollama:
-        print(f"Using Ollama model: {os.getenv('OLLAMA_MODEL')} @ {os.getenv('OLLAMA_BASE_URL')}")
+    if provider == "ollama":
+        print(f"MODEL_PROVIDER=ollama | global model id: {raw_model} @ {os.getenv('OLLAMA_BASE_URL')}")
     else:
-        print(f"Using Anthropic model: {os.getenv('ANTHROPIC_MODEL')}")
+        print(f"MODEL_PROVIDER=anthropic | global model id: {raw_model}")
 
     print(f"Analyzing sector: {args.sector}")
     print("Initializing ProspectAI...")

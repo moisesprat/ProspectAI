@@ -34,22 +34,23 @@ class BaseAgent(ABC):
         self.config = Config()
 
     def _get_llm(self):
-        """Get the appropriate LLM. MODEL_PROVIDER env var (set by CLI) always wins."""
+        """Resolve LLM from MODEL_PROVIDER + AGENT_*_MODEL/MODEL (yaml llm.model is fallback)."""
         provider = os.getenv("MODEL_PROVIDER", "anthropic")
 
+        resolved = self.config.model_id_for_agent(self.agent_key)
+        model = resolved or self.llm_model
         if provider == "ollama":
             return LLM(
-                model=f"ollama/{self.config.OLLAMA_MODEL}",
+                model=f"ollama/{model}",
                 base_url=self.llm_base_url or self.config.OLLAMA_BASE_URL,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
 
-        # Anthropic (default)
-        model = self.llm_model if self.llm_provider == "anthropic" and self.llm_model else self.config.ANTHROPIC_MODEL
+        api_key = self.llm_api_key if self.llm_api_key else self.config.ANTHROPIC_API_KEY
         return LLM(
             model=f"anthropic/{model}",
-            api_key=self.llm_api_key or self.config.ANTHROPIC_API_KEY,
+            api_key=api_key,
             temperature=self.temperature,
             max_tokens=self.max_tokens or 10000,
         )

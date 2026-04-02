@@ -1,5 +1,8 @@
 # ProspectAI Agent Configuration
-# Primary place to change agent behavior (role, goal, backstory, temperature, model, max_tokens).
+# Primary place to change agent behavior (role, goal, backstory, temperature, max_tokens).
+# Optional per-agent LLM model via env (overrides MODEL for that agent):
+#   AGENT_MARKET_ANALYST_MODEL, AGENT_TECHNICAL_ANALYST_MODEL,
+#   AGENT_FUNDAMENTAL_ANALYST_MODEL, AGENT_INVESTOR_STRATEGIC_MODEL
 # Each agent's goal and backstory are tightly coupled to the pipeline's data contract:
 # they tell the LLM exactly what inputs to expect and what output schema to produce.
 
