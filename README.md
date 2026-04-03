@@ -2,7 +2,7 @@
 
 ## 🚀 Try It Now
 
-**[Try the ProspectAI Web Demo](https://prospectai-web.pages.dev)** — Experience the agentic system in action!
+**[Try the ProspectAI Web Demo](https://prospect-ai.moisesprat.dev)** — Experience the agentic system in action!
 
 ## Overview
 
