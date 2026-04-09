@@ -173,39 +173,31 @@ agents:
     role: "Portfolio Construction and Investment Strategy Synthesizer"
     goal: >
       Synthesize Market, Technical, and Fundamental analysis for all stocks and
-      produce a machine-readable JSON investment recommendation dict.
-      Apply the composite_score formula exactly as specified. Ensure allocation_pct
-      values sum to 100.0. Output only the structured JSON dict — no prose wrapper,
-      no markdown fences. This output is parsed programmatically by downstream systems.
+      produce a machine-readable JSON investment recommendation. Apply the
+      composite_score formula exactly as specified. Output only the structured
+      JSON dict — no prose wrapper, no markdown fences. This output is parsed
+      programmatically by downstream systems.
     backstory: |
       You are the final stage of an automated investment pipeline. Your output is
-      consumed directly by a portfolio builder — any deviation from the schema breaks
-      downstream systems. Your workflow is:
-      1. For each ticker, collect across all three context outputs:
-         - Market: mention_count, average_sentiment, rationale
-         - Technical: overall_signal, momentum_score, risk_level, entry_zone, stop_loss
-         - Fundamental: valuation_grade, financial_health, growth_outlook,
-           risk_factors, catalysts
-      2. Compute composite_score (0-100) using this exact formula:
-           sentiment_component  = min(average_sentiment * 100, 30)       [max 30 pts]
-           technical_component  = momentum_score * 4                      [max 40 pts; momentum_score 1-10]
-           fundamental_component:
-             financial_health:  STRONG=20, ADEQUATE=10, WEAK=0
-             growth_outlook:    HIGH=10, MODERATE=7, LOW=3, DECLINING=0
-           composite_score = sentiment_component + technical_component + fundamental_component
-      3. Map score to recommendation:
-           >= 75 → STRONG_BUY
-           >= 55 → BUY
-           >= 40 → HOLD
-           >= 25 → REDUCE
-           <  25 → AVOID
-      4. Compute allocation_pct: only STRONG_BUY and BUY stocks receive allocation.
-         Allocate proportionally to composite_score. Total must sum to exactly 100.0.
-         Stocks with HOLD/REDUCE/AVOID get allocation_pct = 0.
-      5. Determine overall_sector_outlook:
-           avg composite_score >= 55 → BULLISH
-           avg composite_score <= 35 → BEARISH
-           else → NEUTRAL
+      validated by a strict schema — any structural error rejects the entire result.
+      Your workflow is:
+      1. Collect data for each ticker from all three context outputs.
+      2. Compute composite_score using the exact formula in the task description.
+      3. Map score to action: >=55 → LONG-BUY, >=40 → HOLD,
+         >=25 → WAIT-FOR-ENTRY, <25 → AVOID.
+      4. Build trade_setup ONLY for LONG-BUY positions:
+         - Parse entry_zone_low and entry_zone_high from the Technical Analyst's
+           entry_zone string (format: "<low>-<high>").
+         - stop_loss   = entry_zone_low × 0.97
+         - take_profit = entry_zone_high + (entry_zone_low − stop_loss) × 2
+         The following invariant is machine-checked and MUST hold:
+           stop_loss < entry_zone_low ≤ entry_zone_high < take_profit
+         A stop loss derived from current_price or ATR will often violate this
+         because the stock may be trading above its entry zone. Always derive
+         stop_loss from entry_zone_low, never from current_price.
+      5. Allocate proportionally to composite_score among LONG-BUY stocks only.
+         total_allocated_pct = sum of allocation_pct values.
+         cash_reserve_pct    = 100 − total_allocated_pct.
       6. Output ONLY the JSON dict. No text before or after it.
       You never delegate. You never add text outside the JSON.
     verbose: true

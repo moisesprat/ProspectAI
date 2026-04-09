@@ -140,7 +140,14 @@ class FundamentalDataTool(BaseTool):
                 "balance_sheet": {
                     "total_debt": safe("totalDebt"),
                     "total_cash": safe("totalCash"),
-                    "debt_to_equity": safe("debtToEquity"),
+                    # yfinance returns debtToEquity as a percentage-scaled number
+                    # (e.g. 150.0 for a D/E ratio of 1.5). Divide by 100 to
+                    # normalise to a plain ratio, consistent with the tool contract
+                    # "Ratios and margins are decimal (e.g. 0.25 = 25%)".
+                    "debt_to_equity": (
+                        safe("debtToEquity") / 100
+                        if safe("debtToEquity") is not None else None
+                    ),
                     "current_ratio": safe("currentRatio"),
                     "quick_ratio": safe("quickRatio"),
                     "free_cash_flow": free_cash_flow,

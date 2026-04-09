@@ -253,95 +253,113 @@ tasks:
     description: |
       You are the final agent in the ProspectAI pipeline.
       Synthesize the outputs from all three prior agents and produce a machine-readable
-      JSON investment recommendation dict. This output is parsed programmatically —
+      JSON investment recommendation. This output is parsed programmatically —
       no markdown fences, no text before or after the JSON.
 
       STEP 1 — Cross-reference data for each ticker:
         From Market context:      mention_count, average_sentiment, rationale
-        From Technical context:   overall_signal, momentum_score, risk_level, entry_zone, stop_loss
-        From Fundamental context: valuation_grade, financial_health, growth_outlook, risk_factors, catalysts
+        From Technical context:   overall_signal, momentum_score, risk_level, entry_zone
+        From Fundamental context: valuation_grade, financial_health, growth_outlook,
+                                  risk_factors, catalysts
+
+        Parse entry_zone from the Technical Analyst (format: "<low>-<high>" or
+        "<low> to <high>"). Extract entry_zone_low and entry_zone_high as floats.
 
       STEP 2 — Compute composite_score (0-100) using this exact formula:
         sentiment_component  = min(average_sentiment * 100, 30)     [max 30 pts]
-        technical_component  = momentum_score * 4                    [max 40 pts; score is 1-10]
+        technical_component  = momentum_score * 4                    [max 40 pts; score 1-10]
         fundamental_component:
           financial_health: STRONG=20, ADEQUATE=10, WEAK=0, null=5
           growth_outlook:   HIGH=10, MODERATE=7, LOW=3, DECLINING=0, null=5
         composite_score = sentiment_component + technical_component + fundamental_component
         Round to 1 decimal place.
 
-      STEP 3 — Map composite_score to recommendation:
-        >= 75 → "STRONG_BUY"
-        >= 55 → "BUY"
+      STEP 3 — Map composite_score to action:
+        >= 75 → "LONG-BUY"   (strong conviction long)
+        >= 55 → "LONG-BUY"   (moderate conviction long)
         >= 40 → "HOLD"
-        >= 25 → "REDUCE"
+        >= 25 → "WAIT-FOR-ENTRY"
         <  25 → "AVOID"
 
-      STEP 4 — Compute portfolio allocation:
-        Only STRONG_BUY and BUY stocks receive allocation_pct > 0.
-        Allocation is proportional to composite_score among eligible stocks.
-        The sum of all allocation_pct values must equal exactly 100.0.
-        Stocks with HOLD/REDUCE/AVOID get allocation_pct = 0.
-        If NO stocks are BUY or STRONG_BUY, distribute equally across all stocks.
+      STEP 4 — Build trade_setup for LONG-BUY positions ONLY.
+        Use the entry_zone_low and entry_zone_high parsed in STEP 1.
+        Derive stop_loss and take_profit as follows:
 
-      STEP 5 — Determine sector outlook:
-        avg_composite_score = mean of all composite_scores
-        avg >= 55 → "BULLISH"; avg <= 35 → "BEARISH"; else → "NEUTRAL"
+          stop_loss   = entry_zone_low × 0.97   [3 % below entry zone low]
+          take_profit = entry_zone_high + (entry_zone_low − stop_loss) × 2
+                                                [minimum 2:1 risk-reward ratio]
 
-      STEP 6 — Output EXACTLY this JSON (the complete pipeline output):
+        CRITICAL INVARIANT — the following inequality MUST hold or the output
+        will be rejected:
+          stop_loss < entry_zone_low ≤ entry_zone_high < take_profit
+
+        DO NOT derive stop_loss from current_price or ATR — those values may sit
+        above the entry zone and would violate the invariant.
+        Set trade_setup to null for HOLD, WAIT-FOR-ENTRY, and AVOID positions.
+
+      STEP 5 — Compute portfolio allocation:
+        Only LONG-BUY positions receive allocation_pct > 0.
+        Allocate proportionally to composite_score among LONG-BUY stocks.
+        HOLD, WAIT-FOR-ENTRY, and AVOID positions get allocation_pct = 0.
+        total_allocated_pct = sum of all allocation_pct values (round to 1 decimal).
+        cash_reserve_pct    = 100.0 − total_allocated_pct.
+        If NO stocks are LONG-BUY, set total_allocated_pct = 0, cash_reserve_pct = 100.
+
+      STEP 6 — Determine risk_level:
+        Count stocks whose Technical risk_level is "HIGH".
+        >50 % HIGH → "High"; >50 % LOW → "Low"; mixed with any HIGH → "Medium";
+        otherwise → "Low".
+
+      STEP 7 — Output EXACTLY this JSON structure:
       {
-        "pipeline_version": "2.0",
         "sector": "$sector",
-        "analysis_date": "$today",
-        "overall_sector_outlook": "BULLISH",
-        "overall_risk_level": "MEDIUM",
-        "stock_recommendations": [
+        "positions": [
           {
             "ticker": "NVDA",
-            "recommendation": "STRONG_BUY",
-            "composite_score": 84.0,
+            "action": "LONG-BUY",
             "allocation_pct": 35.2,
-            "score_breakdown": {
-              "sentiment_component": 19.5,
-              "technical_component": 32.0,
-              "fundamental_component": 30.0
+            "trade_setup": {
+              "direction": "LONG-BUY",
+              "entry_zone_low": 834.0,
+              "entry_zone_high": 851.0,
+              "stop_loss": 809.0,
+              "take_profit": 885.0
             },
             "rationale": "150-word synthesis citing specific signals from all three agents",
-            "entry_zone": "851-834",
-            "stop_loss": 830.5,
-            "time_horizon": "MEDIUM_TERM",
-            "key_risks": ["risk 1", "risk 2"],
-            "key_catalysts": ["catalyst 1", "catalyst 2"]
+            "monitoring_triggers": ["RSI crosses below 45", "Earnings miss > 5 %"],
+            "review_frequency": "WEEKLY"
+          },
+          {
+            "ticker": "AAPL",
+            "action": "HOLD",
+            "allocation_pct": 0,
+            "trade_setup": null,
+            "rationale": "150-word synthesis ...",
+            "monitoring_triggers": ["Price breaks below SMA50"],
+            "review_frequency": "MONTHLY"
           }
         ],
-        "portfolio_summary": {
-          "total_allocated_pct": 100.0,
-          "stocks_recommended": 3,
-          "stocks_avoided": 2,
-          "avg_composite_score": 71.4,
-          "portfolio_rationale": "2-3 paragraph explanation of the portfolio construction logic"
-        },
-        "execution_plan": {
-          "immediate_actions": ["action 1", "action 2"],
-          "monitoring_triggers": ["trigger 1", "trigger 2"],
-          "review_frequency": "MONTHLY"
-        }
+        "total_allocated_pct": 35.2,
+        "cash_reserve_pct": 64.8,
+        "overall_strategy": "2-3 paragraph explanation of the portfolio construction logic, citing composite scores and key signals",
+        "risk_level": "Medium"
       }
 
       RULES:
-      - allocation_pct values must sum to exactly 100.0 (round to 1 decimal).
-      - composite_score must follow the Step 2 formula exactly.
-      - recommendation must use only: STRONG_BUY, BUY, HOLD, REDUCE, AVOID.
-      - overall_sector_outlook must be: BULLISH, NEUTRAL, or BEARISH.
-      - overall_risk_level: HIGH if >50% of stocks have risk_level HIGH;
-        LOW if >50% LOW; MEDIUM otherwise.
-      - time_horizon: LONG_TERM if growth_outlook=HIGH; SHORT_TERM if technical-signal-only;
-        MEDIUM_TERM for all other cases.
-      - All tickers from fundamental analysis must appear in stock_recommendations.
-      - Output only the JSON dict — no surrounding text.
+      - action must be one of: LONG-BUY, SHORT-SELL, HOLD, WAIT-FOR-ENTRY, AVOID.
+      - For LONG-BUY: trade_setup is required. For all others: trade_setup must be null.
+      - INVARIANT (enforced): stop_loss < entry_zone_low ≤ entry_zone_high < take_profit.
+        Derive stop_loss = entry_zone_low × 0.97. Never use ATR-based stop for trade_setup.
+      - total_allocated_pct must equal the sum of all allocation_pct values (±0.5 tolerance).
+      - cash_reserve_pct = 100 − total_allocated_pct.
+      - total_allocated_pct + cash_reserve_pct must not exceed 100.
+      - risk_level must be one of: Low, Medium, High, Very High.
+      - review_frequency must be one of: DAILY, WEEKLY, MONTHLY.
+      - monitoring_triggers: list of 2-3 specific, measurable conditions.
+      - All tickers from fundamental analysis must appear in positions.
+      - Output only the JSON dict — no surrounding text, no markdown fences.
     expected_output: >
-      JSON dict with pipeline_version='2.0', sector='$sector', analysis_date,
-      overall_sector_outlook, overall_risk_level, stock_recommendations
-      (ticker/recommendation/composite_score/allocation_pct/score_breakdown/
-      rationale/entry_zone/stop_loss/time_horizon/key_risks/key_catalysts),
-      portfolio_summary, and execution_plan.
+      JSON dict with sector='$sector', positions
+      (ticker/action/allocation_pct/trade_setup/rationale/monitoring_triggers/
+      review_frequency), total_allocated_pct, cash_reserve_pct,
+      overall_strategy, and risk_level.
