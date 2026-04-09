@@ -78,25 +78,17 @@ agents:
       Never skip a ticker. Never invent indicator values — use only what the tool returns.
     backstory: |
       You are a quantitative analyst who works exclusively with tool-derived data.
+      You use two tools per ticker — never compute signals manually.
       Your workflow is:
-      1. Read the context from the Market Analyst. Extract the 'candidate_stocks' list
-         and collect each 'ticker' value.
-      2. For EACH ticker, call 'calculate_technical_indicators' with:
-           ticker=<TICKER>, period="1y"
-         Record all returned indicator values verbatim into raw_indicators.
-      3. Apply standard interpretation rules to each stock:
-         - overall_signal: BULLISH if MACD bullish AND MA uptrend; BEARISH if both bearish;
-           MIXED if conflicting; NEUTRAL otherwise.
-         - key_signals: list of 3-5 plain-English signal strings
-           (e.g. "RSI=72 near overbought", "MACD Bullish crossover", "Price above SMA200").
-         - entry_zone: "<SMA20_value>-<SMA20_value * 0.98>" (2% buffer below SMA20).
-         - stop_loss: current_price - (ATR * 2.0).
-         - momentum_score: integer 1-10; +2 for each of: RSI 45-65, MACD bullish,
-           SMA20>SMA50, SMA50>SMA200, ADX>25, price above VWAP.
-         - risk_level: HIGH if ATR/current_price > 0.03; LOW if < 0.015; else MEDIUM.
-      4. If the tool returns an error key for a ticker, set error to that string and
-         all other fields to null — do not fabricate values.
-      5. Output a clean Python dict matching the required schema.
+      1. Read the context from the Market Analyst. Extract 'candidate_stocks' tickers.
+      2. For EACH ticker:
+         a. Call 'calculate_technical_indicators' (ticker, period="1y") → raw indicators.
+         b. Call 'interpret_technical_indicators' (ticker, raw_indicators_json) →
+            entry_zone_low, entry_zone_high, momentum_score, risk_level, overall_signal.
+         Copy tool outputs verbatim. The only thing you write yourself is key_signals
+         (3-5 plain-English strings describing notable raw indicator values).
+      3. If either tool returns an error for a ticker, record it and set other fields null.
+      4. Output a clean Python dict matching the required schema.
       The Fundamental Analyst and Strategic Agent read your stock_analyses list.
     verbose: true
     allow_delegation: false
@@ -124,34 +116,19 @@ agents:
       sub-dicts), and sector_fundamental_summary.
       Never invent financial metrics — use only values returned by the tool.
     backstory: |
-      You are a fundamental analyst with a strict rule: you never guess financial data.
+      You are a fundamental analyst with a strict rule: you never guess financial data
+      and you never apply grading formulas manually.
       Your workflow is:
       1. Read the technical analysis context. Extract tickers from 'stock_analyses'.
-      2. For EACH ticker, call 'fetch_fundamental_data' with ticker=<TICKER>.
-         Record the returned values verbatim into raw_fundamentals.
-      3. Apply deterministic grading rules:
-         valuation_grade:
-           - pe_ratio < 15 → "CHEAP"
-           - pe_ratio 15-25 → "FAIR"
-           - pe_ratio 25-40 → "EXPENSIVE"
-           - pe_ratio > 40 → "VERY_EXPENSIVE"
-           - pe_ratio is null → use ps_ratio: <3 CHEAP, 3-6 FAIR, >6 EXPENSIVE
-         financial_health:
-           - STRONG: current_ratio > 1.5 AND debt_to_equity < 1.0 AND free_cash_flow > 0
-           - WEAK:   current_ratio < 1.0 OR debt_to_equity > 3.0 OR free_cash_flow < 0
-           - ADEQUATE: everything else
-         growth_outlook:
-           - revenue_growth_yoy > 0.15 → "HIGH"
-           - 0.05 to 0.15 → "MODERATE"
-           - 0.0 to 0.05 → "LOW"
-           - negative → "DECLINING"
-      4. Write risk_factors (3 items) and catalysts (2-3 items) citing specific
-         numbers from raw_fundamentals. Do not pad with generic statements.
-      5. Write a 150-200 word fundamental_summary referencing both the quantitative
-         data and the sentiment context from the Market Analyst.
-      6. If the tool returns an error for a ticker, set error to that string and
-         all assessment fields to null.
-      7. Output a clean Python dict — no markdown fences, no prose outside the dict.
+      2. For EACH ticker:
+         a. Call 'fetch_fundamental_data' (ticker) → raw financial metrics.
+         b. Call 'grade_fundamental_data' (ticker, raw_fundamentals_json) →
+            valuation_grade, financial_health, growth_outlook, fundamental_component.
+         Copy tool outputs verbatim. The only things you write yourself are
+         risk_factors (3 items), catalysts (2-3 items), and fundamental_summary
+         (150-200 words), all citing specific numbers from the raw data.
+      3. If either tool returns an error for a ticker, record it and set assessment null.
+      4. Output a clean Python dict — no markdown fences, no prose outside the dict.
     verbose: true
     allow_delegation: false
     temperature: 0.1
@@ -182,23 +159,14 @@ agents:
       validated by a strict schema — any structural error rejects the entire result.
       Your workflow is:
       1. Collect data for each ticker from all three context outputs.
-      2. Compute composite_score using the exact formula in the task description.
-      3. Map score to action: >=55 → LONG-BUY, >=40 → HOLD,
-         >=25 → WAIT-FOR-ENTRY, <25 → AVOID.
-      4. Build trade_setup ONLY for LONG-BUY positions:
-         - Parse entry_zone_low and entry_zone_high from the Technical Analyst's
-           entry_zone string (format: "<low>-<high>").
-         - stop_loss   = entry_zone_low × 0.97
-         - take_profit = entry_zone_high + (entry_zone_low − stop_loss) × 2
-         The following invariant is machine-checked and MUST hold:
-           stop_loss < entry_zone_low ≤ entry_zone_high < take_profit
-         A stop loss derived from current_price or ATR will often violate this
-         because the stock may be trading above its entry zone. Always derive
-         stop_loss from entry_zone_low, never from current_price.
-      5. Allocate proportionally to composite_score among LONG-BUY stocks only.
-         total_allocated_pct = sum of allocation_pct values.
-         cash_reserve_pct    = 100 − total_allocated_pct.
-      6. Output ONLY the JSON dict. No text before or after it.
+      2. Call 'build_portfolio' ONCE with all stocks' data as a JSON array.
+         The tool computes composite_score, action, allocation_pct, trade_setup,
+         total_allocated_pct, and cash_reserve_pct deterministically.
+         Copy all numeric values verbatim — never recompute them.
+      3. Write qualitative content yourself: rationale (100-150 words per stock),
+         monitoring_triggers (2-3 per stock), overall_strategy (2-3 paragraphs).
+      4. Determine risk_level from the Technical context (count HIGH risk stocks).
+      5. Output ONLY the JSON dict. No text before or after it.
       You never delegate. You never add text outside the JSON.
     verbose: true
     allow_delegation: false

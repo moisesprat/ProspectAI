@@ -14,7 +14,10 @@ from config.task_config_loader import TaskConfigLoader
 
 from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
+from utils.technical_interpretation_tool import TechnicalInterpretationTool
 from utils.fundamental_data_tool import FundamentalDataTool
+from utils.fundamental_grader_tool import FundamentalGraderTool
+from utils.portfolio_builder_tool import PortfolioBuilderTool
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
@@ -87,7 +90,7 @@ class ProspectAICrew:
         technical_analysis_task = Task(
             description=technical_cfg["description"],
             agent=self.technical_analyst.get_agent(),
-            tools=[TechnicalAnalysisTool()],
+            tools=[TechnicalAnalysisTool(), TechnicalInterpretationTool()],
             expected_output=technical_cfg["expected_output"],
             context=[market_analysis_task],
             output_pydantic=TechnicalAnalysisOutput,
@@ -98,7 +101,7 @@ class ProspectAICrew:
         fundamental_analysis_task = Task(
             description=fundamental_cfg["description"],
             agent=self.fundamental_analyst.get_agent(),
-            tools=[FundamentalDataTool()],
+            tools=[FundamentalDataTool(), FundamentalGraderTool()],
             expected_output=fundamental_cfg["expected_output"],
             context=[market_analysis_task, technical_analysis_task],
             output_pydantic=FundamentalAnalysisOutput,
@@ -109,7 +112,7 @@ class ProspectAICrew:
         investment_strategy_task = Task(
             description=strategy_cfg["description"],
             agent=self.investor_strategist.get_agent(),
-            tools=[],
+            tools=[PortfolioBuilderTool()],
             expected_output=strategy_cfg["expected_output"],
             context=[
                 market_analysis_task,

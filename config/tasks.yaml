@@ -91,18 +91,19 @@ tasks:
         Collect all results before writing your output. If a ticker returns an 'error'
         key, record the error and continue to the next ticker.
 
-      STEP 3 — Interpret results for each stock using ONLY values returned by the tool:
-        - overall_signal: "BULLISH" if MACD is Bullish AND MA status contains "Uptrend";
-                          "BEARISH" if MACD is Bearish AND MA status contains "Downtrend";
-                          "MIXED" if one bullish one bearish; "NEUTRAL" otherwise.
-        - key_signals: list of 3-5 plain-English strings
-          (e.g. "RSI=68 approaching overbought", "MACD Bullish crossover", "Strong uptrend SMA20>SMA50>SMA200").
-        - entry_zone: "<SMA20 value> to <SMA20 * 0.98>" (2% buffer below SMA20).
-        - stop_loss: current_price - (ATR * 2.0). Round to 2 decimal places.
-        - momentum_score: integer 1-10. Award +2 points for each true condition (cap at 10):
-            RSI between 45 and 65; MACD status Bullish; MA status Strong Uptrend or Uptrend;
-            ADX > 25; Bollinger status Normal Range; price above lower Bollinger band.
-        - risk_level: "HIGH" if ATR/current_price > 0.03; "LOW" if < 0.015; "MEDIUM" otherwise.
+      STEP 3 — For each ticker, call 'interpret_technical_indicators':
+        Build a JSON string from the raw values returned in STEP 2 and call:
+          interpret_technical_indicators(
+            ticker="<TICKER>",
+            raw_indicators_json='{"current_price":<val>,"sma_20":<val>,"atr":<val>,
+              "rsi":<val>,"macd_status":"<val>","ma_status":"<val>",
+              "bb_status":"<val>","adx":<val>}'
+          )
+        Record the returned entry_zone_low, entry_zone_high, momentum_score,
+        risk_level, and overall_signal verbatim — do NOT recalculate them.
+        Write key_signals yourself: a list of 3-5 plain-English strings describing
+        the most notable raw indicators (e.g. "RSI=68 near overbought").
+        key_signals is the only field you derive yourself in this step.
 
       STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
       {
@@ -126,8 +127,8 @@ tasks:
             "interpretation": {
               "overall_signal": "BULLISH",
               "key_signals": ["RSI=68 near overbought", "Strong uptrend SMA20>SMA50>SMA200", "MACD Bullish"],
-              "entry_zone": "851-834",
-              "stop_loss": 830.5,
+              "entry_zone_low": 834.0,
+              "entry_zone_high": 851.0,
               "momentum_score": 8,
               "risk_level": "MEDIUM"
             },
@@ -139,6 +140,8 @@ tasks:
 
       RULES:
       - raw_indicators must use actual numbers from the tool — never invented values.
+      - interpretation fields (entry_zone_low/high, momentum_score, risk_level, overall_signal)
+        must be copied verbatim from the 'interpret_technical_indicators' tool result.
       - If the tool returns an error for a ticker, set error to that string and all other
         fields (current_price, raw_indicators, interpretation) to null.
       - Do not skip any ticker from the market analyst output.
@@ -167,33 +170,19 @@ tasks:
         Call 'fetch_fundamental_data' with ticker="<TICKER>".
         Collect all results. If a ticker returns an 'error' key, skip grading for that stock.
 
-      STEP 3 — Grade each stock using ONLY tool-returned values:
-
-        valuation_grade (use pe_ratio; if null use ps_ratio):
-          pe_ratio < 15             → "CHEAP"
-          pe_ratio 15-25            → "FAIR"
-          pe_ratio 25-40            → "EXPENSIVE"
-          pe_ratio > 40             → "VERY_EXPENSIVE"
-          pe_ratio null, ps < 3    → "CHEAP"
-          pe_ratio null, ps 3-6    → "FAIR"
-          pe_ratio null, ps > 6    → "EXPENSIVE"
-
-        financial_health:
-          STRONG:   current_ratio > 1.5 AND debt_to_equity < 1.0 AND free_cash_flow > 0
-          WEAK:     current_ratio < 1.0 OR debt_to_equity > 3.0 OR free_cash_flow < 0
-          ADEQUATE: everything else (including nulls)
-
-        growth_outlook (use revenue_growth_yoy):
-          > 0.15    → "HIGH"
-          0.05-0.15 → "MODERATE"
-          0-0.05    → "LOW"
-          negative  → "DECLINING"
-          null      → "MODERATE"
-
-        risk_factors: list of exactly 3 items citing specific numbers from raw_fundamentals.
-        catalysts: list of 2-3 items citing specific numbers from raw_fundamentals.
-        fundamental_summary: 150-200 words integrating quantitative data with the
-          market sentiment rationale from the Market Analyst context.
+      STEP 3 — For each ticker, call 'grade_fundamental_data':
+        Build a JSON string from the raw values returned in STEP 2 and call:
+          grade_fundamental_data(
+            ticker="<TICKER>",
+            raw_fundamentals_json='{"pe_ratio":<val>,"ps_ratio":<val>,
+              "current_ratio":<val>,"debt_to_equity":<val>,
+              "free_cash_flow":<val>,"revenue_growth_yoy":<val>}'
+          )
+        Record the returned valuation_grade, financial_health, growth_outlook,
+        and fundamental_component verbatim — do NOT recalculate them.
+        Write risk_factors, catalysts, and fundamental_summary yourself,
+        citing specific numbers from the raw data.
+        These qualitative fields are the only things you derive yourself in this step.
 
       STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
       {
@@ -222,6 +211,7 @@ tasks:
               "valuation_grade": "VERY_EXPENSIVE",
               "financial_health": "STRONG",
               "growth_outlook": "MODERATE",
+              "fundamental_component": 27,
               "fundamental_summary": "...",
               "risk_factors": ["PE ratio of 65x is historically elevated", "..."],
               "catalysts": ["Revenue growing at 12% YoY", "..."]
@@ -234,8 +224,9 @@ tasks:
 
       RULES:
       - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
-      - valuation_grade, financial_health, growth_outlook must use the exact enum strings above.
-      - If tool returns an error, set error to the string and assessment to null.
+      - valuation_grade, financial_health, growth_outlook, fundamental_component must be copied
+        verbatim from the 'grade_fundamental_data' tool result.
+      - If either tool returns an error, set error to the string and assessment to null.
       - Include all tickers from technical analysis context.
     expected_output: >
       Python dict with sector='$sector', analysis_date,
@@ -257,60 +248,41 @@ tasks:
       no markdown fences, no text before or after the JSON.
 
       STEP 1 — Cross-reference data for each ticker:
-        From Market context:      mention_count, average_sentiment, rationale
-        From Technical context:   overall_signal, momentum_score, risk_level, entry_zone
-        From Fundamental context: valuation_grade, financial_health, growth_outlook,
-                                  risk_factors, catalysts
+        From Market context:      average_sentiment (float)
+        From Technical context:   momentum_score, entry_zone_low, entry_zone_high, risk_level
+        From Fundamental context: financial_health, growth_outlook
+        Also collect for qualitative writing: rationale, risk_factors, catalysts,
+          overall_signal, valuation_grade, key_signals
 
-        Parse entry_zone from the Technical Analyst (format: "<low>-<high>" or
-        "<low> to <high>"). Extract entry_zone_low and entry_zone_high as floats.
+      STEP 2 — Call 'build_portfolio' ONCE with ALL stocks combined:
+        Build a JSON array with one entry per ticker and call:
+          build_portfolio(stocks_json='[
+            {
+              "ticker": "<TICKER>",
+              "average_sentiment": <float from Market context>,
+              "momentum_score":    <float from Technical interpretation>,
+              "financial_health":  "<STRONG|ADEQUATE|WEAK from Fundamental grader>",
+              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING from Fundamental grader>",
+              "entry_zone_low":    <float from Technical interpretation>,
+              "entry_zone_high":   <float from Technical interpretation>
+            },
+            ...
+          ]')
+        The tool returns for each stock: composite_score, action, allocation_pct,
+        and trade_setup (with stop_loss and take_profit already computed).
+        It also returns total_allocated_pct and cash_reserve_pct.
+        Copy ALL numeric values verbatim — do NOT recalculate anything.
 
-      STEP 2 — Compute composite_score (0-100) using this exact formula:
-        sentiment_component  = min(average_sentiment * 100, 30)     [max 30 pts]
-        technical_component  = momentum_score * 4                    [max 40 pts; score 1-10]
-        fundamental_component:
-          financial_health: STRONG=20, ADEQUATE=10, WEAK=0, null=5
-          growth_outlook:   HIGH=10, MODERATE=7, LOW=3, DECLINING=0, null=5
-        composite_score = sentiment_component + technical_component + fundamental_component
-        Round to 1 decimal place.
+      STEP 3 — Determine risk_level from the Technical context:
+        Count stocks whose risk_level is "HIGH".
+        > 50% HIGH → "High"; > 50% LOW → "Low"; any HIGH present → "Medium"; else → "Low".
 
-      STEP 3 — Map composite_score to action:
-        >= 75 → "LONG-BUY"   (strong conviction long)
-        >= 55 → "LONG-BUY"   (moderate conviction long)
-        >= 40 → "HOLD"
-        >= 25 → "WAIT-FOR-ENTRY"
-        <  25 → "AVOID"
+      STEP 4 — Write qualitative content for each position:
+        rationale: 100-150 word synthesis per stock citing signals from all three agents.
+        monitoring_triggers: 2-3 specific, measurable conditions to watch.
+        review_frequency: "DAILY" for high-volatility, "WEEKLY" for most, "MONTHLY" for HOLD/AVOID.
 
-      STEP 4 — Build trade_setup for LONG-BUY positions ONLY.
-        Use the entry_zone_low and entry_zone_high parsed in STEP 1.
-        Derive stop_loss and take_profit as follows:
-
-          stop_loss   = entry_zone_low × 0.97   [3 % below entry zone low]
-          take_profit = entry_zone_high + (entry_zone_low − stop_loss) × 2
-                                                [minimum 2:1 risk-reward ratio]
-
-        CRITICAL INVARIANT — the following inequality MUST hold or the output
-        will be rejected:
-          stop_loss < entry_zone_low ≤ entry_zone_high < take_profit
-
-        DO NOT derive stop_loss from current_price or ATR — those values may sit
-        above the entry zone and would violate the invariant.
-        Set trade_setup to null for HOLD, WAIT-FOR-ENTRY, and AVOID positions.
-
-      STEP 5 — Compute portfolio allocation:
-        Only LONG-BUY positions receive allocation_pct > 0.
-        Allocate proportionally to composite_score among LONG-BUY stocks.
-        HOLD, WAIT-FOR-ENTRY, and AVOID positions get allocation_pct = 0.
-        total_allocated_pct = sum of all allocation_pct values (round to 1 decimal).
-        cash_reserve_pct    = 100.0 − total_allocated_pct.
-        If NO stocks are LONG-BUY, set total_allocated_pct = 0, cash_reserve_pct = 100.
-
-      STEP 6 — Determine risk_level:
-        Count stocks whose Technical risk_level is "HIGH".
-        >50 % HIGH → "High"; >50 % LOW → "Low"; mixed with any HIGH → "Medium";
-        otherwise → "Low".
-
-      STEP 7 — Output EXACTLY this JSON structure:
+      STEP 5 — Output EXACTLY this JSON structure:
       {
         "sector": "$sector",
         "positions": [
@@ -346,13 +318,9 @@ tasks:
       }
 
       RULES:
-      - action must be one of: LONG-BUY, SHORT-SELL, HOLD, WAIT-FOR-ENTRY, AVOID.
-      - For LONG-BUY: trade_setup is required. For all others: trade_setup must be null.
-      - INVARIANT (enforced): stop_loss < entry_zone_low ≤ entry_zone_high < take_profit.
-        Derive stop_loss = entry_zone_low × 0.97. Never use ATR-based stop for trade_setup.
-      - total_allocated_pct must equal the sum of all allocation_pct values (±0.5 tolerance).
-      - cash_reserve_pct = 100 − total_allocated_pct.
-      - total_allocated_pct + cash_reserve_pct must not exceed 100.
+      - action, allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct,
+        and composite_score MUST be copied verbatim from 'build_portfolio' tool output.
+        Do NOT recompute any of these values.
       - risk_level must be one of: Low, Medium, High, Very High.
       - review_frequency must be one of: DAILY, WEEKLY, MONTHLY.
       - monitoring_triggers: list of 2-3 specific, measurable conditions.
