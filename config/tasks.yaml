@@ -95,10 +95,13 @@ tasks:
         Build a JSON string from the raw values returned in STEP 2 and call:
           interpret_technical_indicators(
             ticker="<TICKER>",
-            raw_indicators_json='{"current_price":<val>,"sma_20":<val>,"atr":<val>,
-              "rsi":<val>,"macd_status":"<val>","ma_status":"<val>",
-              "bb_status":"<val>","adx":<val>}'
+            raw_indicators_json='{"current_price":<val>,"sma_20":<val>,"sma_50":<val>,
+              "sma_200":<val>,"atr":<val>,"rsi":<val>,"macd_status":"<val>",
+              "ma_status":"<val>","bb_status":"<val>",
+              "stochastic_status":"<val>","adx":<val>}'
           )
+        Include sma_50, sma_200, and stochastic_status in the JSON — they are used
+        for finer-grained momentum_score calculation.
         Record the returned entry_zone_low, entry_zone_high, momentum_score,
         and risk_level verbatim — these are computed numbers, not interpretations.
 
@@ -257,6 +260,20 @@ tasks:
                                   risk_level, overall_signal, key_signals, raw_indicators
         From Fundamental context: financial_health, growth_outlook, valuation_grade,
                                   fundamental_component, risk_factors, catalysts
+
+        CRITICAL: average_sentiment is a float between -1.0 and 1.0. It comes from
+        the Market Analyst's candidate_stocks list for each ticker. Extract the EXACT
+        value from context — do NOT use 0.65 or any default. If you cannot find it,
+        use 0.0 (neutral) and note the missing data.
+
+        CRITICAL: momentum_score is a float between 0 and 10. It comes from the
+        Technical Analyst's interpretation output for each ticker. Extract the EXACT
+        value — do NOT default to 8.0 or any other fixed number.
+
+        CRITICAL: Every stock must have a DISTINCT composite_score. If two stocks
+        produce the same score, re-check the input values you used — they almost
+        certainly differ. The final scores must show meaningful spread reflecting
+        the actual variation in sentiment, technical, and fundamental data.
 
       STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
           compute_composite_scores(stocks_json='[

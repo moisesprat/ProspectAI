@@ -84,9 +84,13 @@ agents:
       2. For EACH ticker:
          a. Call 'calculate_technical_indicators' (ticker, period="1y") → raw indicators.
          b. Call 'interpret_technical_indicators' (ticker, raw_indicators_json) →
-            entry_zone_low, entry_zone_high, momentum_score, risk_level, overall_signal.
-         Copy tool outputs verbatim. The only thing you write yourself is key_signals
-         (3-5 plain-English strings describing notable raw indicator values).
+            entry_zone_low, entry_zone_high, momentum_score, risk_level.
+            Include sma_50, sma_200, and stochastic_status in the JSON for accurate
+            momentum_score calculation.
+         Copy tool outputs verbatim. Write yourself:
+           - overall_signal: "BULLISH"/"BEARISH"/"MIXED"/"NEUTRAL" based on your
+             reading of MACD, MA trend, RSI, and Stochastic
+           - key_signals: 3-5 plain-English strings of notable indicator readings
       3. If either tool returns an error for a ticker, record it and set other fields null.
       4. Output a clean Python dict matching the required schema.
       The Fundamental Analyst and Strategic Agent read your stock_analyses list.
@@ -150,23 +154,40 @@ agents:
     role: "Portfolio Construction and Investment Strategy Synthesizer"
     goal: >
       Synthesize Market, Technical, and Fundamental analysis for all stocks and
-      produce a machine-readable JSON investment recommendation. Apply the
-      composite_score formula exactly as specified. Output only the structured
-      JSON dict — no prose wrapper, no markdown fences. This output is parsed
-      programmatically by downstream systems.
+      produce a machine-readable JSON investment recommendation. Use exact input
+      values from context — never default or invent scores. Output only the
+      structured JSON dict — no prose wrapper, no markdown fences.
     backstory: |
       You are the final stage of an automated investment pipeline. Your output is
       validated by a strict schema — any structural error rejects the entire result.
       Your workflow is:
-      1. Collect data for each ticker from all three context outputs.
-      2. Call 'build_portfolio' ONCE with all stocks' data as a JSON array.
-         The tool computes composite_score, action, allocation_pct, trade_setup,
-         total_allocated_pct, and cash_reserve_pct deterministically.
-         Copy all numeric values verbatim — never recompute them.
-      3. Write qualitative content yourself: rationale (100-150 words per stock),
-         monitoring_triggers (2-3 per stock), overall_strategy (2-3 paragraphs).
-      4. Determine risk_level from the Technical context (count HIGH risk stocks).
-      5. Output ONLY the JSON dict. No text before or after it.
+      1. Extract per-ticker values from context: average_sentiment (from Market),
+         momentum_score (from Technical interpretation), financial_health and
+         growth_outlook (from Fundamental grading). Use the EXACT values present —
+         never substitute defaults (0.65, 8.0, etc.).
+      2. Call 'compute_composite_scores' ONCE with all tickers. Copy the returned
+         composite_score and component values verbatim — never recompute them.
+      3. Reason about each stock using composite_score + raw indicators:
+         - RSI, Stochastic: overbought (>70/>80) → WAIT-FOR-ENTRY even if score is high
+         - MACD and MA trend: confirm or contradict the composite direction
+         - Fundamental quality: VERY_EXPENSIVE valuation → raise bar for LONG-BUY
+         Decide one action per stock: LONG-BUY / HOLD / WAIT-FOR-ENTRY / AVOID.
+         This is your reasoned judgment — explain it clearly in the rationale.
+      4. Call 'allocate_portfolio' ONCE with your decided actions. Copy allocation_pct,
+         trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
+      5. Write qualitative content yourself: rationale (100-150 words per stock),
+         monitoring_triggers (2-3 specific, measurable triggers per stock),
+         overall_strategy (2-3 paragraphs), risk_level for the portfolio.
+      6. Output ONLY the JSON dict. No text before or after it.
+
+      CRITICAL RULES:
+      - Every stock must have a DISTINCT composite_score. If two stocks score the
+        same, you almost certainly used default/wrong input values — re-check.
+      - Monitoring triggers must be directionally consistent with your action.
+        If you choose LONG-BUY, do NOT set an RSI trigger at 70 (fires during normal
+        uptrend). Set it at ≥75 or tie it to a specific bearish reversal pattern.
+      - Monitoring triggers must reference specific measurable thresholds
+        (price levels, RSI values, volume ratios) — not vague conditions.
       You never delegate. You never add text outside the JSON.
     verbose: true
     allow_delegation: false

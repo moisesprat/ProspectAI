@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import datetime
 from crewai import Crew, LLM, Task
@@ -19,12 +20,15 @@ from utils.fundamental_data_tool import FundamentalDataTool
 from utils.fundamental_grader_tool import FundamentalGraderTool
 from utils.composite_score_tool import CompositeScoreTool
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
+from utils.recommendation_validator import validate_portfolio
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
     FundamentalAnalysisOutput,
     InvestorStrategicOutput,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ProspectAICrew:
@@ -192,8 +196,25 @@ class ProspectAICrew:
         # Parse the final agent's output into a structured dict
         structured = self._parse_result(crew_result)
 
+        # Post-generation validation — log issues and include in result
+        validation_issues = validate_portfolio(structured)
+        if validation_issues:
+            for issue in validation_issues:
+                log_fn = logger.error if issue.severity == "critical" else logger.warning
+                log_fn("[%s] %s — %s: %s", issue.severity.upper(), issue.ticker, issue.field, issue.message)
+            structured["validation_warnings"] = [
+                {
+                    "severity": i.severity,
+                    "ticker":   i.ticker,
+                    "field":    i.field,
+                    "message":  i.message,
+                }
+                for i in validation_issues
+            ]
+
         summary = (
-            structured.get("portfolio_summary", {}).get("portfolio_rationale", "")
+            structured.get("overall_strategy", "")
+            or structured.get("portfolio_summary", {}).get("portfolio_rationale", "")
             or str(structured)[:300]
         )
 
@@ -202,6 +223,10 @@ class ProspectAICrew:
             "workflow_completed": True,
             "result": structured,
             "summary": summary,
+            "validation_warnings": [
+                {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
+                for i in validation_issues
+            ],
         }
 
     # ─────────────────────────────────────────────────────────────────────────
