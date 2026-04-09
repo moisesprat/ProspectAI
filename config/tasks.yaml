@@ -100,10 +100,13 @@ tasks:
               "bb_status":"<val>","adx":<val>}'
           )
         Record the returned entry_zone_low, entry_zone_high, momentum_score,
-        risk_level, and overall_signal verbatim — do NOT recalculate them.
-        Write key_signals yourself: a list of 3-5 plain-English strings describing
-        the most notable raw indicators (e.g. "RSI=68 near overbought").
-        key_signals is the only field you derive yourself in this step.
+        and risk_level verbatim — these are computed numbers, not interpretations.
+
+        Then use your own reasoning to produce:
+        - overall_signal: your assessment of "BULLISH", "BEARISH", "MIXED", or "NEUTRAL"
+          based on MACD status, MA status, RSI level, and other raw indicators.
+        - key_signals: 3-5 plain-English strings describing the most notable readings
+          (e.g. "RSI=70 overbought", "MACD Bullish crossover", "Strong uptrend confirmed").
 
       STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
       {
@@ -126,7 +129,7 @@ tasks:
             },
             "interpretation": {
               "overall_signal": "BULLISH",
-              "key_signals": ["RSI=68 near overbought", "Strong uptrend SMA20>SMA50>SMA200", "MACD Bullish"],
+              "key_signals": ["RSI=68 neutral with room to run", "Strong uptrend SMA20>SMA50>SMA200", "MACD Bullish"],
               "entry_zone_low": 834.0,
               "entry_zone_high": 851.0,
               "momentum_score": 8,
@@ -140,8 +143,9 @@ tasks:
 
       RULES:
       - raw_indicators must use actual numbers from the tool — never invented values.
-      - interpretation fields (entry_zone_low/high, momentum_score, risk_level, overall_signal)
-        must be copied verbatim from the 'interpret_technical_indicators' tool result.
+      - entry_zone_low, entry_zone_high, momentum_score, risk_level must be copied
+        verbatim from the 'interpret_technical_indicators' tool result.
+      - overall_signal and key_signals are YOUR reasoned assessment of the raw data.
       - If the tool returns an error for a ticker, set error to that string and all other
         fields (current_price, raw_indicators, interpretation) to null.
       - Do not skip any ticker from the market analyst output.
@@ -248,41 +252,57 @@ tasks:
       no markdown fences, no text before or after the JSON.
 
       STEP 1 — Cross-reference data for each ticker:
-        From Market context:      average_sentiment (float)
-        From Technical context:   momentum_score, entry_zone_low, entry_zone_high, risk_level
-        From Fundamental context: financial_health, growth_outlook
-        Also collect for qualitative writing: rationale, risk_factors, catalysts,
-          overall_signal, valuation_grade, key_signals
+        From Market context:      average_sentiment (float), rationale
+        From Technical context:   momentum_score, entry_zone_low, entry_zone_high,
+                                  risk_level, overall_signal, key_signals, raw_indicators
+        From Fundamental context: financial_health, growth_outlook, valuation_grade,
+                                  fundamental_component, risk_factors, catalysts
 
-      STEP 2 — Call 'build_portfolio' ONCE with ALL stocks combined:
-        Build a JSON array with one entry per ticker and call:
-          build_portfolio(stocks_json='[
+      STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
+          compute_composite_scores(stocks_json='[
             {
-              "ticker": "<TICKER>",
-              "average_sentiment": <float from Market context>,
+              "ticker":            "<TICKER>",
+              "average_sentiment": <float>,
               "momentum_score":    <float from Technical interpretation>,
-              "financial_health":  "<STRONG|ADEQUATE|WEAK from Fundamental grader>",
-              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING from Fundamental grader>",
-              "entry_zone_low":    <float from Technical interpretation>,
-              "entry_zone_high":   <float from Technical interpretation>
-            },
-            ...
+              "financial_health":  "<STRONG|ADEQUATE|WEAK>",
+              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING>"
+            }, ...
           ]')
-        The tool returns for each stock: composite_score, action, allocation_pct,
-        and trade_setup (with stop_loss and take_profit already computed).
-        It also returns total_allocated_pct and cash_reserve_pct.
-        Copy ALL numeric values verbatim — do NOT recalculate anything.
+        Record each stock's composite_score and components verbatim.
 
-      STEP 3 — Determine risk_level from the Technical context:
-        Count stocks whose risk_level is "HIGH".
-        > 50% HIGH → "High"; > 50% LOW → "Low"; any HIGH present → "Medium"; else → "Low".
+      STEP 3 — Decide the investment action for each stock using your reasoning:
+        Consider the composite_score alongside all available signals:
+          - RSI and stochastic levels (overbought > 70/80 → prefer WAIT-FOR-ENTRY)
+          - MACD and MA trend direction
+          - Fundamental quality (valuation_grade, financial_health)
+          - Sector conditions and macro context
+        Choose one action per stock: LONG-BUY / HOLD / WAIT-FOR-ENTRY / AVOID
+        This is YOUR reasoned judgment — no formula determines it.
 
-      STEP 4 — Write qualitative content for each position:
-        rationale: 100-150 word synthesis per stock citing signals from all three agents.
-        monitoring_triggers: 2-3 specific, measurable conditions to watch.
-        review_frequency: "DAILY" for high-volatility, "WEEKLY" for most, "MONTHLY" for HOLD/AVOID.
+      STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
+          allocate_portfolio(stocks_json='[
+            {
+              "ticker":          "<TICKER>",
+              "action":          "<YOUR DECIDED ACTION>",
+              "composite_score": <float from Step 2>,
+              "entry_zone_low":  <float from Technical context>,
+              "entry_zone_high": <float from Technical context>
+            }, ...
+          ]')
+        Record allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
 
-      STEP 5 — Output EXACTLY this JSON structure:
+      STEP 5 — Determine portfolio risk_level using your reasoning:
+        Consider the distribution of individual risk_levels, sector volatility,
+        and concentration of overbought positions. Choose: Low / Medium / High / Very High.
+
+      STEP 6 — Write qualitative content for each position:
+        rationale: 100-150 word synthesis citing signals from all three agents and
+          your reasoning for the chosen action (especially if overriding a high score
+          due to overbought conditions or other risk factors).
+        monitoring_triggers: 2-3 specific, measurable conditions.
+        review_frequency: DAILY / WEEKLY / MONTHLY.
+
+      STEP 7 — Output EXACTLY this JSON structure:
       {
         "sector": "$sector",
         "positions": [
@@ -297,33 +317,34 @@ tasks:
               "stop_loss": 809.0,
               "take_profit": 885.0
             },
-            "rationale": "150-word synthesis citing specific signals from all three agents",
-            "monitoring_triggers": ["RSI crosses below 45", "Earnings miss > 5 %"],
+            "rationale": "150-word synthesis explaining why LONG-BUY was chosen",
+            "monitoring_triggers": ["RSI crosses above 75", "Earnings miss > 5 %"],
             "review_frequency": "WEEKLY"
           },
           {
-            "ticker": "AAPL",
-            "action": "HOLD",
+            "ticker": "AEP",
+            "action": "WAIT-FOR-ENTRY",
             "allocation_pct": 0,
             "trade_setup": null,
-            "rationale": "150-word synthesis ...",
-            "monitoring_triggers": ["Price breaks below SMA50"],
-            "review_frequency": "MONTHLY"
+            "rationale": "Strong composite score but RSI=70 and Stochastic=95 indicate
+              overbought conditions. Waiting for pullback to entry zone before initiating.",
+            "monitoring_triggers": ["RSI drops below 60", "Price pulls back to SMA20"],
+            "review_frequency": "WEEKLY"
           }
         ],
         "total_allocated_pct": 35.2,
         "cash_reserve_pct": 64.8,
-        "overall_strategy": "2-3 paragraph explanation of the portfolio construction logic, citing composite scores and key signals",
+        "overall_strategy": "2-3 paragraph explanation of the portfolio construction logic",
         "risk_level": "Medium"
       }
 
       RULES:
-      - action, allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct,
-        and composite_score MUST be copied verbatim from 'build_portfolio' tool output.
-        Do NOT recompute any of these values.
+      - composite_score components: copy verbatim from 'compute_composite_scores'.
+      - allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct:
+        copy verbatim from 'allocate_portfolio'. Do NOT recompute.
+      - action is YOUR decision — explain your reasoning in the rationale.
       - risk_level must be one of: Low, Medium, High, Very High.
       - review_frequency must be one of: DAILY, WEEKLY, MONTHLY.
-      - monitoring_triggers: list of 2-3 specific, measurable conditions.
       - All tickers from fundamental analysis must appear in positions.
       - Output only the JSON dict — no surrounding text, no markdown fences.
     expected_output: >

@@ -1,14 +1,18 @@
 """
-Technical Interpretation Tool — deterministic signal computation.
+Technical Interpretation Tool — deterministic numeric computation only.
 
-Takes raw indicator values already fetched by TechnicalAnalysisTool and applies
-all formula-based rules without any LLM involvement:
-  - entry_zone_low / entry_zone_high  (SMA20-based)
-  - momentum_score                    (point-count rule)
-  - risk_level                        (ATR/price ratio)
-  - overall_signal                    (MACD + MA status)
+Computes formula-based outputs from raw indicator values:
+  - entry_zone_low / entry_zone_high  (SMA20 × 0.98 / SMA20)
+  - momentum_score                    (point-count: +2 per favourable condition, cap 10)
+  - risk_level                        (ATR / current_price thresholds)
 
-The LLM's job is to fetch data then call this tool — it must not recalculate.
+What this tool does NOT do:
+  - Signal interpretation (BULLISH / BEARISH) — that is the LLM's reasoning job.
+  - Overbought / oversold judgment       — that is the LLM's reasoning job.
+  - Buy / hold / sell recommendations    — that is the LLM's reasoning job.
+
+The LLM reads the raw indicators alongside these computed numbers and applies
+its own reasoning to decide overall_signal and investment action.
 """
 
 import json
@@ -17,11 +21,10 @@ from crewai.tools import BaseTool
 
 class TechnicalInterpretationTool(BaseTool):
     name: str = "interpret_technical_indicators"
-    description: str = """Compute derived technical signals from raw indicator values.
+    description: str = """Compute numeric technical outputs from raw indicator values.
 
     Call this tool immediately after 'calculate_technical_indicators' for each ticker.
-    Pass the raw indicator values as a JSON string. Returns entry zone, momentum score,
-    risk level, and overall signal — all computed deterministically.
+    Returns only formula-based numbers — the LLM must reason about what they mean.
 
     Args:
         ticker: Stock ticker symbol (e.g. 'AAPL')
@@ -29,8 +32,6 @@ class TechnicalInterpretationTool(BaseTool):
             {
               "current_price": <float>,
               "sma_20":        <float>,
-              "sma_50":        <float | null>,
-              "sma_200":       <float | null>,
               "atr":           <float>,
               "rsi":           <float | null>,
               "macd_status":   <str>,   e.g. "Bullish", "Bearish", "Neutral"
@@ -39,9 +40,12 @@ class TechnicalInterpretationTool(BaseTool):
               "adx":           <float | null>
             }
 
-    Returns JSON with:
+    Returns JSON with computed numbers only:
         ticker, entry_zone_low, entry_zone_high, momentum_score (0-10),
-        risk_level ("LOW"/"MEDIUM"/"HIGH"), overall_signal ("BULLISH"/"BEARISH"/"MIXED"/"NEUTRAL")
+        risk_level ("LOW"/"MEDIUM"/"HIGH")
+
+    Note: overall_signal, overbought assessment, and investment action are NOT
+    returned — the LLM determines those through reasoning.
     """
 
     def _run(self, ticker: str, raw_indicators_json: str) -> str:
@@ -70,13 +74,13 @@ class TechnicalInterpretationTool(BaseTool):
             entry_zone_high = round(sma_20, 2)
             entry_zone_low  = round(sma_20 * 0.98, 2)
 
-            # ── Momentum score (0-10, +2 per true condition) ─────────────────
+            # ── Momentum score (0-10, +2 per favourable condition) ────────────
             score = 0
             if rsi is not None and 45 <= float(rsi) <= 65:
                 score += 2
             if "bullish" in macd_status:
                 score += 2
-            if "strong uptrend" in ma_status or "uptrend" in ma_status:
+            if "uptrend" in ma_status:
                 score += 2
             if adx is not None and float(adx) > 25:
                 score += 2
@@ -93,28 +97,12 @@ class TechnicalInterpretationTool(BaseTool):
             else:
                 risk_level = "MEDIUM"
 
-            # ── Overall signal ────────────────────────────────────────────────
-            macd_bull = "bullish" in macd_status
-            macd_bear = "bearish" in macd_status
-            ma_up     = "uptrend" in ma_status
-            ma_down   = "downtrend" in ma_status
-
-            if macd_bull and ma_up:
-                overall_signal = "BULLISH"
-            elif macd_bear and ma_down:
-                overall_signal = "BEARISH"
-            elif macd_bull or ma_up:
-                overall_signal = "MIXED"
-            else:
-                overall_signal = "NEUTRAL"
-
             return json.dumps({
-                "ticker":           ticker.upper(),
-                "entry_zone_low":   entry_zone_low,
-                "entry_zone_high":  entry_zone_high,
-                "momentum_score":   momentum_score,
-                "risk_level":       risk_level,
-                "overall_signal":   overall_signal,
+                "ticker":          ticker.upper(),
+                "entry_zone_low":  entry_zone_low,
+                "entry_zone_high": entry_zone_high,
+                "momentum_score":  momentum_score,
+                "risk_level":      risk_level,
             })
 
         except Exception as e:

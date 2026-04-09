@@ -17,7 +17,8 @@ from utils.technical_analysis_tool import TechnicalAnalysisTool
 from utils.technical_interpretation_tool import TechnicalInterpretationTool
 from utils.fundamental_data_tool import FundamentalDataTool
 from utils.fundamental_grader_tool import FundamentalGraderTool
-from utils.portfolio_builder_tool import PortfolioBuilderTool
+from utils.composite_score_tool import CompositeScoreTool
+from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
@@ -112,7 +113,7 @@ class ProspectAICrew:
         investment_strategy_task = Task(
             description=strategy_cfg["description"],
             agent=self.investor_strategist.get_agent(),
-            tools=[PortfolioBuilderTool()],
+            tools=[CompositeScoreTool(), PortfolioAllocatorTool()],
             expected_output=strategy_cfg["expected_output"],
             context=[
                 market_analysis_task,
