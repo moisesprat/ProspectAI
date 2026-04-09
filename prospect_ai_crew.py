@@ -15,6 +15,12 @@ from config.task_config_loader import TaskConfigLoader
 from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
 from utils.fundamental_data_tool import FundamentalDataTool
+from schemas.agent_outputs import (
+    MarketAnalysisOutput,
+    TechnicalAnalysisOutput,
+    FundamentalAnalysisOutput,
+    InvestorStrategicOutput,
+)
 
 
 class ProspectAICrew:
@@ -73,6 +79,7 @@ class ProspectAICrew:
             agent=self.market_analyst.get_agent(),
             tools=[RedditSentimentTool(), self.search_tool],
             expected_output=market_cfg["expected_output"],
+            output_pydantic=MarketAnalysisOutput,
         )
 
         # ── Task 2: Technical Analysis ────────────────────────────────────────
@@ -83,6 +90,7 @@ class ProspectAICrew:
             tools=[TechnicalAnalysisTool()],
             expected_output=technical_cfg["expected_output"],
             context=[market_analysis_task],
+            output_pydantic=TechnicalAnalysisOutput,
         )
 
         # ── Task 3: Fundamental Analysis ──────────────────────────────────────
@@ -93,6 +101,7 @@ class ProspectAICrew:
             tools=[FundamentalDataTool()],
             expected_output=fundamental_cfg["expected_output"],
             context=[market_analysis_task, technical_analysis_task],
+            output_pydantic=FundamentalAnalysisOutput,
         )
 
         # ── Task 4: Investment Strategy ───────────────────────────────────────
@@ -107,6 +116,7 @@ class ProspectAICrew:
                 technical_analysis_task,
                 fundamental_analysis_task,
             ],
+            output_pydantic=InvestorStrategicOutput,
         )
 
         return [
