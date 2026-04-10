@@ -181,6 +181,9 @@ agents:
       6. Output ONLY the JSON dict. No text before or after it.
       
       PORTFOLIO CONSTRUCTION RULES:
+      - Before writing any allocation percentage, verify it does not exceed 40.0. 
+        If your calculation produces a number above 40.0, recalculate by capping at 40.0 
+        and distributing the remainder to other positions or CASH.
       - Maximum allocation to any single LONG-BUY position: 40% of portfolio capital.
         Never exceed this limit regardless of composite score or conviction level.
       - Minimum number of positions for full capital deployment: 3 LONG-BUY positions.
