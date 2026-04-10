@@ -78,34 +78,65 @@ class PortfolioAllocatorTool(BaseTool):
                     "entry_zone_high": float(s.get("entry_zone_high", 0)),
                 })
 
-            # ── Proportional allocation among LONG-BUY positions ─────────────
+            # ── Capped proportional allocation among LONG-BUY positions ────────
+            MAX_SINGLE_ALLOC = 40.0   # hard cap per position
+
             long_buys   = [r for r in results if r["action"] == "LONG-BUY"]
             score_total = sum(r["composite_score"] for r in long_buys)
 
+            # Step 1: compute uncapped proportional allocations
+            raw_allocs = {}
+            if score_total > 0:
+                for r in long_buys:
+                    raw_allocs[r["ticker"]] = r["composite_score"] / score_total * 100.0
+
+            # Step 2: apply 40% cap iteratively
+            # Excess from capped positions is redistributed to uncapped ones.
+            # Iterate until stable (max 10 rounds to prevent infinite loop).
+            capped = dict(raw_allocs)
+            for _ in range(10):
+                capped   = {t: min(v, MAX_SINGLE_ALLOC) for t, v in raw_allocs.items()}
+                overflow = sum(v - MAX_SINGLE_ALLOC for v in raw_allocs.values()
+                               if v > MAX_SINGLE_ALLOC)
+                if overflow < 0.01:
+                    break   # stable
+                # Redistribute overflow to positions still under cap
+                under_cap = {t: v for t, v in capped.items() if v < MAX_SINGLE_ALLOC}
+                if not under_cap:
+                    break   # all positions are at cap, accept the distribution
+                total_under = sum(under_cap.values())
+                for t in under_cap:
+                    capped[t] += overflow * (under_cap[t] / total_under)
+                    capped[t]  = min(capped[t], MAX_SINGLE_ALLOC)
+                raw_allocs = capped
+
+            # Step 3: round and compute cash
+            final_allocs = {t: round(v, 1) for t, v in capped.items()}
+
+            # Fix rounding drift so sum is exactly total_deployed
+            total_deployed = round(sum(final_allocs.values()), 1)
+            if final_allocs:
+                largest = max(final_allocs, key=final_allocs.get)
+                drift = round(total_deployed - sum(final_allocs.values()), 1)
+                if drift != 0:
+                    final_allocs[largest] = round(final_allocs[largest] + drift, 1)
+
+            # Step 4: build output
             output = []
             for r in results:
-                if r["action"] == "LONG-BUY" and score_total > 0:
-                    alloc = round(r["composite_score"] / score_total * 100, 1)
+                if r["action"] == "LONG-BUY" and r["ticker"] in final_allocs:
+                    alloc = final_allocs[r["ticker"]]
                     setup = _trade_setup(r["entry_zone_low"], r["entry_zone_high"])
                 else:
                     alloc = 0.0
                     setup = None
 
                 output.append({
-                    "ticker":        r["ticker"],
-                    "action":        r["action"],
+                    "ticker":         r["ticker"],
+                    "action":         r["action"],
                     "allocation_pct": alloc,
-                    "trade_setup":   setup,
+                    "trade_setup":    setup,
                 })
-
-            # Correct rounding drift so allocations sum to exactly 100 %
-            allocated = [o for o in output if o["allocation_pct"] > 0]
-            if allocated:
-                drift = round(100.0 - sum(o["allocation_pct"] for o in allocated), 1)
-                if drift != 0:
-                    allocated[-1]["allocation_pct"] = round(
-                        allocated[-1]["allocation_pct"] + drift, 1
-                    )
 
             total_allocated = round(sum(o["allocation_pct"] for o in output), 1)
             cash_reserve    = round(100.0 - total_allocated, 1)
