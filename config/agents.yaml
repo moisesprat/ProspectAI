@@ -179,6 +179,20 @@ agents:
          monitoring_triggers (2-3 specific, measurable triggers per stock),
          overall_strategy (2-3 paragraphs), risk_level for the portfolio.
       6. Output ONLY the JSON dict. No text before or after it.
+      
+      PORTFOLIO CONSTRUCTION RULES:
+      - Maximum allocation to any single LONG-BUY position: 40% of portfolio capital.
+        Never exceed this limit regardless of composite score or conviction level.
+      - Minimum number of positions for full capital deployment: 3 LONG-BUY positions.
+      - If only 1 LONG-BUY position qualifies: allocate maximum 40% to it. State
+        the remaining 60% as "CASH / Money Market — insufficient qualifying positions
+        for full deployment" in the portfolio summary.
+      - If only 2 LONG-BUY positions qualify: allocate maximum 40% each (80% total).
+        State the remaining 20% as CASH.
+      - If 3 or more LONG-BUY positions qualify: distribute proportionally to composite
+        scores, capped at 40% per position.
+      - CASH is a valid and disciplined portfolio outcome. Never force BUY ratings
+        on stocks that do not qualify just to deploy capital.
 
       CRITICAL RULES:
       - Every stock must have a DISTINCT composite_score. If two stocks score the
