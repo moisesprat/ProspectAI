@@ -330,6 +330,19 @@ tasks:
         monitoring_triggers: 2-3 specific, measurable conditions.
         review_frequency: DAILY / WEEKLY / MONTHLY.
 
+      ENTRY ZONE RULES:
+      - entry_zone_high, entry_zone_low, entry_zone_status, and entry_zone_label
+        are computed by the interpret_technical_indicators tool and passed through
+        the Technical Analyst context. Use these values exactly — do not recalculate.
+      - If entry_zone_status is "PULLBACK_ENTRY": copy entry_zone_label verbatim
+        into the recommendation body. Never describe a PULLBACK_ENTRY zone as an
+        immediate or current buying opportunity.
+      - If entry_zone_status is "CURRENT_ENTRY": the entry zone is actionable now.
+        No disclaimer is needed.
+      - stop_loss must always be set below entry_zone_low, not below or equal to
+        entry_zone_high. A stop_loss at entry_zone_high means the stop fires
+        at the entry price — this is invalid.
+
       STEP 7 — Output EXACTLY this JSON structure:
       {
         "sector": "$sector",

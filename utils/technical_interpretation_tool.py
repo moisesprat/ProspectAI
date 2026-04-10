@@ -80,9 +80,18 @@ class TechnicalInterpretationTool(BaseTool):
                     "error": "current_price and sma_20 must be positive numbers",
                 })
 
-            # ── Entry zone (2 % buffer below SMA20) ──────────────────────────
-            entry_zone_high = round(sma_20, 2)
-            entry_zone_low  = round(sma_20 * 0.98, 2)
+            # ── Entry zone (strictly below SMA20) ────────────────────────────
+            entry_zone_high = round(sma_20 * 0.995, 2)   # 0.5% below SMA20
+            entry_zone_low  = round(sma_20 * 0.980, 2)   # 2.0% below SMA20
+
+            # If ATR is available, use it to widen entry_zone_low more precisely
+            if atr > 0:
+                atr_based_low = round(entry_zone_high - atr, 2)
+                # Use the higher of ATR-based low and the 2% floor
+                entry_zone_low = max(atr_based_low, round(sma_20 * 0.980, 2))
+
+            # Clamp entry_zone_low: must not go more than 3% below SMA20
+            entry_zone_low = max(entry_zone_low, round(sma_20 * 0.970, 2))
 
             # ── Momentum score (0-10, weighted) ──────────────────────────────
             score = 0.0
@@ -162,12 +171,30 @@ class TechnicalInterpretationTool(BaseTool):
             else:
                 risk_level = "MEDIUM"
 
+            # ── Entry zone status and label ───────────────────────────────────
+            if current_price > entry_zone_high:
+                gap_pct = round((current_price - entry_zone_high) / entry_zone_high * 100, 1)
+                entry_zone_status = "PULLBACK_ENTRY"
+                entry_zone_label = (
+                    f"PULLBACK ENTRY — not actionable at current price "
+                    f"({current_price:.2f} is {gap_pct}% above zone top {entry_zone_high:.2f}). "
+                    f"Wait for retracement to {entry_zone_low:.2f}–{entry_zone_high:.2f}."
+                )
+            else:
+                entry_zone_status = "CURRENT_ENTRY"
+                entry_zone_label = (
+                    f"Actionable now — current price {current_price:.2f} "
+                    f"is within or below entry zone {entry_zone_low:.2f}–{entry_zone_high:.2f}."
+                )
+
             return json.dumps({
-                "ticker":          ticker.upper(),
-                "entry_zone_low":  entry_zone_low,
-                "entry_zone_high": entry_zone_high,
-                "momentum_score":  momentum_score,
-                "risk_level":      risk_level,
+                "ticker":            ticker.upper(),
+                "entry_zone_low":    entry_zone_low,
+                "entry_zone_high":   entry_zone_high,
+                "entry_zone_status": entry_zone_status,
+                "entry_zone_label":  entry_zone_label,
+                "momentum_score":    momentum_score,
+                "risk_level":        risk_level,
             })
 
         except Exception as e:
