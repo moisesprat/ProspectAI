@@ -80,19 +80,6 @@ class TechnicalInterpretationTool(BaseTool):
                     "error": "current_price and sma_20 must be positive numbers",
                 })
 
-            # ── Entry zone (strictly below SMA20) ────────────────────────────
-            entry_zone_high = round(sma_20 * 0.995, 2)   # 0.5% below SMA20
-            entry_zone_low  = round(sma_20 * 0.980, 2)   # 2.0% below SMA20
-
-            # If ATR is available, use it to widen entry_zone_low more precisely
-            if atr > 0:
-                atr_based_low = round(entry_zone_high - atr, 2)
-                # Use the higher of ATR-based low and the 2% floor
-                entry_zone_low = max(atr_based_low, round(sma_20 * 0.980, 2))
-
-            # Clamp entry_zone_low: must not go more than 3% below SMA20
-            entry_zone_low = max(entry_zone_low, round(sma_20 * 0.970, 2))
-
             # ── Momentum score (0-10, weighted) ──────────────────────────────
             score = 0.0
 
@@ -162,6 +149,93 @@ class TechnicalInterpretationTool(BaseTool):
 
             momentum_score = round(min(score, 10.0), 2)
 
+            # ── Regime detection ─────────────────────────────────────────────────────
+            adx_f = float(adx) if adx is not None else 0.0
+
+            strong_uptrend = (
+                adx_f > 25 and
+                sma_50_f is not None and
+                sma_200_f is not None and
+                sma_20 > sma_50_f > sma_200_f
+            )
+
+            downtrend = (
+                sma_50_f is not None and
+                sma_20 < sma_50_f
+            )
+
+            # ── Entry zone by regime ──────────────────────────────────────────────────
+            if strong_uptrend:
+                # TRENDING regime: anchor to current price, not SMA20.
+                # Price may stay above SMA20 for weeks in a bull run — using SMA20
+                # as the ceiling produces 100% cash portfolios in bull markets.
+                if atr > 0:
+                    entry_zone_high = round(current_price * 0.990, 2)   # 1% below price
+                    entry_zone_low  = round(current_price - atr * 1.5, 2)
+                else:
+                    entry_zone_high = round(current_price * 0.990, 2)
+                    entry_zone_low  = round(current_price * 0.975, 2)
+                # Clamp: zone cannot drop below SMA50
+                if sma_50_f is not None:
+                    entry_zone_low = max(entry_zone_low, round(sma_50_f * 1.001, 2))
+                regime = "TRENDING"
+
+            elif downtrend:
+                # REVERTING or BEARISH regime: anchor conservatively to SMA20.
+                # Price in a downtrend should not be chased — wait for SMA20 support.
+                entry_zone_high = round(sma_20 * 0.995, 2)
+                entry_zone_low  = round(sma_20 * 0.980, 2)
+                regime = "REVERTING"
+
+            else:
+                # NEUTRAL regime: split between current price and SMA20.
+                mid = (current_price + sma_20) / 2.0
+                if atr > 0:
+                    entry_zone_high = round(mid * 0.995, 2)
+                    entry_zone_low  = round(mid - atr, 2)
+                else:
+                    entry_zone_high = round(mid * 0.995, 2)
+                    entry_zone_low  = round(mid * 0.980, 2)
+                regime = "NEUTRAL"
+
+            # ── Universal clamps ──────────────────────────────────────────────────────
+            # 1. entry_zone_high must always be strictly below sma_20 by at least 0.4%
+            #    in REVERTING/NEUTRAL to prevent SMA20 = entry zone top bug.
+            if regime != "TRENDING":
+                entry_zone_high = min(entry_zone_high, round(sma_20 * 0.995, 2))
+
+            # 2. entry_zone_low must not fall more than 5% below entry_zone_high.
+            entry_zone_low = max(entry_zone_low, round(entry_zone_high * 0.950, 2))
+
+            # 3. Ensure low < high (rounding safety).
+            if entry_zone_low >= entry_zone_high:
+                entry_zone_low = round(entry_zone_high * 0.985, 2)
+
+            entry_zone_high = round(entry_zone_high, 2)
+            entry_zone_low  = round(entry_zone_low,  2)
+
+            # ── Entry zone status ─────────────────────────────────────────────────────
+            if current_price > entry_zone_high * 1.01:
+                gap_pct = round((current_price - entry_zone_high) / entry_zone_high * 100, 1)
+                entry_zone_status = "PULLBACK_ENTRY"
+                entry_zone_label = (
+                    f"PULLBACK ENTRY — not actionable at current price "
+                    f"({current_price:.2f} is {gap_pct}% above zone top {entry_zone_high:.2f}). "
+                    f"Wait for retracement to {entry_zone_low:.2f}–{entry_zone_high:.2f}."
+                )
+            elif current_price >= entry_zone_low:
+                entry_zone_status = "CURRENT_ENTRY"
+                entry_zone_label = (
+                    f"Actionable now — current price {current_price:.2f} is within "
+                    f"entry zone {entry_zone_low:.2f}–{entry_zone_high:.2f}."
+                )
+            else:
+                entry_zone_status = "BELOW_ZONE"
+                entry_zone_label = (
+                    f"Price {current_price:.2f} is below entry zone — potential "
+                    f"breakdown. Verify support before entering."
+                )
+
             # ── Risk level (ATR / current_price) ─────────────────────────────
             atr_ratio = atr / current_price if current_price > 0 else 0
             if atr_ratio > 0.03:
@@ -171,30 +245,15 @@ class TechnicalInterpretationTool(BaseTool):
             else:
                 risk_level = "MEDIUM"
 
-            # ── Entry zone status and label ───────────────────────────────────
-            if current_price > entry_zone_high:
-                gap_pct = round((current_price - entry_zone_high) / entry_zone_high * 100, 1)
-                entry_zone_status = "PULLBACK_ENTRY"
-                entry_zone_label = (
-                    f"PULLBACK ENTRY — not actionable at current price "
-                    f"({current_price:.2f} is {gap_pct}% above zone top {entry_zone_high:.2f}). "
-                    f"Wait for retracement to {entry_zone_low:.2f}–{entry_zone_high:.2f}."
-                )
-            else:
-                entry_zone_status = "CURRENT_ENTRY"
-                entry_zone_label = (
-                    f"Actionable now — current price {current_price:.2f} "
-                    f"is within or below entry zone {entry_zone_low:.2f}–{entry_zone_high:.2f}."
-                )
-
             return json.dumps({
-                "ticker":            ticker.upper(),
-                "entry_zone_low":    entry_zone_low,
-                "entry_zone_high":   entry_zone_high,
-                "entry_zone_status": entry_zone_status,
-                "entry_zone_label":  entry_zone_label,
-                "momentum_score":    momentum_score,
-                "risk_level":        risk_level,
+                "ticker":             ticker.upper(),
+                "entry_zone_low":     entry_zone_low,
+                "entry_zone_high":    entry_zone_high,
+                "entry_zone_status":  entry_zone_status,
+                "entry_zone_label":   entry_zone_label,
+                "regime":             regime,
+                "momentum_score":     momentum_score,
+                "risk_level":         risk_level,
             })
 
         except Exception as e:
