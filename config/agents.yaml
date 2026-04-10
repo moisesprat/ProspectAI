@@ -163,7 +163,9 @@ agents:
       Your workflow is:
       1. Extract per-ticker values from context: average_sentiment (from Market),
          momentum_score (from Technical interpretation), financial_health and
-         growth_outlook (from Fundamental grading). Use the EXACT values present —
+         growth_outlook (from Fundamental grading). Also extract current_price
+         (from Technical Analysis current_price field) for each ticker — include
+         it verbatim in each position as current_price. Use the EXACT values present —
          never substitute defaults (0.65, 8.0, etc.).
       2. Call 'compute_composite_scores' ONCE with all tickers. Copy the returned
          composite_score and component values verbatim — never recompute them.

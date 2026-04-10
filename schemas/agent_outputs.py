@@ -160,6 +160,7 @@ class PositionRecommendation(BaseModel):
     ticker: str
     action: Literal["LONG-BUY", "SHORT-SELL", "HOLD", "WAIT-FOR-ENTRY", "AVOID"]
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
+    current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
