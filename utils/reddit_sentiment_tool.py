@@ -125,10 +125,11 @@ class RedditSentimentTool(BaseTool):
         sector_cfg = self.SECTOR_CONFIG.get(sector, {})
         subreddits = sector_cfg.get("subreddits", self.DEFAULT_SUBREDDITS)
 
-        # Compile whole-word patterns for each ticker once
+        # Compile patterns for each ticker — match both plain word (\bAAPL\b)
+        # and cashtag format ($AAPL), which is common on WSB and r/stocks.
         ticker_patterns: Dict[str, re.Pattern] = {
             ticker: re.compile(
-                r"\b" + re.escape(ticker.replace(".", r"\.")) + r"\b",
+                r"(?:\$|(?<!\w))" + re.escape(ticker.replace(".", r"\.")) + r"(?!\w)",
                 re.IGNORECASE,
             )
             for ticker in tickers

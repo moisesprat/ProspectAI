@@ -25,9 +25,14 @@ tasks:
       STEP 2 — Handle fallback if needed:
         If fallback_required is True, use 'search_internet' (SerperDevTool) with query:
           "$sector sector stocks investors discussing $today"
-        Extract up to 5 stock tickers from the search snippets. Assign:
+        Extract up to 5 stock tickers from the search snippets. For each ticker, set:
           mention_count = 0, relevance_score = 0.5
-          average_sentiment: positive news = 0.65, mixed = 0.40, negative = 0.15
+          average_sentiment: assign a float in [-1.0, +1.0] based on the actual tone
+            of the snippets for that ticker. Use the full range — do NOT default to 0.65.
+            Examples: strongly bullish coverage → 0.75-0.85, mildly positive → 0.40-0.55,
+            neutral/mixed → 0.10-0.30, mildly negative → -0.10 to -0.30,
+            bearish/risk-focused → -0.40 to -0.70.
+            Each ticker must get a DIFFERENT score reflecting its specific news tone.
         Set data_source to "serper_fallback".
 
       STEP 3 — Write LLM rationales (200-400 words each):
