@@ -343,6 +343,29 @@ tasks:
         entry_zone_high. A stop_loss at entry_zone_high means the stop fires
         at the entry price — this is invalid.
 
+      SCALED ENTRY RULE (new action available for borderline cases):
+      In addition to LONG-BUY, WAIT-FOR-ENTRY, HOLD, and AVOID, you may use
+      SCALED-ENTRY when ALL of the following are true:
+        1. regime is "TRENDING" (strong uptrend confirmed by ADX > 25 + SMA alignment)
+        2. entry_zone_status is "PULLBACK_ENTRY" but gap is less than 5%
+        3. composite_score is 75 or above
+        4. The stock does not have extreme overbought conditions (Stochastic < 88)
+
+      When using SCALED-ENTRY:
+        - Set allocation_pct to half the normal LONG-BUY allocation (max 20%)
+        - Add this exact text to the rationale:
+          "SCALED ENTRY: Deploy [X]% at current price [price]. Reserve limit
+           order at [entry_zone_low]–[entry_zone_high] for remaining [X]% allocation.
+           Blended entry approximately [midpoint]."
+        - Set trade_setup using current price as entry_zone_high for stop/target calc
+        - Monitoring triggers must describe thesis failure, not entry confirmation
+
+      When NOT to use SCALED-ENTRY:
+        - Gap above entry zone is 5% or more → WAIT-FOR-ENTRY
+        - Stochastic above 88 → WAIT-FOR-ENTRY regardless of gap
+        - regime is REVERTING or NEUTRAL → WAIT-FOR-ENTRY
+        - Downtrend structure (SMA20 < SMA50) → WAIT-FOR-ENTRY
+
       STEP 7 — Output EXACTLY this JSON structure:
       {
         "sector": "$sector",
