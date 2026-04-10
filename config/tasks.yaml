@@ -376,6 +376,7 @@ tasks:
       - All tickers from fundamental analysis must appear in positions.
       - Output only the JSON dict — no surrounding text, no markdown fences.
       - Maximum single-position size is 40% of portfolio capital. If fewer than 3 stocks qualify for LONG-BUY, allocate remaining capital explicitly to CASH and state the cash percentage in the portfolio summary. Never exceed 40% on a single position under any circumstance.
+    expected_output: >
       JSON dict with sector='$sector', positions
       (ticker/action/allocation_pct/trade_setup/rationale/monitoring_triggers/
       review_frequency), total_allocated_pct, cash_reserve_pct,
