@@ -385,7 +385,7 @@ tasks:
               / (entry_zone_low - stop_loss) >= 1.5         [minimum threshold]
         ALSO CHECK: if the position rationale states entry at current price
         (not at entry zone), verify R/R is calculated from current price, not
-        entry zone. A take_profit only $$2 above a $$311 current price is CRITICAL
+        entry zone. A take_profit only $2 above a $311 current price is CRITICAL
         even if it is above entry_zone_high.
 
       Condition B — Action vs composite_score consistency:
@@ -416,14 +416,14 @@ tasks:
       directions to calculate.
 
       If changing entry price → provide recalculated stop_loss and take_profit:
-        Example: "Enter at current price $$192.15. Recalculated setup:
+        Example: "Enter at current price $192.15. Recalculated setup:
           entry_zone_low=190.00, entry_zone_high=192.15,
           stop_loss=180.00 (6% below entry), take_profit=207.23
           R/R = (207.23 - 192.15) / (190.00 - 180.00) = 1.51 ✓"
 
       If fixing allocation only → provide exact new allocation_pct:
         Example: "Set allocation_pct=28 (was 36.1). Rationale: current price
-          $$311.53 is 5.2% above entry zone, warranting conservative sizing."
+          $311.53 is 5.2% above entry zone, warranting conservative sizing."
 
       If fixing trigger only → provide replacement trigger text:
         Example: "Replace 'RSI crosses above 50' with 'RSI closes above 50 on
