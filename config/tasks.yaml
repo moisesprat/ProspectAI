@@ -366,82 +366,94 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   critique_review:
     description: |
-      You are the Portfolio Critic. Review the InvestorStrategicOutput from context.
-      Your goal is targeted improvement, not comprehensive reconstruction.
+      You are the Critic Agent in the ProspectAI pipeline.
+      You receive the Draft Portfolio plus all upstream data (Market, Technical,
+      Fundamental). Your job is to challenge every position and find every flaw.
 
-      STEP 1 — READ the portfolio from context.
-      Extract for each position: ticker, action, allocation_pct, trade_setup
-      (entry_zone_low, entry_zone_high, stop_loss, take_profit), rationale,
-      monitoring_triggers, review_frequency.
-      Also read: total_allocated_pct, cash_reserve_pct, overall_strategy, risk_level.
+      STEP 1 — For EACH ticker in the draft, extract:
+        From Technical context: RSI, Stochastic, MACD status, momentum_score,
+          regime, entry_zone_status, entry_zone_low, entry_zone_high, ma_status.
+        From Market context: average_sentiment, mention_count.
+        From Fundamental context: valuation_grade, financial_health, growth_outlook.
+        From Draft: action, allocation_pct, rationale, monitoring_triggers.
 
-      STEP 2 — CHECK STRUCTURAL VALIDITY per position.
-      For each position, verify these four conditions:
+      STEP 2 — Apply the adversarial checklist to EACH ticker.
+        You MUST find at least one issue per position.
+        Flag every violation using these issue types:
 
-      Condition A — Trade setup math (LONG-BUY positions only):
-        stop_loss < entry_zone_low                          [invariant]
-        take_profit > entry_zone_high                       [invariant]
-        R/R = (take_profit - entry_zone_high)
-              / (entry_zone_low - stop_loss) >= 1.5         [minimum threshold]
-        ALSO CHECK: if the position rationale states entry at current price
-        (not at entry zone), verify R/R is calculated from current price, not
-        entry zone. A take_profit only $2 above a $311 current price is CRITICAL
-        even if it is above entry_zone_high.
+        OVERBOUGHT_IGNORED       RSI > 70 or Stochastic > 80 and action is LONG-BUY
+                                 with no explicit overbought acknowledgment in rationale.
+        ENTRY_ZONE_VIOLATED      LONG-BUY with entry_zone_status="PULLBACK_ENTRY" and
+                                 gap ≥ 5%, yet not using SCALED-ENTRY or WAIT-FOR-ENTRY.
+        FABRICATED_SIGNAL        Rationale says "strong momentum" but momentum_score < 6,
+                                 or says "bullish" but MACD is Bearish or Mixed.
+        ALLOCATION_MISMATCH      Allocation rank does not match composite_score rank —
+                                 a lower-scoring stock gets a higher allocation.
+        SENTIMENT_CONTRADICTION  average_sentiment < 0.0 with action LONG-BUY and no
+                                 negative-sentiment caveat in the rationale.
+        VALUATION_IGNORED        valuation_grade is VERY_EXPENSIVE with LONG-BUY and
+                                 no valuation risk mentioned in rationale.
+        TRIGGER_CONTRADICTION    A monitoring trigger for LONG-BUY fires during a
+                                 normal uptrend (e.g. RSI > 70 when uptrend is expected).
+        CONCENTRATION_BREACH     allocation_pct > 40.0 for any single position.
+        WEAK_FUNDAMENTALS_BUY    financial_health = WEAK with LONG-BUY and no
+                                 acknowledgment of balance sheet risk.
+        MISSING_STOP_LOGIC       stop_loss is set at or above entry_zone_high.
+        VAGUE_RATIONALE          Rationale makes claims without citing specific numbers
+                                 (no RSI value, no momentum_score, no specific metric).
 
-      Condition B — Action vs composite_score consistency:
-        composite >= 70: LONG-BUY or HOLD is defensible without explanation
-        composite < 50: AVOID or WAIT-FOR-ENTRY is defensible without explanation
-        composite 50-70: any action is defensible if rationale cites specific reasons
+        For each finding, state: the exact data value that creates the contradiction
+        AND what the draft says about it. Do not describe issues vaguely.
 
-      Condition C — Allocation validity:
-        allocation_pct > 0 only for LONG-BUY, HOLD, SHORT-SELL
-        allocation_pct = 0 for WAIT-FOR-ENTRY and AVOID (correct by definition)
+      STEP 3 — Portfolio-level review:
+        - Does total_allocated_pct + cash_reserve_pct = 100?
+        - Does any position exceed 40% allocation?
+        - Are there at least 3 distinct composite_scores?
+        - Do all monitoring triggers reference specific measurable thresholds?
+        - Is the overall_strategy internally consistent with the individual actions?
 
-      Condition D — Trigger specificity:
-        At least one trigger must name a specific measurable threshold
-        (price level, RSI value, MACD direction, timeframe)
-        "Monitor the market" or "watch for news" alone → condition fails
+      STEP 4 — Write revision_directives as exact instructions:
+        Format: "[TICKER]: [specific change required] because [exact data contradiction]"
+        Example: "NVDA: Change action from LONG-BUY to WAIT-FOR-ENTRY because RSI=78
+                  and Stochastic=82 indicate overbought conditions — neither value
+                  appears in the rationale nor triggers."
+        Every CRITICAL and MAJOR issue must have a corresponding directive.
 
-      STEP 3 — ASSIGN VERDICT.
-      PASS:       All four conditions met. No instruction needed.
-      WEAK:       Condition D fails only (vague trigger). Minor instruction only.
-      CHALLENGED: Condition B or C fails, OR R/R is 1.0–1.49.
-      CRITICAL:   Condition A fails (invariant violated or R/R < 1.0), OR
-                  take_profit is at or below current entry price.
+      STEP 5 — Output EXACTLY this structure (pure Python dict, no markdown):
+      {
+        "sector": "$sector",
+        "draft_assessment": "One paragraph summarizing the draft's key weaknesses.
+          Do not praise. State what is wrong and why it matters for risk.",
+        "per_ticker_critiques": [
+          {
+            "ticker": "NVDA",
+            "severity": "CRITICAL",
+            "issue_type": "OVERBOUGHT_IGNORED",
+            "finding": "RSI=78 and Stochastic=82 but action is LONG-BUY. Neither
+              value is mentioned in the 150-word rationale.",
+            "instruction": "Change action to WAIT-FOR-ENTRY or add explicit RSI/
+              Stochastic overbought acknowledgment and set RSI > 75 exit trigger."
+          }
+        ],
+        "portfolio_level_issues": [
+          "AAPL allocation (42%) exceeds the 40% single-position cap.",
+          "Two positions have identical composite_score of 72.4 — input values
+           were almost certainly defaulted rather than extracted from context."
+        ],
+        "revision_directives": [
+          "NVDA: Change action to WAIT-FOR-ENTRY because RSI=78, Stochastic=82.",
+          "AAPL: Reduce allocation from 42% to ≤40% to comply with cap rule."
+        ],
+        "approved_positions": []
+      }
 
-      Add all PASS positions to approved_positions unchanged.
-
-      STEP 4 — WRITE required_correction FOR NON-PASS POSITIONS.
-      One instruction only. No alternatives. Provide calculated values, not
-      directions to calculate.
-
-      If changing entry price → provide recalculated stop_loss and take_profit:
-        Example: "Enter at current price $192.15. Recalculated setup:
-          entry_zone_low=190.00, entry_zone_high=192.15,
-          stop_loss=180.00 (6% below entry), take_profit=207.23
-          R/R = (207.23 - 192.15) / (190.00 - 180.00) = 1.51 ✓"
-
-      If fixing allocation only → provide exact new allocation_pct:
-        Example: "Set allocation_pct=28 (was 36.1). Rationale: current price
-          $311.53 is 5.2% above entry zone, warranting conservative sizing."
-
-      If fixing trigger only → provide replacement trigger text:
-        Example: "Replace 'RSI crosses above 50' with 'RSI closes above 50 on
-          weekly chart for 2 consecutive weeks confirming recovery momentum.'"
-
-      STEP 5 — PORTFOLIO-LEVEL CHECK.
-      Verify: sum(allocation_pct for all positions) == total_allocated_pct ± 0.5%
-      Verify: total_allocated_pct + cash_reserve_pct <= 100.5%
-      Verify: cash_reserve_pct >= 5.0 (minimum buffer)
-      If any check fails, add to portfolio_level_issues with the exact numbers.
-      Maximum 2 portfolio-level issues. Do not add subjective concerns.
-
-      STEP 6 — SCORE AND OUTPUT.
-      Score 7 dimensions using the rubric in your backstory.
-      Set approved = total_score >= 70 AND no CRITICAL verdicts exist.
-      Write overall_verdict: 2 sentences maximum. State total_score, number of
-      CRITICAL issues, number of MAJOR issues. Do not elaborate further.
-      Output only the CritiqueResult JSON. No markdown fences. No surrounding text.
+      RULES:
+      - You MUST produce at least one critique per ticker.
+      - Severity CRITICAL = requires mandatory action change or allocation change.
+      - Severity MAJOR = requires rationale or trigger correction.
+      - Severity MINOR = recommendation to improve clarity or precision.
+      - approved_positions lists tickers where the draft is FULLY correct (can be empty).
+      - Never soften a finding with "however" or "overall reasonable". Report the flaw.
     expected_output: >
       Python dict with sector='$sector', draft_assessment, per_ticker_critiques
       (list with ticker/severity/issue_type/finding/instruction), portfolio_level_issues,
