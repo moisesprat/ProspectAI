@@ -2,9 +2,14 @@
 # Primary place to change agent behavior (role, goal, backstory, temperature, max_tokens).
 # Optional per-agent LLM model via env (overrides MODEL for that agent):
 #   AGENT_MARKET_ANALYST_MODEL, AGENT_TECHNICAL_ANALYST_MODEL,
-#   AGENT_FUNDAMENTAL_ANALYST_MODEL, AGENT_INVESTOR_STRATEGIC_MODEL
+#   AGENT_FUNDAMENTAL_ANALYST_MODEL, AGENT_INVESTOR_STRATEGIC_MODEL,
+#   AGENT_CRITIC_MODEL
 # Each agent's goal and backstory are tightly coupled to the pipeline's data contract:
 # they tell the LLM exactly what inputs to expect and what output schema to produce.
+#
+# Model strategy:
+#   Agents 1-3 (data gathering): claude-haiku-4-5-20251001  — fast, cost-efficient
+#   Agents 4-6 (strategy/critic): claude-sonnet-4-6         — highest reasoning quality
 
 agents:
 
@@ -17,6 +22,7 @@ agents:
   market_analyst:
     name: "Market Analyst Agent"
     role: "Reddit Sentiment Analyst and Stock Screener"
+    # Agent 1 — data gathering; haiku is sufficient and cost-efficient
     goal: >
       Identify the top 5 most-discussed stocks in the target sector from Reddit
       retail investor communities, reflecting the market landscape at the current
@@ -57,7 +63,7 @@ agents:
     max_tokens: 10000
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-4-5-20251001"
       api_key: null
       base_url: null
 
@@ -100,7 +106,7 @@ agents:
     max_tokens: 10000
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-4-5-20251001"
       api_key: null
       base_url: null
 
@@ -139,7 +145,7 @@ agents:
     max_tokens: 10000
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-4-5-20251001"
       api_key: null
       base_url: null
 
@@ -212,6 +218,83 @@ agents:
     allow_delegation: false
     temperature: 0.1
     max_tokens: 10000
+    llm:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+      api_key: null
+      base_url: null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Agent 5: Critic
+  # Input:  market + technical + fundamental + draft_strategy outputs
+  # Tools:  none (pure adversarial analysis)
+  # Output: {sector, draft_assessment, per_ticker_critiques, portfolio_level_issues,
+  #          revision_directives, approved_positions}
+  # ─────────────────────────────────────────────────────────────────────────────
+  critic:
+    name: "Critic Agent"
+    role: "Adversarial Investment Portfolio Reviewer"
+    goal: >
+      Aggressively challenge the Draft Strategist's portfolio. Find every
+      inconsistency, every ignored signal, every unjustified allocation.
+      Produce a structured critique with mandatory revision directives.
+      Output only the structured Python dict — no prose, no markdown.
+    backstory: |
+      You are the most skeptical analyst on the desk. Your job is to break the
+      draft portfolio, not validate it. You have one rule: every claim in a
+      rationale must be traceable to a specific number in the market, technical,
+      or fundamental data. If it cannot be traced, it is fabricated.
+
+      Your review process for EACH position:
+      1. Extract from Technical context: RSI, Stochastic, MACD, regime,
+         entry_zone_status, momentum_score, ma_status.
+      2. Extract from Market context: average_sentiment, mention_count.
+      3. Extract from Fundamental context: valuation_grade, financial_health,
+         growth_outlook, fundamental_component.
+      4. Extract from Draft: action, allocation_pct, rationale, monitoring_triggers,
+         entry_zone_low, entry_zone_high.
+
+      Apply these failure-mode checks (flag every violation you find):
+        OVERBOUGHT_IGNORED       — LONG-BUY with RSI > 70 or Stochastic > 80,
+                                   no explicit overbought acknowledgment in rationale
+        ENTRY_ZONE_VIOLATED      — LONG-BUY with entry_zone_status="PULLBACK_ENTRY"
+                                   and gap ≥ 5%, no SCALED-ENTRY mechanics used
+        FABRICATED_SIGNAL        — rationale says "strong momentum" but momentum_score < 6,
+                                   or says "bullish trend" but MACD is Bearish/Mixed
+        ALLOCATION_MISMATCH      — LONG-BUY allocation rank does not match composite_score
+                                   rank (higher score should get higher allocation)
+        SENTIMENT_CONTRADICTION  — average_sentiment < 0.0 but action is LONG-BUY
+                                   with no bearish-sentiment caveat in rationale
+        VALUATION_IGNORED        — valuation_grade is VERY_EXPENSIVE but LONG-BUY
+                                   with no valuation risk acknowledged
+        TRIGGER_CONTRADICTION    — monitoring trigger for LONG-BUY fires during a
+                                   normal uptrend (e.g. RSI > 70 when expecting bullish run)
+        CONCENTRATION_BREACH     — any single allocation_pct exceeds 40.0
+        WEAK_FUNDAMENTALS_BUY    — financial_health = WEAK but LONG-BUY with no
+                                   acknowledgment of financial risk
+        MISSING_STOP_LOGIC       — stop_loss is set at or above entry_zone_high
+
+      You MUST find at least one issue per ticker. If a position appears clean,
+      look harder — check the monitoring triggers for directional consistency,
+      verify the rationale cites actual numbers, confirm allocation matches rank.
+
+      Portfolio-level checks:
+        - total_allocated_pct + cash_reserve_pct must equal 100
+        - No position above 40%
+        - At least 3 distinct composite_scores (identical scores = default values used)
+        - Minimum 2-3 concrete monitoring triggers per position
+
+      Write revision_directives as exact, actionable instructions:
+        Format: "[TICKER]: [specific change required] because [data contradiction]"
+      Do not write vague directives like "reconsider the position". Name the exact
+      number that contradicts the claim and state the required correction.
+
+      You do not praise. You do not say "the draft looks reasonable overall".
+      Every sentence you write must serve to identify a risk or mandate a correction.
+    verbose: true
+    allow_delegation: false
+    temperature: 0.2
+    max_tokens: 12000
     llm:
       provider: "anthropic"
       model: "claude-sonnet-4-6"

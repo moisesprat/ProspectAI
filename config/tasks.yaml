@@ -252,39 +252,33 @@ tasks:
       assessment), and sector_fundamental_summary string.
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Task 4: Investment Strategy
+  # Task 4: Draft Strategy
   # Agent:   Investor Strategic
   # Context: market_analysis_task, technical_analysis_task, fundamental_analysis_task
-  # Tools:   none (pure synthesis)
-  # Output:  pipeline_version 2.0 structured JSON (machine-readable portfolio)
+  # Tools:   compute_composite_scores, allocate_portfolio
+  # Output:  InvestorStrategicOutput (DRAFT — will be reviewed by Critic)
   # ─────────────────────────────────────────────────────────────────────────────
-  investment_strategy:
+  draft_strategy:
     description: |
-      You are the final agent in the ProspectAI pipeline.
-      Synthesize the outputs from all three prior agents and produce a machine-readable
-      JSON investment recommendation. This output is parsed programmatically —
-      no markdown fences, no text before or after the JSON.
+      You are the Draft Strategist in the ProspectAI pipeline.
+      Synthesize the outputs from the Market, Technical, and Fundamental agents
+      and produce a machine-readable JSON portfolio draft.
+      NOTE: Your output will be reviewed by a Critic Agent who will challenge
+      every position. Be rigorous — any claim you make must cite specific data.
 
       STEP 1 — Cross-reference data for each ticker:
         From Market context:      average_sentiment (float), rationale
         From Technical context:   momentum_score, entry_zone_low, entry_zone_high,
-                                  risk_level, overall_signal, key_signals, raw_indicators
+                                  entry_zone_status, regime, risk_level,
+                                  overall_signal, key_signals, raw_indicators
         From Fundamental context: financial_health, growth_outlook, valuation_grade,
                                   fundamental_component, risk_factors, catalysts
 
-        CRITICAL: average_sentiment is a float between -1.0 and 1.0. It comes from
-        the Market Analyst's candidate_stocks list for each ticker. Extract the EXACT
-        value from context — do NOT use 0.65 or any default. If you cannot find it,
-        use 0.0 (neutral) and note the missing data.
-
-        CRITICAL: momentum_score is a float between 0 and 10. It comes from the
-        Technical Analyst's interpretation output for each ticker. Extract the EXACT
+        CRITICAL: average_sentiment is a float between -1.0 and 1.0. Extract the EXACT
+        value — do NOT use 0.65 or any default.
+        CRITICAL: momentum_score is a float between 0 and 10. Extract the EXACT
         value — do NOT default to 8.0 or any other fixed number.
-
-        CRITICAL: Every stock must have a DISTINCT composite_score. If two stocks
-        produce the same score, re-check the input values you used — they almost
-        certainly differ. The final scores must show meaningful spread reflecting
-        the actual variation in sentiment, technical, and fundamental data.
+        CRITICAL: Every stock must have a DISTINCT composite_score.
 
       STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
           compute_composite_scores(stocks_json='[
@@ -298,14 +292,15 @@ tasks:
           ]')
         Record each stock's composite_score and components verbatim.
 
-      STEP 3 — Decide the investment action for each stock using your reasoning:
-        Consider the composite_score alongside all available signals:
-          - RSI and stochastic levels (overbought > 70/80 → prefer WAIT-FOR-ENTRY)
-          - MACD and MA trend direction
-          - Fundamental quality (valuation_grade, financial_health)
-          - Sector conditions and macro context
-        Choose one action per stock: LONG-BUY / HOLD / WAIT-FOR-ENTRY / AVOID
-        This is YOUR reasoned judgment — no formula determines it.
+      STEP 3 — Decide the investment action for each stock:
+        Choose one action per stock: LONG-BUY / SCALED-ENTRY / HOLD / WAIT-FOR-ENTRY / AVOID
+        Apply these rules:
+          - RSI > 70 or Stochastic > 80 → prefer WAIT-FOR-ENTRY
+          - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% → WAIT-FOR-ENTRY
+          - entry_zone_status = "PULLBACK_ENTRY" with gap < 5% + regime="TRENDING"
+            + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY (half allocation, max 20%)
+          - VERY_EXPENSIVE valuation → raise bar for LONG-BUY
+          - financial_health = WEAK → acknowledge explicitly or avoid
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
           allocate_portfolio(stocks_json='[
@@ -318,55 +313,19 @@ tasks:
             }, ...
           ]')
         Record allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
+        Maximum single position: 40%. SCALED-ENTRY positions cap at 20%.
 
-      STEP 5 — Determine portfolio risk_level using your reasoning:
-        Consider the distribution of individual risk_levels, sector volatility,
-        and concentration of overbought positions. Choose: Low / Medium / High / Very High.
-
-      STEP 6 — Write qualitative content for each position:
-        rationale: 100-150 word synthesis citing signals from all three agents and
-          your reasoning for the chosen action (especially if overriding a high score
-          due to overbought conditions or other risk factors).
-        monitoring_triggers: 2-3 specific, measurable conditions.
+      STEP 5 — Write qualitative content for each position:
+        rationale: 100-150 words citing specific numbers from all three agents.
+          Every claim must reference a data point (e.g. "RSI=67", "momentum_score=7.8").
+        monitoring_triggers: 2-3 specific, measurable thresholds directionally
+          consistent with your action. LONG-BUY triggers must fire on bearish
+          reversal patterns, not normal uptrend levels.
         review_frequency: DAILY / WEEKLY / MONTHLY.
 
-      ENTRY ZONE RULES:
-      - entry_zone_high, entry_zone_low, entry_zone_status, and entry_zone_label
-        are computed by the interpret_technical_indicators tool and passed through
-        the Technical Analyst context. Use these values exactly — do not recalculate.
-      - If entry_zone_status is "PULLBACK_ENTRY": copy entry_zone_label verbatim
-        into the recommendation body. Never describe a PULLBACK_ENTRY zone as an
-        immediate or current buying opportunity.
-      - If entry_zone_status is "CURRENT_ENTRY": the entry zone is actionable now.
-        No disclaimer is needed.
-      - stop_loss must always be set below entry_zone_low, not below or equal to
-        entry_zone_high. A stop_loss at entry_zone_high means the stop fires
-        at the entry price — this is invalid.
+      STEP 6 — Determine portfolio risk_level: Low / Medium / High / Very High.
 
-      SCALED ENTRY RULE (new action available for borderline cases):
-      In addition to LONG-BUY, WAIT-FOR-ENTRY, HOLD, and AVOID, you may use
-      SCALED-ENTRY when ALL of the following are true:
-        1. regime is "TRENDING" (strong uptrend confirmed by ADX > 25 + SMA alignment)
-        2. entry_zone_status is "PULLBACK_ENTRY" but gap is less than 5%
-        3. composite_score is 75 or above
-        4. The stock does not have extreme overbought conditions (Stochastic < 88)
-
-      When using SCALED-ENTRY:
-        - Set allocation_pct to half the normal LONG-BUY allocation (max 20%)
-        - Add this exact text to the rationale:
-          "SCALED ENTRY: Deploy [X]% at current price [price]. Reserve limit
-           order at [entry_zone_low]–[entry_zone_high] for remaining [X]% allocation.
-           Blended entry approximately [midpoint]."
-        - Set trade_setup using current price as entry_zone_high for stop/target calc
-        - Monitoring triggers must describe thesis failure, not entry confirmation
-
-      When NOT to use SCALED-ENTRY:
-        - Gap above entry zone is 5% or more → WAIT-FOR-ENTRY
-        - Stochastic above 88 → WAIT-FOR-ENTRY regardless of gap
-        - regime is REVERTING or NEUTRAL → WAIT-FOR-ENTRY
-        - Downtrend structure (SMA20 < SMA50) → WAIT-FOR-ENTRY
-
-      STEP 7 — Output EXACTLY this JSON structure:
+      STEP 7 — Output EXACTLY this JSON structure (no markdown fences):
       {
         "sector": "$sector",
         "positions": [
@@ -374,6 +333,7 @@ tasks:
             "ticker": "NVDA",
             "action": "LONG-BUY",
             "allocation_pct": 35.2,
+            "current_price": 875.50,
             "trade_setup": {
               "direction": "LONG-BUY",
               "entry_zone_low": 834.0,
@@ -381,39 +341,194 @@ tasks:
               "stop_loss": 809.0,
               "take_profit": 885.0
             },
-            "rationale": "150-word synthesis explaining why LONG-BUY was chosen",
-            "monitoring_triggers": ["RSI crosses above 75", "Earnings miss > 5 %"],
-            "review_frequency": "WEEKLY"
-          },
-          {
-            "ticker": "AEP",
-            "action": "WAIT-FOR-ENTRY",
-            "allocation_pct": 0,
-            "trade_setup": null,
-            "rationale": "Strong composite score but RSI=70 and Stochastic=95 indicate
-              overbought conditions. Waiting for pullback to entry zone before initiating.",
-            "monitoring_triggers": ["RSI drops below 60", "Price pulls back to SMA20"],
+            "rationale": "100-150 word synthesis citing specific data points",
+            "monitoring_triggers": ["RSI crosses above 76", "Weekly close below SMA50"],
             "review_frequency": "WEEKLY"
           }
         ],
         "total_allocated_pct": 35.2,
         "cash_reserve_pct": 64.8,
-        "overall_strategy": "2-3 paragraph explanation of the portfolio construction logic",
+        "overall_strategy": "2-3 paragraph explanation",
         "risk_level": "Medium"
+      }
+    expected_output: >
+      JSON dict with sector='$sector', positions
+      (ticker/action/allocation_pct/current_price/trade_setup/rationale/
+      monitoring_triggers/review_frequency), total_allocated_pct, cash_reserve_pct,
+      overall_strategy, and risk_level. This is a DRAFT pending Critic review.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Task 5: Critique Review
+  # Agent:   Critic
+  # Context: market + technical + fundamental + draft_strategy
+  # Tools:   none (pure adversarial analysis)
+  # Output:  CriticOutput
+  # ─────────────────────────────────────────────────────────────────────────────
+  critique_review:
+    description: |
+      You are the Critic Agent in the ProspectAI pipeline.
+      You receive the Draft Portfolio plus all upstream data (Market, Technical,
+      Fundamental). Your job is to challenge every position and find every flaw.
+
+      STEP 1 — For EACH ticker in the draft, extract:
+        From Technical context: RSI, Stochastic, MACD status, momentum_score,
+          regime, entry_zone_status, entry_zone_low, entry_zone_high, ma_status.
+        From Market context: average_sentiment, mention_count.
+        From Fundamental context: valuation_grade, financial_health, growth_outlook.
+        From Draft: action, allocation_pct, rationale, monitoring_triggers.
+
+      STEP 2 — Apply the adversarial checklist to EACH ticker.
+        You MUST find at least one issue per position.
+        Flag every violation using these issue types:
+
+        OVERBOUGHT_IGNORED       RSI > 70 or Stochastic > 80 and action is LONG-BUY
+                                 with no explicit overbought acknowledgment in rationale.
+        ENTRY_ZONE_VIOLATED      LONG-BUY with entry_zone_status="PULLBACK_ENTRY" and
+                                 gap ≥ 5%, yet not using SCALED-ENTRY or WAIT-FOR-ENTRY.
+        FABRICATED_SIGNAL        Rationale says "strong momentum" but momentum_score < 6,
+                                 or says "bullish" but MACD is Bearish or Mixed.
+        ALLOCATION_MISMATCH      Allocation rank does not match composite_score rank —
+                                 a lower-scoring stock gets a higher allocation.
+        SENTIMENT_CONTRADICTION  average_sentiment < 0.0 with action LONG-BUY and no
+                                 negative-sentiment caveat in the rationale.
+        VALUATION_IGNORED        valuation_grade is VERY_EXPENSIVE with LONG-BUY and
+                                 no valuation risk mentioned in rationale.
+        TRIGGER_CONTRADICTION    A monitoring trigger for LONG-BUY fires during a
+                                 normal uptrend (e.g. RSI > 70 when uptrend is expected).
+        CONCENTRATION_BREACH     allocation_pct > 40.0 for any single position.
+        WEAK_FUNDAMENTALS_BUY    financial_health = WEAK with LONG-BUY and no
+                                 acknowledgment of balance sheet risk.
+        MISSING_STOP_LOGIC       stop_loss is set at or above entry_zone_high.
+        VAGUE_RATIONALE          Rationale makes claims without citing specific numbers
+                                 (no RSI value, no momentum_score, no specific metric).
+
+        For each finding, state: the exact data value that creates the contradiction
+        AND what the draft says about it. Do not describe issues vaguely.
+
+      STEP 3 — Portfolio-level review:
+        - Does total_allocated_pct + cash_reserve_pct = 100?
+        - Does any position exceed 40% allocation?
+        - Are there at least 3 distinct composite_scores?
+        - Do all monitoring triggers reference specific measurable thresholds?
+        - Is the overall_strategy internally consistent with the individual actions?
+
+      STEP 4 — Write revision_directives as exact instructions:
+        Format: "[TICKER]: [specific change required] because [exact data contradiction]"
+        Example: "NVDA: Change action from LONG-BUY to WAIT-FOR-ENTRY because RSI=78
+                  and Stochastic=82 indicate overbought conditions — neither value
+                  appears in the rationale nor triggers."
+        Every CRITICAL and MAJOR issue must have a corresponding directive.
+
+      STEP 5 — Output EXACTLY this structure (pure Python dict, no markdown):
+      {
+        "sector": "$sector",
+        "draft_assessment": "One paragraph summarizing the draft's key weaknesses.
+          Do not praise. State what is wrong and why it matters for risk.",
+        "per_ticker_critiques": [
+          {
+            "ticker": "NVDA",
+            "severity": "CRITICAL",
+            "issue_type": "OVERBOUGHT_IGNORED",
+            "finding": "RSI=78 and Stochastic=82 but action is LONG-BUY. Neither
+              value is mentioned in the 150-word rationale.",
+            "instruction": "Change action to WAIT-FOR-ENTRY or add explicit RSI/
+              Stochastic overbought acknowledgment and set RSI > 75 exit trigger."
+          }
+        ],
+        "portfolio_level_issues": [
+          "AAPL allocation (42%) exceeds the 40% single-position cap.",
+          "Two positions have identical composite_score of 72.4 — input values
+           were almost certainly defaulted rather than extracted from context."
+        ],
+        "revision_directives": [
+          "NVDA: Change action to WAIT-FOR-ENTRY because RSI=78, Stochastic=82.",
+          "AAPL: Reduce allocation from 42% to ≤40% to comply with cap rule."
+        ],
+        "approved_positions": []
       }
 
       RULES:
-      - composite_score components: copy verbatim from 'compute_composite_scores'.
-      - allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct:
-        copy verbatim from 'allocate_portfolio'. Do NOT recompute.
-      - action is YOUR decision — explain your reasoning in the rationale.
-      - risk_level must be one of: Low, Medium, High, Very High.
-      - review_frequency must be one of: DAILY, WEEKLY, MONTHLY.
-      - All tickers from fundamental analysis must appear in positions.
-      - Output only the JSON dict — no surrounding text, no markdown fences.
-      - Maximum single-position size is 40% of portfolio capital. If fewer than 3 stocks qualify for LONG-BUY, allocate remaining capital explicitly to CASH and state the cash percentage in the portfolio summary. Never exceed 40% on a single position under any circumstance.
+      - You MUST produce at least one critique per ticker.
+      - Severity CRITICAL = requires mandatory action change or allocation change.
+      - Severity MAJOR = requires rationale or trigger correction.
+      - Severity MINOR = recommendation to improve clarity or precision.
+      - approved_positions lists tickers where the draft is FULLY correct (can be empty).
+      - Never soften a finding with "however" or "overall reasonable". Report the flaw.
+    expected_output: >
+      Python dict with sector='$sector', draft_assessment, per_ticker_critiques
+      (list with ticker/severity/issue_type/finding/instruction), portfolio_level_issues,
+      revision_directives, and approved_positions.
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Task 6: Final Strategy
+  # Agent:   Investor Strategic (revision pass)
+  # Context: market + technical + fundamental + draft_strategy + critique_review
+  # Tools:   compute_composite_scores, allocate_portfolio
+  # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
+  # ─────────────────────────────────────────────────────────────────────────────
+  final_strategy:
+    description: |
+      You are the Final Strategist in the ProspectAI pipeline.
+      You receive your own draft (Task 4) and the Critic's review (Task 5),
+      plus all original upstream data. Produce the revised final portfolio.
+
+      STEP 1 — Read the Critic's revision_directives carefully.
+        For EACH directive:
+          - If you agree: implement the change and note it in the rationale.
+          - If you disagree: cite the specific data point that contradicts the
+            Critic's finding and explain why the original decision stands.
+        You MUST address every CRITICAL and MAJOR critique.
+        MINOR critiques may be accepted or defended with evidence.
+
+      STEP 2 — Re-run tool calls only if actions changed.
+        If a position action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY):
+          Call 'allocate_portfolio' again with the revised actions.
+        If no actions changed: carry forward the draft's allocation_pct verbatim.
+        You may call 'compute_composite_scores' again only if input values were wrong.
+
+      STEP 3 — Write revised qualitative content:
+        rationale: 100-150 words per position. If a critique was addressed, state
+          what changed and why. If a critique was rejected, state which data supports
+          the original decision. Every claim must cite a specific number.
+        monitoring_triggers: must be directionally consistent with the action.
+        review_frequency: DAILY / WEEKLY / MONTHLY.
+
+      STEP 4 — Output the final portfolio in EXACTLY the same JSON structure as
+        the draft_strategy. No mention of the critic process in the output —
+        the output is the final portfolio only.
+
+      {
+        "sector": "$sector",
+        "positions": [
+          {
+            "ticker": "NVDA",
+            "action": "WAIT-FOR-ENTRY",
+            "allocation_pct": 0,
+            "current_price": 875.50,
+            "trade_setup": null,
+            "rationale": "Revised from draft LONG-BUY: RSI=78 and Stochastic=82
+              confirm overbought conditions as flagged. Waiting for RSI to drop
+              below 65 before initiating. momentum_score=8.1 remains strong.",
+            "monitoring_triggers": ["RSI drops below 65", "Price retraces to SMA20"],
+            "review_frequency": "WEEKLY"
+          }
+        ],
+        "total_allocated_pct": 0,
+        "cash_reserve_pct": 100,
+        "overall_strategy": "2-3 paragraph explanation of final portfolio construction",
+        "risk_level": "Low"
+      }
+
+      RULES:
+      - Output only the JSON dict — no text before or after, no markdown fences.
+      - All CRITICAL critique issues must be addressed (changed or defended).
+      - allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct from
+        allocate_portfolio must be copied verbatim — never hand-calculated.
+      - risk_level: Low / Medium / High / Very High.
+      - review_frequency: DAILY / WEEKLY / MONTHLY.
+      - Maximum single-position size: 40%.
     expected_output: >
       JSON dict with sector='$sector', positions
-      (ticker/action/allocation_pct/trade_setup/rationale/monitoring_triggers/
-      review_frequency), total_allocated_pct, cash_reserve_pct,
-      overall_strategy, and risk_level.
+      (ticker/action/allocation_pct/current_price/trade_setup/rationale/
+      monitoring_triggers/review_frequency), total_allocated_pct, cash_reserve_pct,
+      overall_strategy, and risk_level. This is the FINAL revised portfolio.

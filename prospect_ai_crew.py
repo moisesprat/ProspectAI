@@ -10,6 +10,7 @@ from agents.market_analyst_agent import MarketAnalystAgent
 from agents.technical_analyst_agent import TechnicalAnalystAgent
 from agents.fundamental_analyst_agent import FundamentalAnalystAgent
 from agents.investor_strategic_agent import InvestorStrategicAgent
+from agents.critic_agent import CriticAgent
 from config.config import Config
 from config.task_config_loader import TaskConfigLoader
 
@@ -26,6 +27,7 @@ from schemas.agent_outputs import (
     TechnicalAnalysisOutput,
     FundamentalAnalysisOutput,
     InvestorStrategicOutput,
+    CriticOutput,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class ProspectAICrew:
         self.technical_analyst = TechnicalAnalystAgent()
         self.fundamental_analyst = FundamentalAnalystAgent()
         self.investor_strategist = InvestorStrategicAgent()
+        self.critic = CriticAgent()
 
         # Tools (only what each task actually uses)
         self.search_tool = SerperDevTool()  # Serper fallback for market analyst
@@ -112,13 +115,13 @@ class ProspectAICrew:
             output_pydantic=FundamentalAnalysisOutput,
         )
 
-        # ── Task 4: Investment Strategy ───────────────────────────────────────
-        strategy_cfg = cfg("investment_strategy")
-        investment_strategy_task = Task(
-            description=strategy_cfg["description"],
+        # ── Task 4: Draft Strategy ────────────────────────────────────────────
+        draft_cfg = cfg("draft_strategy")
+        draft_strategy_task = Task(
+            description=draft_cfg["description"],
             agent=self.investor_strategist.get_agent(),
             tools=[CompositeScoreTool(), PortfolioAllocatorTool()],
-            expected_output=strategy_cfg["expected_output"],
+            expected_output=draft_cfg["expected_output"],
             context=[
                 market_analysis_task,
                 technical_analysis_task,
@@ -127,11 +130,46 @@ class ProspectAICrew:
             output_pydantic=InvestorStrategicOutput,
         )
 
+        # ── Task 5: Critic Review ─────────────────────────────────────────────
+        critique_cfg = cfg("critique_review")
+        critique_task = Task(
+            description=critique_cfg["description"],
+            agent=self.critic.get_agent(),
+            tools=[],
+            expected_output=critique_cfg["expected_output"],
+            context=[
+                market_analysis_task,
+                technical_analysis_task,
+                fundamental_analysis_task,
+                draft_strategy_task,
+            ],
+            output_pydantic=CriticOutput,
+        )
+
+        # ── Task 6: Final Strategy ────────────────────────────────────────────
+        final_cfg = cfg("final_strategy")
+        final_strategy_task = Task(
+            description=final_cfg["description"],
+            agent=self.investor_strategist.get_agent(),
+            tools=[CompositeScoreTool(), PortfolioAllocatorTool()],
+            expected_output=final_cfg["expected_output"],
+            context=[
+                market_analysis_task,
+                technical_analysis_task,
+                fundamental_analysis_task,
+                draft_strategy_task,
+                critique_task,
+            ],
+            output_pydantic=InvestorStrategicOutput,
+        )
+
         return [
             market_analysis_task,
             technical_analysis_task,
             fundamental_analysis_task,
-            investment_strategy_task,
+            draft_strategy_task,
+            critique_task,
+            final_strategy_task,
         ]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -159,7 +197,7 @@ class ProspectAICrew:
         # (used in tests / programmatic callers) and the per-run progress_callback
         # (used by the Modal streaming endpoint).
         _task_index = {"n": 0}
-        _agent_names = ["MarketAnalyst", "TechnicalAnalyst", "FundamentalAnalyst", "InvestorStrategic"]
+        _agent_names = ["MarketAnalyst", "TechnicalAnalyst", "FundamentalAnalyst", "DraftStrategist", "Critic", "FinalStrategist"]
 
         def _on_task_done(task_output):
             if self.task_callback:
@@ -184,6 +222,7 @@ class ProspectAICrew:
                 self.technical_analyst.get_agent(),
                 self.fundamental_analyst.get_agent(),
                 self.investor_strategist.get_agent(),
+                self.critic.get_agent(),
             ],
             tasks=tasks,
             task_callback=_on_task_done,

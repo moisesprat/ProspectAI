@@ -9,10 +9,11 @@ GLOBAL_MODEL_ENV = "MODEL"
 
 # Optional per-agent overrides; if set, they override MODEL for that agent only.
 AGENT_MODEL_ENV_KEYS: Dict[str, str] = {
-    "market_analyst": "AGENT_MARKET_ANALYST_MODEL",
-    "technical_analyst": "AGENT_TECHNICAL_ANALYST_MODEL",
+    "market_analyst":      "AGENT_MARKET_ANALYST_MODEL",
+    "technical_analyst":   "AGENT_TECHNICAL_ANALYST_MODEL",
     "fundamental_analyst": "AGENT_FUNDAMENTAL_ANALYST_MODEL",
-    "investor_strategic": "AGENT_INVESTOR_STRATEGIC_MODEL",
+    "investor_strategic":  "AGENT_INVESTOR_STRATEGIC_MODEL",
+    "critic":              "AGENT_CRITIC_MODEL",
 }
 
 _env_path = Path(".env")

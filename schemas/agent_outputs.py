@@ -158,7 +158,7 @@ class TradeSetup(BaseModel):
 
 class PositionRecommendation(BaseModel):
     ticker: str
-    action: Literal["LONG-BUY", "SHORT-SELL", "HOLD", "WAIT-FOR-ENTRY", "AVOID"]
+    action: Literal["LONG-BUY", "SCALED-ENTRY", "SHORT-SELL", "HOLD", "WAIT-FOR-ENTRY", "AVOID"]
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
@@ -176,7 +176,7 @@ class InvestorStrategicOutput(BaseModel):
     risk_level: Literal["Low", "Medium", "High", "Very High"]
 
     @model_validator(mode="after")
-    def allocations_plus_cash_lte_100(self) -> InvestorStrategicOutput:
+    def allocations_plus_cash_lte_100(self) -> "InvestorStrategicOutput":
         total = sum(p.allocation_pct for p in self.positions)
         if abs(total - self.total_allocated_pct) > 0.5:
             raise ValueError(
@@ -189,3 +189,24 @@ class InvestorStrategicOutput(BaseModel):
                 f"({self.cash_reserve_pct}%) exceeds 100%"
             )
         return self
+
+
+# ---------------------------------------------------------------------------
+# CRITIC OUTPUT
+# ---------------------------------------------------------------------------
+
+class CritiqueItem(BaseModel):
+    ticker: str
+    severity: Literal["CRITICAL", "MAJOR", "MINOR"]
+    issue_type: str = Field(..., min_length=3)
+    finding: str = Field(..., min_length=30)
+    instruction: str = Field(..., min_length=30)
+
+
+class CriticOutput(BaseModel):
+    sector: str
+    draft_assessment: str = Field(..., min_length=50)
+    per_ticker_critiques: List[CritiqueItem] = Field(..., min_length=1)
+    portfolio_level_issues: List[str]
+    revision_directives: List[str] = Field(..., min_length=1)
+    approved_positions: List[str]
