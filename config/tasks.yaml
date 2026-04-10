@@ -114,7 +114,13 @@ tasks:
         - overall_signal: your assessment of "BULLISH", "BEARISH", "MIXED", or "NEUTRAL"
           based on MACD status, MA status, RSI level, and other raw indicators.
         - key_signals: 3-5 plain-English strings describing the most notable readings
-          (e.g. "RSI=70 overbought", "MACD Bullish crossover", "Strong uptrend confirmed").
+
+        For example:
+          - "RSI at 63 — neutral momentum with room to appreciate before overbought"
+          - "RSI at 71 — approaching overbought; watch for deceleration"
+          - "MACD bullish crossover confirming uptrend continuation"
+          - "Stochastic at 94 — extreme overbought, counter-trend bounce risk"
+          - "Strong uptrend confirmed: SMA20 > SMA50 > SMA200"
 
       STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
       {
@@ -369,6 +375,8 @@ tasks:
       - review_frequency must be one of: DAILY, WEEKLY, MONTHLY.
       - All tickers from fundamental analysis must appear in positions.
       - Output only the JSON dict — no surrounding text, no markdown fences.
+      - Maximum single-position allocation is 40%. If fewer than 3 BUY positions qualify, allocate remaining capital to cash equivalent and note this explicitly.
+    
     expected_output: >
       JSON dict with sector='$sector', positions
       (ticker/action/allocation_pct/trade_setup/rationale/monitoring_triggers/
