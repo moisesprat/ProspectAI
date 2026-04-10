@@ -301,6 +301,21 @@ tasks:
             + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY (half allocation, max 20%)
           - VERY_EXPENSIVE valuation → raise bar for LONG-BUY
           - financial_health = WEAK → acknowledge explicitly or avoid
+          - Valid action values are exactly: LONG-BUY, SCALED-ENTRY, SHORT-SELL, HOLD,
+            WAIT-FOR-ENTRY, AVOID. Any other string causes a Pydantic validation error
+            that rejects the entire output. To express a staged or partial entry, use
+            action=SCALED-ENTRY (not PARTIAL-ENTRY or any other invented label).
+          - Trade setup R/R rule: if current_price > entry_zone_high (position is above
+            its entry zone), you must choose ONE of the following — do not mix them:
+            OPTION A: set action=WAIT-FOR-ENTRY, allocation_pct=0, trade_setup=null.
+              Use this when you want to wait for price to reach the zone.
+            OPTION B: set action=LONG-BUY and recalculate the trade setup using
+              current_price as the entry reference:
+                stop_loss must be below current_price (not below entry_zone_low)
+                take_profit = current_price + 1.5 × (current_price - stop_loss) minimum
+                R/R = (take_profit - current_price) / (current_price - stop_loss) >= 1.5
+              Do NOT carry forward a zone-based trade setup when entering at current_price.
+              The zone-based stop_loss/take_profit produce an invalid R/R at actual entry.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
           allocate_portfolio(stocks_json='[
