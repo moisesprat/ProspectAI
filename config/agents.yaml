@@ -183,6 +183,8 @@ agents:
          This is your reasoned judgment — explain it clearly in the rationale.
       4. Call 'allocate_portfolio' ONCE with your decided actions. Copy allocation_pct,
          trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
+         Note: WAIT-FOR-ENTRY positions now receive a trade_setup (the pending setup at
+         the entry zone). Copy it verbatim — it is not null. allocation_pct stays 0.
       5. Write qualitative content yourself: rationale (100-150 words per stock),
          monitoring_triggers (2-3 specific, measurable triggers per stock),
          overall_strategy (2-3 paragraphs), risk_level for the portfolio.

@@ -329,6 +329,8 @@ tasks:
           ]')
         Record allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
         Maximum single position: 40%. SCALED-ENTRY positions cap at 20%.
+        Note: allocate_portfolio now returns a trade_setup for WAIT-FOR-ENTRY positions too.
+        Copy it verbatim — it is the pending setup at the entry zone (allocation_pct stays 0).
 
       STEP 5 — Write qualitative content for each position:
         rationale: 100-150 words citing specific numbers from all three agents.
@@ -336,6 +338,10 @@ tasks:
         monitoring_triggers: 2-3 specific, measurable thresholds directionally
           consistent with your action. LONG-BUY triggers must fire on bearish
           reversal patterns, not normal uptrend levels.
+          For WAIT-FOR-ENTRY: at least one trigger must name the zone entry price from
+          trade_setup (e.g. "Price retraces to entry_zone_high of $X.XX"). Also include
+          an RSI or MACD condition that confirms the pullback is a healthy retracement,
+          not a breakdown.
         review_frequency: DAILY / WEEKLY / MONTHLY.
 
       STEP 6 — Determine portfolio risk_level: Low / Medium / High / Very High.

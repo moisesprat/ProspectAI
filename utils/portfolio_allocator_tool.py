@@ -55,7 +55,10 @@ class PortfolioAllocatorTool(BaseTool):
         stocks: list of {ticker, action, allocation_pct, trade_setup}
         total_allocated_pct, cash_reserve_pct
 
-    trade_setup is null for any action other than LONG-BUY.
+    trade_setup: null for HOLD and AVOID.
+             LONG-BUY: zone-anchored setup (stop_loss/take_profit computed from entry zone).
+             WAIT-FOR-ENTRY: same formula as LONG-BUY — a pending setup at the zone the
+             position is waiting to enter. allocation_pct stays 0.
     """
 
     def _run(self, stocks_json: str) -> str:
@@ -127,7 +130,10 @@ class PortfolioAllocatorTool(BaseTool):
                 if r["action"] == "LONG-BUY" and r["ticker"] in final_allocs:
                     alloc = final_allocs[r["ticker"]]
                     setup = _trade_setup(r["entry_zone_low"], r["entry_zone_high"])
-                else:
+                elif r["action"] == "WAIT-FOR-ENTRY":
+                    alloc = 0.0
+                    setup = _trade_setup(r["entry_zone_low"], r["entry_zone_high"])
+                else:  # HOLD, AVOID, SCALED-ENTRY, SHORT-SELL
                     alloc = 0.0
                     setup = None
 
