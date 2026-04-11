@@ -339,7 +339,7 @@ tasks:
           consistent with your action. LONG-BUY triggers must fire on bearish
           reversal patterns, not normal uptrend levels.
           For WAIT-FOR-ENTRY: at least one trigger must name the zone entry price from
-          trade_setup (e.g. "Price retraces to entry_zone_high of $X.XX"). Also include
+          trade_setup (e.g. "Price retraces to entry_zone_high of $$X.XX"). Also include
           an RSI or MACD condition that confirms the pullback is a healthy retracement,
           not a breakdown.
         review_frequency: DAILY / WEEKLY / MONTHLY.
