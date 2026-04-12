@@ -151,6 +151,7 @@ class TradeSetup(BaseModel):
 class PositionRecommendation(BaseModel):
     ticker: str
     action: Literal["LONG-BUY", "SCALED-ENTRY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+    composite_score: float = Field(..., ge=0.0, le=100.0)
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None

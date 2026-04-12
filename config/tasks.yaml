@@ -334,6 +334,8 @@ tasks:
         Copy ALL of the following verbatim from the tool result:
           allocation_pct, trade_setup, scaled_entry_setups,
           deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
+        Also copy composite_score verbatim from Step 2 into each position —
+        do NOT paraphrase or cite a different value in the rationale text.
         Allocation caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15%.
         WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
         SCALED-ENTRY: receives scaled_entry_setups (list of 2 setups) and trade_setup=null.
@@ -368,6 +370,7 @@ tasks:
           {
             "ticker": "NVDA",
             "action": "LONG-BUY",
+            "composite_score": 81.0,
             "allocation_pct": 35.2,
             "current_price": 875.50,
             "trade_setup": {
@@ -385,6 +388,7 @@ tasks:
           {
             "ticker": "XOM",
             "action": "SCALED-ENTRY",
+            "composite_score": 73.5,
             "allocation_pct": 18.5,
             "current_price": 120.50,
             "trade_setup": null,
@@ -482,6 +486,18 @@ tasks:
                                  Must be ≥ 1.5. CRITICAL.
         BUCKET_SUM_ERROR         deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
                                  (tolerance ±0.5%). CRITICAL.
+        COMPOSITE_SCORE_MISMATCH composite_score on the position does not match the
+                                 value derivable from the pipeline inputs. Recompute:
+                                   sentiment_component  = min(average_sentiment × 100, 30)
+                                   technical_component  = momentum_score × 4
+                                   fundamental_component = health_pts + growth_pts
+                                     (STRONG=20/ADEQUATE=10/WEAK=5;
+                                      HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
+                                   expected = sentiment_component + technical_component
+                                              + fundamental_component
+                                 If |position.composite_score − expected| > 1.0, flag
+                                 COMPOSITE_SCORE_MISMATCH as CRITICAL — the score was
+                                 fabricated rather than copied from the tool output.
 
         For each finding, state: the exact data value that creates the contradiction
         AND what the draft says about it. Do not describe issues vaguely.
@@ -490,6 +506,8 @@ tasks:
         - Does deployed_pct + reserved_pct + cash_reserve_pct = 100 (±0.5%)?
         - Does any position exceed 40% allocation?
         - Are there at least 3 distinct composite_scores?
+        - Does each position's composite_score field match the value derivable from
+          the pipeline inputs (recompute using formula from STEP 2 checklist)?
         - Do all monitoring triggers reference specific measurable thresholds?
         - Is the overall_strategy internally consistent with the individual actions?
         - Does overall_strategy accurately describe allocation logic (not falsely claiming
@@ -586,6 +604,7 @@ tasks:
           {
             "ticker": "NVDA",
             "action": "WAIT-FOR-ENTRY",
+            "composite_score": 81.0,
             "allocation_pct": 12.5,
             "current_price": 875.50,
             "trade_setup": {
@@ -618,6 +637,8 @@ tasks:
       - allocation_pct, trade_setup, scaled_entry_setups, deployed_pct, reserved_pct,
         total_allocated_pct, cash_reserve_pct from allocate_portfolio must be copied
         verbatim — never hand-calculated.
+      - composite_score must be copied verbatim from compute_composite_scores — never
+        cited as a different value in rationale text.
       - Valid actions: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
         HOLD and SHORT-SELL are not valid actions.
       - risk_level: Low / Medium / High / Very High.

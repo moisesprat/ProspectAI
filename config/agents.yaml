@@ -190,6 +190,9 @@ agents:
          for SCALED-ENTRY positions. Copy ALL of the following verbatim:
            allocation_pct, trade_setup, scaled_entry_setups,
            deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
+         Also copy composite_score verbatim from Step 2 into each position field.
+         Do NOT cite a different value in the rationale text — the schema field and
+         the rationale must reference the same number returned by the tool.
          Note: WAIT-FOR-ENTRY positions receive a trade_setup AND a real allocation_pct
          (earmarked capital, capped at 15%). Copy both verbatim.
          Note: SCALED-ENTRY positions receive scaled_entry_setups (list of 2 setups:
@@ -301,6 +304,15 @@ agents:
                                    must be ≥ 1.5 [CRITICAL]
         BUCKET_SUM_ERROR         — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
                                    (tolerance ±0.5%) [CRITICAL]
+        COMPOSITE_SCORE_MISMATCH — composite_score on the position does not match the
+                                   value derivable from pipeline inputs. Recompute:
+                                     sentiment_component  = min(avg_sentiment × 100, 30)
+                                     technical_component  = momentum_score × 4
+                                     fundamental_component = health_pts + growth_pts
+                                       (STRONG=20/ADEQUATE=10/WEAK=5;
+                                        HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
+                                   If |position.composite_score − expected| > 1.0,
+                                   the score was fabricated [CRITICAL]
 
       You MUST find at least one issue per ticker. If a position appears clean,
       look harder — check the monitoring triggers for directional consistency,
@@ -310,6 +322,8 @@ agents:
         - deployed_pct + reserved_pct + cash_reserve_pct must equal 100 (±0.5%)
         - No position above 40%
         - At least 3 distinct composite_scores (identical scores = default values used)
+        - Each position's composite_score must match the value recomputed from inputs
+          (flag COMPOSITE_SCORE_MISMATCH if |field − expected| > 1.0)
         - Minimum 2-3 concrete monitoring triggers per position
         - overall_strategy must not falsely claim rank-proportional allocation when
           positions are capped at equal levels
