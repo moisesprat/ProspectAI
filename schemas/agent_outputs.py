@@ -120,7 +120,7 @@ class FundamentalAnalysisOutput(BaseModel):
 # ---------------------------------------------------------------------------
 
 class TradeSetup(BaseModel):
-    direction: Literal["LONG-BUY", "SHORT-SELL"]
+    direction: Literal["LONG-BUY"]
     entry_zone_low: float = Field(..., gt=0)
     entry_zone_high: float = Field(..., gt=0)
     stop_loss: float = Field(..., gt=0)
@@ -128,65 +128,77 @@ class TradeSetup(BaseModel):
 
     @model_validator(mode="after")
     def validate_long_trade_structure(self) -> TradeSetup:
-        if self.direction == "LONG-BUY":
-            if not (self.stop_loss < self.entry_zone_low):
-                raise ValueError(
-                    f"LONG-BUY invariant violated for trade: "
-                    f"stop_loss ({self.stop_loss}) must be < "
-                    f"entry_zone_low ({self.entry_zone_low}). "
-                    f"Required: stop_loss < entry_zone_low <= entry_zone_high < take_profit."
-                )
-            if not (self.entry_zone_low <= self.entry_zone_high):
-                raise ValueError(
-                    f"entry_zone_low ({self.entry_zone_low}) must be <= "
-                    f"entry_zone_high ({self.entry_zone_high})"
-                )
-            if not (self.entry_zone_high < self.take_profit):
-                raise ValueError(
-                    f"entry_zone_high ({self.entry_zone_high}) must be < "
-                    f"take_profit ({self.take_profit})"
-                )
-        if self.direction == "SHORT-SELL":
-            if not (self.stop_loss > self.entry_zone_high):
-                raise ValueError(
-                    f"SHORT-SELL invariant violated: "
-                    f"stop_loss ({self.stop_loss}) must be > "
-                    f"entry_zone_high ({self.entry_zone_high})"
-                )
+        if not (self.stop_loss < self.entry_zone_low):
+            raise ValueError(
+                f"LONG-BUY invariant violated: "
+                f"stop_loss ({self.stop_loss}) must be < "
+                f"entry_zone_low ({self.entry_zone_low}). "
+                f"Required: stop_loss < entry_zone_low <= entry_zone_high < take_profit."
+            )
+        if not (self.entry_zone_low <= self.entry_zone_high):
+            raise ValueError(
+                f"entry_zone_low ({self.entry_zone_low}) must be <= "
+                f"entry_zone_high ({self.entry_zone_high})"
+            )
+        if not (self.entry_zone_high < self.take_profit):
+            raise ValueError(
+                f"entry_zone_high ({self.entry_zone_high}) must be < "
+                f"take_profit ({self.take_profit})"
+            )
         return self
 
 
 class PositionRecommendation(BaseModel):
     ticker: str
-    action: Literal["LONG-BUY", "SCALED-ENTRY", "SHORT-SELL", "HOLD", "WAIT-FOR-ENTRY", "AVOID"]
+    action: Literal["LONG-BUY", "SCALED-ENTRY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
+    scaled_entry_setups: Optional[List[TradeSetup]] = None
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
     review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
+
+    @model_validator(mode="after")
+    def validate_setup_fields_by_action(self) -> "PositionRecommendation":
+        if self.action == "SCALED-ENTRY":
+            n = len(self.scaled_entry_setups) if self.scaled_entry_setups else 0
+            if n != 2:
+                raise ValueError(
+                    f"SCALED-ENTRY requires exactly 2 scaled_entry_setups "
+                    f"[immediate_tranche, pullback_tranche]; got {n}"
+                )
+            if self.trade_setup is not None:
+                raise ValueError(
+                    "SCALED-ENTRY must have trade_setup=null; "
+                    "execution details go in scaled_entry_setups"
+                )
+        return self
 
 
 class InvestorStrategicOutput(BaseModel):
     sector: str
     positions: List[PositionRecommendation] = Field(..., min_length=1)
+    deployed_pct: float = Field(..., ge=0.0, le=100.0)
+    reserved_pct: float = Field(..., ge=0.0, le=100.0)
     total_allocated_pct: float = Field(..., ge=0.0, le=100.0)
     cash_reserve_pct: float = Field(..., ge=0.0, le=100.0)
     overall_strategy: str = Field(..., min_length=100)
     risk_level: Literal["Low", "Medium", "High", "Very High"]
 
     @model_validator(mode="after")
-    def allocations_plus_cash_lte_100(self) -> "InvestorStrategicOutput":
+    def validate_capital_buckets(self) -> "InvestorStrategicOutput":
         total = sum(p.allocation_pct for p in self.positions)
         if abs(total - self.total_allocated_pct) > 0.5:
             raise ValueError(
                 f"sum of position allocations ({total:.1f}%) does not match "
                 f"total_allocated_pct ({self.total_allocated_pct}%)"
             )
-        if total + self.cash_reserve_pct > 100.5:
+        bucket_sum = round(self.deployed_pct + self.reserved_pct + self.cash_reserve_pct, 1)
+        if abs(bucket_sum - 100.0) > 0.5:
             raise ValueError(
-                f"total allocation ({total:.1f}%) + cash reserve "
-                f"({self.cash_reserve_pct}%) exceeds 100%"
+                f"deployed ({self.deployed_pct}%) + reserved ({self.reserved_pct}%) "
+                f"+ cash ({self.cash_reserve_pct}%) = {bucket_sum}% ≠ 100%"
             )
         return self
 

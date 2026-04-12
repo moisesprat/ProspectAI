@@ -293,29 +293,32 @@ tasks:
         Record each stock's composite_score and components verbatim.
 
       STEP 3 — Decide the investment action for each stock:
-        Choose one action per stock: LONG-BUY / SCALED-ENTRY / HOLD / WAIT-FOR-ENTRY / AVOID
+        Choose one action per stock: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
         Apply these rules:
           - RSI > 70 or Stochastic > 80 → prefer WAIT-FOR-ENTRY
           - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% → WAIT-FOR-ENTRY
           - entry_zone_status = "PULLBACK_ENTRY" with gap < 5% + regime="TRENDING"
             + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY (half allocation, max 20%)
           - VERY_EXPENSIVE valuation → raise bar for LONG-BUY
-          - financial_health = WEAK → acknowledge explicitly or avoid
-          - Valid action values are exactly: LONG-BUY, SCALED-ENTRY, SHORT-SELL, HOLD,
-            WAIT-FOR-ENTRY, AVOID. Any other string causes a Pydantic validation error
-            that rejects the entire output. To express a staged or partial entry, use
-            action=SCALED-ENTRY (not PARTIAL-ENTRY or any other invented label).
+          - financial_health = WEAK → MONITOR or AVOID
+          - Weak composite score (< 55) with no clear catalyst → MONITOR
+          - Poor fundamentals + negative sentiment → AVOID
+          - Valid action values are exactly: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY,
+            MONITOR, AVOID. Any other string (including HOLD or SHORT-SELL) causes a
+            Pydantic validation error that rejects the entire output.
+            MONITOR = watch-list with no capital (different from AVOID: signals interest
+            but conditions not yet met, e.g. waiting for earnings clarity).
+            To express a staged or partial entry, use SCALED-ENTRY.
           - Trade setup R/R rule: if current_price > entry_zone_high (position is above
             its entry zone), you must choose ONE of the following — do not mix them:
-            OPTION A: set action=WAIT-FOR-ENTRY, allocation_pct=0, trade_setup=null.
-              Use this when you want to wait for price to reach the zone.
-            OPTION B: set action=LONG-BUY and recalculate the trade setup using
-              current_price as the entry reference:
-                stop_loss must be below current_price (not below entry_zone_low)
-                take_profit = current_price + 1.5 × (current_price - stop_loss) minimum
-                R/R = (take_profit - current_price) / (current_price - stop_loss) >= 1.5
-              Do NOT carry forward a zone-based trade setup when entering at current_price.
-              The zone-based stop_loss/take_profit produce an invalid R/R at actual entry.
+            OPTION A: set action=WAIT-FOR-ENTRY. The allocator will compute the trade
+              setup and earmark up to 15% of capital for this position automatically.
+            OPTION B: set action=LONG-BUY. The allocator will compute a zone-anchored
+              setup — ensure current_price is close enough to entry_zone_high that the
+              stop/TP produce a valid R/R at your actual entry price.
+            OPTION C: set action=SCALED-ENTRY. The allocator will compute two setups:
+              immediate tranche (R/R 2:1 anchored to current_price) and pullback tranche
+              (zone-anchored). Pass current_price in the allocate_portfolio call.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
           allocate_portfolio(stocks_json='[
@@ -324,13 +327,21 @@ tasks:
               "action":          "<YOUR DECIDED ACTION>",
               "composite_score": <float from Step 2>,
               "entry_zone_low":  <float from Technical context>,
-              "entry_zone_high": <float from Technical context>
+              "entry_zone_high": <float from Technical context>,
+              "current_price":   <float — current market price; required for SCALED-ENTRY>
             }, ...
           ]')
-        Record allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
-        Maximum single position: 40%. SCALED-ENTRY positions cap at 20%.
-        Note: allocate_portfolio now returns a trade_setup for WAIT-FOR-ENTRY positions too.
-        Copy it verbatim — it is the pending setup at the entry zone (allocation_pct stays 0).
+        Copy ALL of the following verbatim from the tool result:
+          allocation_pct, trade_setup, scaled_entry_setups,
+          deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
+        Allocation caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15%.
+        WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
+        SCALED-ENTRY: receives scaled_entry_setups (list of 2 setups) and trade_setup=null.
+          scaled_entry_setups[0] = immediate tranche (R/R 2:1 from current_price)
+          scaled_entry_setups[1] = pullback tranche (zone-anchored)
+        MONITOR / AVOID: allocation_pct=0, trade_setup=null, scaled_entry_setups=null.
+        The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three separate
+        fields. Copy all three into your output.
 
       STEP 5 — Write qualitative content for each position:
         rationale: 100-150 words citing specific numbers from all three agents.
@@ -342,6 +353,10 @@ tasks:
           trade_setup (e.g. "Price retraces to entry_zone_high of $$X.XX"). Also include
           an RSI or MACD condition that confirms the pullback is a healthy retracement,
           not a breakdown.
+          For SCALED-ENTRY: at least one trigger must reference the pullback zone
+          (e.g. "Price retraces to pullback zone low of $$X.XX").
+          For MONITOR: triggers must describe conditions that would upgrade to WAIT-FOR-ENTRY
+          or LONG-BUY (e.g. "RSI drops below 55", "Earnings beat clears valuation concern").
         review_frequency: DAILY / WEEKLY / MONTHLY.
 
       STEP 6 — Determine portfolio risk_level: Low / Medium / High / Very High.
@@ -362,21 +377,51 @@ tasks:
               "stop_loss": 809.0,
               "take_profit": 885.0
             },
+            "scaled_entry_setups": null,
             "rationale": "100-150 word synthesis citing specific data points",
             "monitoring_triggers": ["RSI crosses above 76", "Weekly close below SMA50"],
             "review_frequency": "WEEKLY"
+          },
+          {
+            "ticker": "XOM",
+            "action": "SCALED-ENTRY",
+            "allocation_pct": 18.5,
+            "current_price": 120.50,
+            "trade_setup": null,
+            "scaled_entry_setups": [
+              {
+                "direction": "LONG-BUY",
+                "entry_zone_low": 120.50,
+                "entry_zone_high": 120.50,
+                "stop_loss": 116.89,
+                "take_profit": 127.72
+              },
+              {
+                "direction": "LONG-BUY",
+                "entry_zone_low": 112.00,
+                "entry_zone_high": 115.00,
+                "stop_loss": 108.64,
+                "take_profit": 121.72
+              }
+            ],
+            "rationale": "100-150 word synthesis",
+            "monitoring_triggers": ["Price retraces to pullback zone low of $$112.00", "RSI falls below 55"],
+            "review_frequency": "WEEKLY"
           }
         ],
-        "total_allocated_pct": 35.2,
-        "cash_reserve_pct": 64.8,
-        "overall_strategy": "2-3 paragraph explanation",
+        "deployed_pct": 44.45,
+        "reserved_pct": 24.45,
+        "total_allocated_pct": 53.7,
+        "cash_reserve_pct": 46.3,
+        "overall_strategy": "2-3 paragraph explanation describing allocation logic accurately: capital is distributed proportionally to composite scores among eligible actions, capped per action type — rank order is preserved where caps permit.",
         "risk_level": "Medium"
       }
     expected_output: >
       JSON dict with sector='$sector', positions
-      (ticker/action/allocation_pct/current_price/trade_setup/rationale/
-      monitoring_triggers/review_frequency), total_allocated_pct, cash_reserve_pct,
-      overall_strategy, and risk_level. This is a DRAFT pending Critic review.
+      (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
+      rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
+      total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
+      This is a DRAFT pending Critic review.
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 5: Critique Review
@@ -422,16 +467,33 @@ tasks:
         MISSING_STOP_LOGIC       stop_loss is set at or above entry_zone_high.
         VAGUE_RATIONALE          Rationale makes claims without citing specific numbers
                                  (no RSI value, no momentum_score, no specific metric).
+        MISSING_SCALED_SETUPS    SCALED-ENTRY with scaled_entry_setups=null or fewer than
+                                 2 setups — execution details are undefined. CRITICAL.
+        WAIT_ENTRY_ZERO_ALLOC    WAIT-FOR-ENTRY with allocation_pct=0 — earmarked capital
+                                 is required; 0% means current_price was not passed to
+                                 allocate_portfolio. CRITICAL.
+        MONITOR_WITH_SETUP       MONITOR with trade_setup or scaled_entry_setups populated
+                                 — MONITOR is watch-list only; no capital, no setup. CRITICAL.
+        AVOID_WITH_SETUP         AVOID with trade_setup or scaled_entry_setups populated. CRITICAL.
+        INVALID_ACTION           Any action not in {LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY,
+                                 MONITOR, AVOID}. HOLD and SHORT-SELL are removed. CRITICAL.
+        IMMEDIATE_RR_BELOW_1_5   SCALED-ENTRY immediate tranche: R/R < 1.5 from current_price.
+                                 R/R = (take_profit − current_price) / (current_price − stop_loss).
+                                 Must be ≥ 1.5. CRITICAL.
+        BUCKET_SUM_ERROR         deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
+                                 (tolerance ±0.5%). CRITICAL.
 
         For each finding, state: the exact data value that creates the contradiction
         AND what the draft says about it. Do not describe issues vaguely.
 
       STEP 3 — Portfolio-level review:
-        - Does total_allocated_pct + cash_reserve_pct = 100?
+        - Does deployed_pct + reserved_pct + cash_reserve_pct = 100 (±0.5%)?
         - Does any position exceed 40% allocation?
         - Are there at least 3 distinct composite_scores?
         - Do all monitoring triggers reference specific measurable thresholds?
         - Is the overall_strategy internally consistent with the individual actions?
+        - Does overall_strategy accurately describe allocation logic (not falsely claiming
+          strict rank-proportionality when positions are capped at equal levels)?
 
       STEP 4 — Write revision_directives as exact instructions:
         Format: "[TICKER]: [specific change required] because [exact data contradiction]"
@@ -524,18 +586,28 @@ tasks:
           {
             "ticker": "NVDA",
             "action": "WAIT-FOR-ENTRY",
-            "allocation_pct": 0,
+            "allocation_pct": 12.5,
             "current_price": 875.50,
-            "trade_setup": null,
+            "trade_setup": {
+              "direction": "LONG-BUY",
+              "entry_zone_low": 834.0,
+              "entry_zone_high": 851.0,
+              "stop_loss": 809.0,
+              "take_profit": 885.0
+            },
+            "scaled_entry_setups": null,
             "rationale": "Revised from draft LONG-BUY: RSI=78 and Stochastic=82
-              confirm overbought conditions as flagged. Waiting for RSI to drop
-              below 65 before initiating. momentum_score=8.1 remains strong.",
-            "monitoring_triggers": ["RSI drops below 65", "Price retraces to SMA20"],
+              confirm overbought conditions as flagged. 12.5% earmarked pending
+              pullback to zone. momentum_score=8.1 remains strong.",
+            "monitoring_triggers": ["Price retraces to entry_zone_high of $$851.00",
+              "RSI drops below 65 confirming healthy retracement"],
             "review_frequency": "WEEKLY"
           }
         ],
-        "total_allocated_pct": 0,
-        "cash_reserve_pct": 100,
+        "deployed_pct": 0,
+        "reserved_pct": 12.5,
+        "total_allocated_pct": 12.5,
+        "cash_reserve_pct": 87.5,
         "overall_strategy": "2-3 paragraph explanation of final portfolio construction",
         "risk_level": "Low"
       }
@@ -543,13 +615,17 @@ tasks:
       RULES:
       - Output only the JSON dict — no text before or after, no markdown fences.
       - All CRITICAL critique issues must be addressed (changed or defended).
-      - allocation_pct, trade_setup, total_allocated_pct, cash_reserve_pct from
-        allocate_portfolio must be copied verbatim — never hand-calculated.
+      - allocation_pct, trade_setup, scaled_entry_setups, deployed_pct, reserved_pct,
+        total_allocated_pct, cash_reserve_pct from allocate_portfolio must be copied
+        verbatim — never hand-calculated.
+      - Valid actions: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
+        HOLD and SHORT-SELL are not valid actions.
       - risk_level: Low / Medium / High / Very High.
       - review_frequency: DAILY / WEEKLY / MONTHLY.
       - Maximum single-position size: 40%.
     expected_output: >
       JSON dict with sector='$sector', positions
-      (ticker/action/allocation_pct/current_price/trade_setup/rationale/
-      monitoring_triggers/review_frequency), total_allocated_pct, cash_reserve_pct,
-      overall_strategy, and risk_level. This is the FINAL revised portfolio.
+      (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
+      rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
+      total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
+      This is the FINAL revised portfolio.

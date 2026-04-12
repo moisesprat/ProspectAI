@@ -179,31 +179,42 @@ agents:
          - RSI, Stochastic: overbought (>70/>80) → WAIT-FOR-ENTRY even if score is high
          - MACD and MA trend: confirm or contradict the composite direction
          - Fundamental quality: VERY_EXPENSIVE valuation → raise bar for LONG-BUY
-         Decide one action per stock: LONG-BUY / HOLD / WAIT-FOR-ENTRY / AVOID.
-         This is your reasoned judgment — explain it clearly in the rationale.
-      4. Call 'allocate_portfolio' ONCE with your decided actions. Copy allocation_pct,
-         trade_setup, total_allocated_pct, cash_reserve_pct verbatim.
-         Note: WAIT-FOR-ENTRY positions now receive a trade_setup (the pending setup at
-         the entry zone). Copy it verbatim — it is not null. allocation_pct stays 0.
+         - financial_health = WEAK → MONITOR or AVOID
+         - Weak composite score (< 55) with no clear catalyst → MONITOR
+         Decide one action per stock: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID.
+         Valid actions ONLY: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
+         HOLD and SHORT-SELL are not valid — using them causes schema rejection.
+         MONITOR = watch-list (no capital, no setup). Different from AVOID: signals interest
+         but conditions not yet met. This is your reasoned judgment — explain it clearly.
+      4. Call 'allocate_portfolio' ONCE with your decided actions. Include current_price
+         for SCALED-ENTRY positions. Copy ALL of the following verbatim:
+           allocation_pct, trade_setup, scaled_entry_setups,
+           deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
+         Note: WAIT-FOR-ENTRY positions receive a trade_setup AND a real allocation_pct
+         (earmarked capital, capped at 15%). Copy both verbatim.
+         Note: SCALED-ENTRY positions receive scaled_entry_setups (list of 2 setups:
+         immediate tranche at current_price, pullback tranche at entry zone).
+         trade_setup is null for SCALED-ENTRY. Copy scaled_entry_setups verbatim.
+         Note: The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three
+         separate fields. Copy all three. deployed_pct + reserved_pct + cash_reserve_pct = 100.
       5. Write qualitative content yourself: rationale (100-150 words per stock),
          monitoring_triggers (2-3 specific, measurable triggers per stock),
          overall_strategy (2-3 paragraphs), risk_level for the portfolio.
       6. Output ONLY the JSON dict. No text before or after it.
-      
+
       PORTFOLIO CONSTRUCTION RULES:
-      - Before writing any allocation percentage, verify it does not exceed 40.0. 
-        If your calculation produces a number above 40.0, recalculate by capping at 40.0 
-        and distributing the remainder to other positions or CASH.
-      - Maximum allocation to any single LONG-BUY position: 40% of portfolio capital.
-        Never exceed this limit regardless of composite score or conviction level.
-      - Minimum number of positions for full capital deployment: 3 LONG-BUY positions.
-      - If only 1 LONG-BUY position qualifies: allocate maximum 40% to it. State
-        the remaining 60% as "CASH / Money Market — insufficient qualifying positions
-        for full deployment" in the portfolio summary.
-      - If only 2 LONG-BUY positions qualify: allocate maximum 40% each (80% total).
-        State the remaining 20% as CASH.
-      - If 3 or more LONG-BUY positions qualify: distribute proportionally to composite
-        scores, capped at 40% per position.
+      - Allocation caps per action type: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15%.
+        The allocate_portfolio tool enforces these caps automatically — do not override.
+      - Capital is distributed proportionally to composite scores among eligible actions,
+        capped per action type — rank order is preserved where caps permit. When two or
+        more positions hit their cap, they receive equal allocation at the cap.
+      - In overall_strategy, state allocation logic accurately — do NOT claim
+        rank-proportional allocation when capping has equalised positions.
+      - Minimum number of positions for full capital deployment: 3 qualifying positions.
+      - If only 1-2 positions qualify: state remaining capital as cash reserve.
+      - reserved_pct represents earmarked capital (WAIT-FOR-ENTRY + SCALED-ENTRY pullback
+        tranches). Do not describe reserved_pct as "cash" — it is allocated to specific
+        pending positions.
       - CASH is a valid and disciplined portfolio outcome. Never force BUY ratings
         on stocks that do not qualify just to deploy capital.
 
@@ -275,16 +286,33 @@ agents:
         WEAK_FUNDAMENTALS_BUY    — financial_health = WEAK but LONG-BUY with no
                                    acknowledgment of financial risk
         MISSING_STOP_LOGIC       — stop_loss is set at or above entry_zone_high
+        MISSING_SCALED_SETUPS    — SCALED-ENTRY with scaled_entry_setups=null or < 2 setups;
+                                   execution details are undefined [CRITICAL]
+        WAIT_ENTRY_ZERO_ALLOC    — WAIT-FOR-ENTRY with allocation_pct=0; earmarked capital
+                                   is required; 0 means current_price was not passed to
+                                   allocate_portfolio [CRITICAL]
+        MONITOR_WITH_SETUP       — MONITOR with trade_setup or scaled_entry_setups populated;
+                                   MONITOR is watch-list only — no capital, no setup [CRITICAL]
+        AVOID_WITH_SETUP         — AVOID with trade_setup or scaled_entry_setups populated [CRITICAL]
+        INVALID_ACTION           — any action not in {LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY,
+                                   MONITOR, AVOID}; HOLD and SHORT-SELL are removed [CRITICAL]
+        IMMEDIATE_RR_BELOW_1_5   — SCALED-ENTRY immediate tranche R/R < 1.5:
+                                   (take_profit − current_price) / (current_price − stop_loss)
+                                   must be ≥ 1.5 [CRITICAL]
+        BUCKET_SUM_ERROR         — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
+                                   (tolerance ±0.5%) [CRITICAL]
 
       You MUST find at least one issue per ticker. If a position appears clean,
       look harder — check the monitoring triggers for directional consistency,
       verify the rationale cites actual numbers, confirm allocation matches rank.
 
       Portfolio-level checks:
-        - total_allocated_pct + cash_reserve_pct must equal 100
+        - deployed_pct + reserved_pct + cash_reserve_pct must equal 100 (±0.5%)
         - No position above 40%
         - At least 3 distinct composite_scores (identical scores = default values used)
         - Minimum 2-3 concrete monitoring triggers per position
+        - overall_strategy must not falsely claim rank-proportional allocation when
+          positions are capped at equal levels
 
       Write revision_directives as exact, actionable instructions:
         Format: "[TICKER]: [specific change required] because [data contradiction]"
