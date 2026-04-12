@@ -181,26 +181,37 @@ tasks:
       You receive context from the Market Analyst (sentiment) and Technical Analyst (indicators).
       Fetch real financial data for each stock and produce a structured fundamental report.
 
+      MANDATORY: You MUST call 'fetch_fundamental_data' AND 'grade_fundamental_data' for
+      EVERY ticker before writing any output. The context you received contains technical
+      and sentiment data only — it does NOT contain fundamental financial metrics.
+      Do NOT use training data, memory, or prior knowledge to fill in financial numbers.
+      Do NOT output the result dict until all tool calls are complete.
+      If you cannot call the tools, output {"error": "tool calls incomplete"} instead.
+
       STEP 1 — Extract tickers:
         Read the technical analysis context. Find 'stock_analyses'. Extract each 'ticker'.
 
       STEP 2 — Call the tool for EACH ticker:
         Call 'fetch_fundamental_data' with ticker="<TICKER>".
-        Collect all results. If a ticker returns an 'error' key, skip grading for that stock.
+        Collect all results.
 
       STEP 3 — For each ticker, call 'grade_fundamental_data':
-        Build a JSON string from the raw values returned in STEP 2 and call:
-          grade_fundamental_data(
-            ticker="<TICKER>",
-            raw_fundamentals_json='{"pe_ratio":<val>,"ps_ratio":<val>,
-              "current_ratio":<val>,"debt_to_equity":<val>,
-              "free_cash_flow":<val>,"revenue_growth_yoy":<val>}'
-          )
-        Record the returned valuation_grade, financial_health, growth_outlook,
-        and fundamental_component verbatim — do NOT recalculate them.
+        Always call this tool — even if fetch returned an error.
+        Pass the raw result from STEP 2 verbatim as raw_fundamentals_json (including
+        the {"error": "..."} dict if that is what fetch returned).
+        The tool will return {"fundamental_unknown": true, "valuation_grade": "UNKNOWN",
+        "financial_health": "UNKNOWN", "growth_outlook": "UNKNOWN",
+        "fundamental_component": null} when data was unavailable.
+        Copy this result verbatim into the assessment sub-dict — do NOT substitute
+        any other grade or invent a valuation.
+        When data is available (no error key in STEP 2 result), pass the full raw
+        JSON from STEP 2 to the tool. Record the returned valuation_grade,
+        financial_health, growth_outlook, and fundamental_component verbatim.
         Write risk_factors, catalysts, and fundamental_summary yourself,
         citing specific numbers from the raw data.
-        These qualitative fields are the only things you derive yourself in this step.
+        When fundamental_unknown=true: set risk_factors=["Fundamental data unavailable"],
+        catalysts=["Data unavailable"], fundamental_summary="No fundamental data
+        available for this ticker."
 
       STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
       {
@@ -230,11 +241,27 @@ tasks:
               "financial_health": "STRONG",
               "growth_outlook": "MODERATE",
               "fundamental_component": 27,
+              "fundamental_unknown": false,
               "fundamental_summary": "...",
               "risk_factors": ["PE ratio of 65x is historically elevated", "..."],
               "catalysts": ["Revenue growing at 12% YoY", "..."]
             },
             "error": null
+          },
+          {
+            "ticker": "PLUG",
+            "raw_fundamentals": {"ticker": "PLUG", "error": "No data returned by yfinance"},
+            "assessment": {
+              "valuation_grade": "UNKNOWN",
+              "financial_health": "UNKNOWN",
+              "growth_outlook": "UNKNOWN",
+              "fundamental_component": null,
+              "fundamental_unknown": true,
+              "fundamental_summary": "No fundamental data available for this ticker.",
+              "risk_factors": ["Fundamental data unavailable"],
+              "catalysts": ["Data unavailable"]
+            },
+            "error": "No data returned by yfinance"
           }
         ],
         "sector_fundamental_summary": "2-3 paragraph overview of sector-wide fundamental trends."
@@ -244,7 +271,8 @@ tasks:
       - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
       - valuation_grade, financial_health, growth_outlook, fundamental_component must be copied
         verbatim from the 'grade_fundamental_data' tool result.
-      - If either tool returns an error, set error to the string and assessment to null.
+      - When fundamental_unknown=true, do NOT substitute any grade or score — copy the UNKNOWN
+        values verbatim. Downstream agents are designed to handle UNKNOWN without fabricating.
       - Include all tickers from technical analysis context.
     expected_output: >
       Python dict with sector='$sector', analysis_date,
@@ -279,6 +307,10 @@ tasks:
         CRITICAL: momentum_score is a float between 0 and 10. Extract the EXACT
         value — do NOT default to 8.0 or any other fixed number.
         CRITICAL: Every stock must have a DISTINCT composite_score.
+        CRITICAL: When a stock has fundamental_unknown=true, pass financial_health="UNKNOWN"
+        and growth_outlook="UNKNOWN" to compute_composite_scores. The tool will exclude
+        the fundamental component from that stock's score and flag fundamental_unknown=true.
+        Copy the returned composite_score verbatim — it already reflects missing data.
 
       STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
           compute_composite_scores(stocks_json='[
@@ -286,15 +318,19 @@ tasks:
               "ticker":            "<TICKER>",
               "average_sentiment": <float>,
               "momentum_score":    <float from Technical interpretation>,
-              "financial_health":  "<STRONG|ADEQUATE|WEAK>",
-              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING>"
+              "financial_health":  "<STRONG|ADEQUATE|WEAK|UNKNOWN>",
+              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING|UNKNOWN>"
             }, ...
           ]')
         Record each stock's composite_score and components verbatim.
+        For tickers with fundamental_unknown=true the tool returns fundamental_component=null —
+        copy it as null, do NOT substitute a number.
 
       STEP 3 — Decide the investment action for each stock:
         Choose one action per stock: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
         Apply these rules:
+          - fundamental_unknown=true → cap at MONITOR or WAIT-FOR-ENTRY; do NOT assign
+            LONG-BUY or SCALED-ENTRY when fundamental data is missing
           - RSI > 70 or Stochastic > 80 → prefer WAIT-FOR-ENTRY
           - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% → WAIT-FOR-ENTRY
           - entry_zone_status = "PULLBACK_ENTRY" with gap < 5% + regime="TRENDING"
@@ -493,6 +529,8 @@ tasks:
                                    fundamental_component = health_pts + growth_pts
                                      (STRONG=20/ADEQUATE=10/WEAK=5;
                                       HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
+                                   When fundamental_unknown=true: fundamental_component=0
+                                   (excluded); expected = sentiment + technical only.
                                    expected = sentiment_component + technical_component
                                               + fundamental_component
                                  If |position.composite_score − expected| > 1.0, flag

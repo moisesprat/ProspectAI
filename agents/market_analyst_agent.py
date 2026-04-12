@@ -19,5 +19,6 @@ class MarketAnalystAgent(BaseAgent):
             verbose=self.verbose,
             allow_delegation=self.allow_delegation,
             llm=self._get_llm(),
+            max_iter=self.max_iter,
         )
 

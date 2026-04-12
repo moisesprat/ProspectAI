@@ -1,33 +1,47 @@
 """
-Tests for TechnicalAnalysisTool.
-yfinance calls are mocked — no network required.
+Tests for TechnicalAnalysisTool and CompositeScoreTool.
+yfinance is mocked via patch on the tool's internal method — avoids
+the double yf.Ticker call in _get_stock_data + _calculate_all_indicators.
 """
 
+import json
 import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import datetime
+
+from utils.technical_analysis_tool import TechnicalAnalysisTool
+from utils.composite_score_tool import CompositeScoreTool
 
 
-def _make_price_series(n=252, start=100.0, drift=0.001, seed=42):
-    """Generate a realistic synthetic OHLCV DataFrame."""
+# ── Synthetic price data ───────────────────────────────────────────────────────
+
+def _make_price_df(n=252, start=100.0, drift=0.001, seed=42) -> pd.DataFrame:
+    """Realistic synthetic OHLCV DataFrame with enough history for all indicators."""
+    # Generate index first; pd.date_range with freq="B" may return fewer than n items
+    # when today is a weekend (end snaps to last business day). Use normalize() to
+    # avoid the time-component causing off-by-one on weekends.
+    idx = pd.date_range(
+        end=pd.Timestamp.today().normalize() - pd.offsets.BDay(0),
+        periods=n,
+        freq="B",
+    )
+    n = len(idx)  # actual count (may be less than requested when today is non-business)
     rng = np.random.default_rng(seed)
     returns = rng.normal(drift, 0.02, n)
     closes = start * np.cumprod(1 + returns)
-    highs = closes * (1 + rng.uniform(0, 0.02, n))
-    lows = closes * (1 - rng.uniform(0, 0.02, n))
-    opens = closes * (1 + rng.uniform(-0.01, 0.01, n))
+    highs   = closes * (1 + rng.uniform(0, 0.02, n))
+    lows    = closes * (1 - rng.uniform(0, 0.02, n))
+    opens   = closes * (1 + rng.uniform(-0.01, 0.01, n))
     volumes = rng.integers(1_000_000, 10_000_000, n).astype(float)
-
-    idx = pd.date_range(end=datetime.today(), periods=n, freq="B")
-    return pd.DataFrame({
-        "Open": opens, "High": highs, "Low": lows,
-        "Close": closes, "Volume": volumes,
-    }, index=idx)
+    return pd.DataFrame(
+        {"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": volumes},
+        index=idx,
+    )
 
 
-def _mock_ticker(hist_df):
+def _mock_ticker(hist_df: pd.DataFrame) -> MagicMock:
     ticker = MagicMock()
     ticker.history.return_value = hist_df
     return ticker
@@ -35,15 +49,11 @@ def _mock_ticker(hist_df):
 
 # ── Tool structure ────────────────────────────────────────────────────────────
 
-class TestTechnicalAnalysisToolStructure:
+def test_tool_name():
+    assert TechnicalAnalysisTool().name == "calculate_technical_indicators"
 
-    def test_tool_name(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
-        assert TechnicalAnalysisTool().name == "calculate_technical_indicators"
-
-    def test_description_is_not_empty(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
-        assert len(TechnicalAnalysisTool().description) > 20
+def test_description_is_not_empty():
+    assert len(TechnicalAnalysisTool().description) > 20
 
 
 # ── Successful analysis ───────────────────────────────────────────────────────
@@ -51,76 +61,63 @@ class TestTechnicalAnalysisToolStructure:
 class TestTechnicalAnalysisSuccess:
 
     @pytest.fixture(autouse=True)
-    def mock_yfinance(self):
-        df = _make_price_series()
+    def mock_yf(self):
+        df = _make_price_df()
         with patch("yfinance.Ticker", return_value=_mock_ticker(df)):
             yield df
 
     def test_returns_expected_top_level_keys(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         result = TechnicalAnalysisTool()._run("NVDA")
         for key in ("ticker", "analysis_period", "analysis_date",
                     "stock_data", "technical_indicators"):
             assert key in result, f"Missing key: {key}"
 
     def test_ticker_is_echoed(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
-        result = TechnicalAnalysisTool()._run("AAPL")
-        assert result["ticker"] == "AAPL"
+        assert TechnicalAnalysisTool()._run("AAPL")["ticker"] == "AAPL"
 
     def test_stock_data_has_required_fields(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         sd = TechnicalAnalysisTool()._run("NVDA")["stock_data"]
         for field in ("current_price", "price_change", "high", "low", "volume"):
             assert field in sd
 
     def test_current_price_is_positive(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         sd = TechnicalAnalysisTool()._run("NVDA")["stock_data"]
         assert sd["current_price"] > 0
 
     def test_technical_indicators_four_categories(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         ti = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]
         for cat in ("momentum", "trend", "volatility", "volume"):
             assert cat in ti, f"Missing indicator category: {cat}"
 
     def test_momentum_has_rsi_and_macd(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         mom = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["momentum"]
         assert "rsi" in mom
         assert "macd" in mom
 
-    def test_rsi_value_is_in_valid_range(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
+    def test_rsi_in_valid_range(self):
         rsi = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["momentum"]["rsi"]
-        if rsi.get("current") is not None:
-            assert 0 <= rsi["current"] <= 100
+        current = rsi.get("current")
+        if current is not None:
+            assert 0 <= current <= 100
 
     def test_trend_has_moving_averages(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         trend = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["trend"]
         assert "moving_averages" in trend
-        ma = trend["moving_averages"]
         for key in ("sma_20", "sma_50", "sma_200"):
-            assert key in ma
+            assert key in trend["moving_averages"]
 
     def test_volatility_has_bollinger_and_atr(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         vol = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["volatility"]
         assert "bollinger_bands" in vol
         assert "atr" in vol
 
     def test_volume_has_obv_and_vwap(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         vol = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["volume"]
         assert "obv" in vol
         assert "vwap" in vol
 
-    def test_analysis_date_is_today_format(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
+    def test_analysis_date_is_parseable(self):
         date_str = TechnicalAnalysisTool()._run("NVDA")["analysis_date"]
-        # Should parse without error
         datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
 
 
@@ -129,26 +126,22 @@ class TestTechnicalAnalysisSuccess:
 class TestTechnicalAnalysisErrors:
 
     def test_empty_history_returns_error(self):
-        empty_df = pd.DataFrame()
-        with patch("yfinance.Ticker", return_value=_mock_ticker(empty_df)):
-            from utils.technical_analysis_tool import TechnicalAnalysisTool
+        with patch("yfinance.Ticker", return_value=_mock_ticker(pd.DataFrame())):
             result = TechnicalAnalysisTool()._run("FAKE")
-            assert "error" in result
+        assert "error" in result
 
     def test_exception_returns_error_dict(self):
         with patch("yfinance.Ticker", side_effect=Exception("network error")):
-            from utils.technical_analysis_tool import TechnicalAnalysisTool
             result = TechnicalAnalysisTool()._run("NVDA")
-            assert "error" in result
+        assert "error" in result
 
 
-# ── Status interpretation methods ─────────────────────────────────────────────
+# ── Status helper methods ─────────────────────────────────────────────────────
 
 class TestStatusMethods:
 
     @pytest.fixture(autouse=True)
     def tool(self):
-        from utils.technical_analysis_tool import TechnicalAnalysisTool
         self.t = TechnicalAnalysisTool()
 
     def test_rsi_overbought(self):
@@ -198,3 +191,84 @@ class TestStatusMethods:
 
     def test_cci_oversold(self):
         assert self.t._get_cci_status(-150) == "Oversold"
+
+
+# ── CompositeScoreTool ────────────────────────────────────────────────────────
+
+def test_composite_tool_name():
+    assert CompositeScoreTool().name == "compute_composite_scores"
+
+
+def _compute(*stocks) -> list:
+    payload = json.dumps(list(stocks))
+    result = json.loads(CompositeScoreTool()._run(payload))
+    return result["scores"]
+
+
+class TestCompositeScoreFormula:
+
+    def test_sentiment_capped_at_30(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 1.0,
+                           "momentum_score": 0, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["sentiment_component"] == 30.0
+
+    def test_sentiment_scales_linearly_below_cap(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.2,
+                           "momentum_score": 0, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["sentiment_component"] == pytest.approx(20.0)
+
+    def test_technical_component_max_40(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0,
+                           "momentum_score": 10, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["technical_component"] == 40.0
+
+    @pytest.mark.parametrize("health,growth,expected", [
+        ("STRONG",   "HIGH",      30),
+        ("STRONG",   "MODERATE",  27),
+        ("ADEQUATE", "HIGH",      20),
+        ("ADEQUATE", "LOW",       13),
+        ("WEAK",     "MODERATE",  12),
+        ("WEAK",     "DECLINING",  6),  # minimum: 5 + 1
+    ])
+    def test_fundamental_component(self, health, growth, expected):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0,
+                           "momentum_score": 0,
+                           "financial_health": health,
+                           "growth_outlook": growth})
+        assert scores[0]["fundamental_component"] == expected
+
+    def test_composite_max_is_100(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 1.0,
+                           "momentum_score": 10, "financial_health": "STRONG",
+                           "growth_outlook": "HIGH"})
+        assert scores[0]["composite_score"] == pytest.approx(100.0)
+
+    def test_composite_min_above_zero(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0,
+                           "momentum_score": 0, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["composite_score"] >= 6  # WEAK(5) + DECLINING(1)
+
+    def test_distinct_inputs_produce_distinct_scores(self):
+        scores = _compute(
+            {"ticker": "A", "average_sentiment": 0.8, "momentum_score": 8,
+             "financial_health": "STRONG", "growth_outlook": "HIGH"},
+            {"ticker": "B", "average_sentiment": 0.3, "momentum_score": 5,
+             "financial_health": "ADEQUATE", "growth_outlook": "MODERATE"},
+        )
+        assert scores[0]["composite_score"] != scores[1]["composite_score"]
+
+    def test_all_component_fields_present(self):
+        scores = _compute({"ticker": "NVDA", "average_sentiment": 0.7,
+                           "momentum_score": 7.5, "financial_health": "STRONG",
+                           "growth_outlook": "HIGH"})
+        for field in ("ticker", "sentiment_component", "technical_component",
+                      "fundamental_component", "composite_score"):
+            assert field in scores[0]
+
+    def test_invalid_json_returns_error(self):
+        result = json.loads(CompositeScoreTool()._run("not json"))
+        assert "error" in result

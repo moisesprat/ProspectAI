@@ -1,8 +1,9 @@
 """
 Unit tests for schemas/agent_outputs.py.
-Verifies module import, valid instantiation of all four schemas,
-and that trade-structure invariant violations raise ValidationError.
+Covers all five output schemas, key validation rules, and the new
+composite_score / deployed_pct / reserved_pct fields added in v1.5+.
 """
+
 import pytest
 from pydantic import ValidationError
 
@@ -21,12 +22,60 @@ from schemas.agent_outputs import (
     TradeSetup,
     PositionRecommendation,
     InvestorStrategicOutput,
+    CriticOutput,
+    CritiqueItem,
 )
 
 
-# ---------------------------------------------------------------------------
-# MarketAnalysisOutput
-# ---------------------------------------------------------------------------
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _trade_setup(**kwargs) -> TradeSetup:
+    defaults = dict(direction="LONG-BUY", entry_zone_low=180.0,
+                    entry_zone_high=186.0, stop_loss=174.0, take_profit=205.0)
+    defaults.update(kwargs)
+    return TradeSetup(**defaults)
+
+
+def _position(**kwargs) -> PositionRecommendation:
+    defaults = dict(
+        ticker="AAPL",
+        action="LONG-BUY",
+        composite_score=75.0,
+        allocation_pct=15.0,
+        current_price=183.0,
+        trade_setup=_trade_setup(),
+        scaled_entry_setups=None,
+        rationale=(
+            "AAPL RSI=64, momentum_score=7.2, ADEQUATE health, MODERATE growth. "
+            "Composite 75.0 supports LONG-BUY within entry zone 180-186."
+        ),
+        monitoring_triggers=["RSI crosses above 76", "Weekly close below SMA50"],
+        review_frequency="WEEKLY",
+    )
+    defaults.update(kwargs)
+    return PositionRecommendation(**defaults)
+
+
+def _portfolio(**kwargs) -> InvestorStrategicOutput:
+    defaults = dict(
+        sector="Technology",
+        positions=[_position()],
+        deployed_pct=15.0,
+        reserved_pct=0.0,
+        total_allocated_pct=15.0,
+        cash_reserve_pct=85.0,
+        overall_strategy=(
+            "Conservative single-position entry. Capital distributed proportionally "
+            "to composite scores, capped per action type. deployed 15% + reserved 0% "
+            "+ cash 85% = 100%."
+        ),
+        risk_level="Low",
+    )
+    defaults.update(kwargs)
+    return InvestorStrategicOutput(**defaults)
+
+
+# ── MarketAnalysisOutput ──────────────────────────────────────────────────────
 
 def test_market_analysis_output_valid():
     output = MarketAnalysisOutput(
@@ -47,13 +96,10 @@ def test_market_analysis_output_valid():
         ),
     )
     assert output.sector == "Technology"
-    assert len(output.candidate_stocks) == 1
     assert output.candidate_stocks[0].ticker == "AAPL"
 
 
-# ---------------------------------------------------------------------------
-# TechnicalAnalysisOutput
-# ---------------------------------------------------------------------------
+# ── TechnicalAnalysisOutput ───────────────────────────────────────────────────
 
 def test_technical_analysis_output_valid():
     output = TechnicalAnalysisOutput(
@@ -74,28 +120,28 @@ def test_technical_analysis_output_valid():
                     ),
                 ),
                 technical_score=TechnicalScore(
-                    percentage=72.0,
-                    grade="B+",
-                    recommendation="Buy",
+                    percentage=72.0, grade="B+", recommendation="Buy"
                 ),
                 investment_recommendation=(
-                    "AAPL is technically sound with a confirmed uptrend, moderate risk, "
-                    "and favorable risk/reward at current levels near the support zone."
+                    "AAPL is technically sound with a confirmed uptrend and favorable "
+                    "risk/reward at current levels near the support zone."
                 ),
             )
         ],
         summary=(
             "Technology sector technical picture is constructive. Most candidates display "
-            "bullish momentum indicators, with AAPL leading in technical score. Key support "
-            "levels are holding and volume patterns confirm institutional accumulation."
+            "bullish momentum indicators with key support levels holding."
         ),
     )
     assert output.technical_analysis[0].current_price == 185.50
 
 
-# ---------------------------------------------------------------------------
-# FundamentalAnalysisOutput
-# ---------------------------------------------------------------------------
+def test_support_resistance_invalid():
+    with pytest.raises(ValidationError):
+        SupportResistance(support=200.0, resistance=150.0)
+
+
+# ── FundamentalAnalysisOutput ─────────────────────────────────────────────────
 
 def test_fundamental_analysis_output_valid():
     output = FundamentalAnalysisOutput(
@@ -104,133 +150,252 @@ def test_fundamental_analysis_output_valid():
             StockFundamentalAnalysis(
                 ticker="AAPL",
                 company_name="Apple Inc.",
-                valuation_metrics=ValuationMetrics(
-                    pe_ratio=28.5,
-                    pb_ratio=45.2,
-                    ev_ebitda=22.1,
-                    price_to_sales=7.3,
-                    debt_to_equity=1.8,
-                    roe=0.145,
-                    revenue_growth_yoy=0.062,
-                    earnings_growth_yoy=0.08,
-                    free_cash_flow=95_000_000_000.0,
-                    dividend_yield=0.005,
-                ),
+                valuation_metrics=ValuationMetrics(pe_ratio=28.5, pb_ratio=45.2),
                 fundamental_rating=FundamentalRating(
-                    valuation="Fairly Valued",
-                    quality="High",
-                    growth="Moderate Growth",
-                    overall="Buy",
+                    valuation="Fairly Valued", quality="High",
+                    growth="Moderate Growth", overall="Buy"
                 ),
-                key_strengths=["Industry-leading margins", "Strong free cash flow generation"],
-                key_risks=["China revenue concentration", "Slowing iPhone upgrade cycle"],
+                key_strengths=["Industry-leading margins"],
+                key_risks=["China revenue concentration"],
                 investment_thesis=(
-                    "Apple's ecosystem lock-in and services revenue diversification provide "
-                    "a durable competitive moat supporting a premium valuation."
+                    "Apple's ecosystem lock-in and services revenue diversification "
+                    "provide a durable competitive moat supporting a premium valuation."
                 ),
             )
         ],
         summary=(
-            "Technology sector fundamentals remain solid with strong balance sheets and "
-            "improving margins across most candidates. AAPL stands out for its cash generation "
-            "and return on equity, though premium valuations limit upside relative to peers."
+            "Technology sector fundamentals remain solid with strong balance sheets "
+            "and improving margins across most candidates."
         ),
     )
     assert output.fundamental_analysis[0].ticker == "AAPL"
 
 
-# ---------------------------------------------------------------------------
-# InvestorStrategicOutput
-# ---------------------------------------------------------------------------
+# ── TradeSetup invariants ─────────────────────────────────────────────────────
+
+def test_trade_setup_valid():
+    ts = _trade_setup()
+    assert ts.stop_loss < ts.entry_zone_low <= ts.entry_zone_high < ts.take_profit
+
+
+def test_trade_setup_stop_above_entry_fails():
+    with pytest.raises(ValidationError) as exc:
+        _trade_setup(stop_loss=190.0)  # stop_loss > entry_zone_low
+    assert "LONG-BUY invariant violated" in str(exc.value)
+
+
+def test_trade_setup_entry_zone_inverted_fails():
+    with pytest.raises(ValidationError):
+        _trade_setup(entry_zone_low=190.0, entry_zone_high=180.0,
+                     stop_loss=175.0, take_profit=210.0)
+
+
+def test_trade_setup_take_profit_below_zone_fails():
+    with pytest.raises(ValidationError):
+        _trade_setup(entry_zone_low=180.0, entry_zone_high=186.0,
+                     stop_loss=174.0, take_profit=183.0)  # TP < entry_zone_high
+
+
+# ── PositionRecommendation ────────────────────────────────────────────────────
+
+def test_position_long_buy_valid():
+    p = _position()
+    assert p.action == "LONG-BUY"
+    assert p.composite_score == 75.0
+    assert p.trade_setup is not None
+    assert p.scaled_entry_setups is None
+
+
+def test_position_composite_score_required():
+    with pytest.raises(ValidationError):
+        PositionRecommendation(
+            ticker="AAPL", action="LONG-BUY",
+            allocation_pct=15.0, current_price=183.0,
+            trade_setup=_trade_setup(), scaled_entry_setups=None,
+            rationale="x" * 60,
+            monitoring_triggers=["RSI above 76"],
+            review_frequency="WEEKLY",
+            # composite_score intentionally omitted
+        )
+
+
+def test_position_hold_rejected():
+    with pytest.raises(ValidationError):
+        _position(action="HOLD")
+
+
+def test_position_short_sell_rejected():
+    with pytest.raises(ValidationError):
+        _position(action="SHORT-SELL")
+
+
+def test_position_monitor_valid_no_setup():
+    p = _position(
+        action="MONITOR",
+        composite_score=52.0,
+        allocation_pct=0.0,
+        trade_setup=None,
+        scaled_entry_setups=None,
+        rationale=(
+            "MSFT RSI=72 VERY_EXPENSIVE valuation. composite_score=52.0 below "
+            "threshold. Watching for pullback and valuation reset before deploying capital."
+        ),
+        monitoring_triggers=["RSI drops below 55", "PE below 28"],
+    )
+    assert p.action == "MONITOR"
+    assert p.allocation_pct == 0.0
+    assert p.trade_setup is None
+
+
+def test_position_avoid_valid():
+    p = _position(
+        action="AVOID",
+        composite_score=35.0,
+        allocation_pct=0.0,
+        trade_setup=None,
+        scaled_entry_setups=None,
+        rationale=(
+            "WEAK balance sheet, negative revenue growth, negative sentiment. "
+            "composite_score=35.0 disqualifies from any capital deployment."
+        ),
+        monitoring_triggers=["Revenue growth turns positive for two consecutive quarters"],
+    )
+    assert p.action == "AVOID"
+
+
+def test_position_scaled_entry_requires_two_setups():
+    with pytest.raises(ValidationError) as exc:
+        _position(
+            action="SCALED-ENTRY",
+            composite_score=78.0,
+            trade_setup=None,
+            scaled_entry_setups=None,  # missing — should fail
+        )
+    assert "2 scaled_entry_setups" in str(exc.value)
+
+
+def test_position_scaled_entry_trade_setup_must_be_null():
+    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
+                       stop_loss=118.34, take_profit=129.32)
+    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
+                       stop_loss=106.7, take_profit=121.9)
+    with pytest.raises(ValidationError) as exc:
+        _position(
+            action="SCALED-ENTRY",
+            composite_score=78.0,
+            trade_setup=imm,               # must be null for SCALED-ENTRY
+            scaled_entry_setups=[imm, plb],
+        )
+    assert "trade_setup=null" in str(exc.value)
+
+
+def test_position_scaled_entry_valid_with_two_setups():
+    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
+                       stop_loss=118.34, take_profit=129.32)
+    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
+                       stop_loss=106.7, take_profit=121.9)
+    p = _position(
+        action="SCALED-ENTRY",
+        composite_score=78.0,
+        allocation_pct=18.5,
+        current_price=122.0,
+        trade_setup=None,
+        scaled_entry_setups=[imm, plb],
+    )
+    assert len(p.scaled_entry_setups) == 2
+
+
+def test_position_wait_for_entry_valid():
+    p = _position(
+        action="WAIT-FOR-ENTRY",
+        composite_score=68.0,
+        allocation_pct=12.0,
+        trade_setup=_trade_setup(),
+        scaled_entry_setups=None,
+    )
+    assert p.action == "WAIT-FOR-ENTRY"
+    assert p.allocation_pct == 12.0
+
+
+# ── InvestorStrategicOutput ───────────────────────────────────────────────────
 
 def test_investor_strategic_output_valid():
-    output = InvestorStrategicOutput(
-        sector="Technology",
-        positions=[
-            PositionRecommendation(
-                ticker="AAPL",
-                action="LONG-BUY",
-                allocation_pct=15.0,
-                trade_setup=TradeSetup(
-                    direction="LONG-BUY",
-                    entry_zone_low=182.0,
-                    entry_zone_high=186.0,
-                    stop_loss=175.0,
-                    take_profit=205.0,
-                ),
-                rationale=(
-                    "AAPL offers a compelling risk/reward within a diversified tech allocation. "
-                    "Strong fundamentals, technical confirmation, and positive sentiment align."
-                ),
-                monitoring_triggers=["Weekly RSI cross below 45", "Revenue miss >5%"],
-                review_frequency="WEEKLY",
-            )
-        ],
-        total_allocated_pct=15.0,
-        cash_reserve_pct=85.0,
-        overall_strategy=(
-            "Conservative single-position entry in Technology sector. Concentrate in highest-"
-            "conviction name (AAPL) while maintaining elevated cash reserves to average down "
-            "on weakness or add new positions as technical setups emerge over the next 4–6 weeks."
-        ),
-        risk_level="Low",
-    )
+    output = _portfolio()
     assert output.total_allocated_pct == 15.0
     assert output.cash_reserve_pct == 85.0
+    assert output.deployed_pct == 15.0
+    assert output.reserved_pct == 0.0
 
 
-# ---------------------------------------------------------------------------
-# TradeSetup invariant — LONG-BUY with stop_loss > entry_zone_low must fail
-# ---------------------------------------------------------------------------
-
-def test_trade_setup_long_buy_invalid_stop_loss():
-    with pytest.raises(ValidationError) as exc_info:
-        TradeSetup(
-            direction="LONG-BUY",
-            entry_zone_low=182.0,
-            entry_zone_high=186.0,
-            stop_loss=190.0,  # invalid: stop_loss > entry_zone_low
-            take_profit=205.0,
-        )
-    assert "LONG-BUY invariant violated" in str(exc_info.value)
+def test_three_bucket_sum_must_equal_100():
+    with pytest.raises(ValidationError) as exc:
+        _portfolio(deployed_pct=40.0, reserved_pct=20.0, cash_reserve_pct=50.0)
+        # 40 + 20 + 50 = 110 ≠ 100
+    assert "100" in str(exc.value)
 
 
-# ---------------------------------------------------------------------------
-# SupportResistance invariant
-# ---------------------------------------------------------------------------
-
-def test_support_resistance_invalid():
-    with pytest.raises(ValidationError):
-        SupportResistance(support=200.0, resistance=150.0)
-
-
-# ---------------------------------------------------------------------------
-# InvestorStrategicOutput allocation mismatch
-# ---------------------------------------------------------------------------
-
-def test_investor_strategic_allocation_mismatch():
-    with pytest.raises(ValidationError) as exc_info:
-        InvestorStrategicOutput(
-            sector="Technology",
-            positions=[
-                PositionRecommendation(
-                    ticker="AAPL",
-                    action="LONG-BUY",
-                    allocation_pct=20.0,
-                    rationale=(
-                        "Strong fundamentals and technical confirmation align for a high-"
-                        "conviction entry at current levels within the defined entry zone."
-                    ),
-                    monitoring_triggers=["RSI below 40"],
-                    review_frequency="WEEKLY",
-                )
-            ],
-            total_allocated_pct=30.0,  # mismatch: positions sum to 20.0
+def test_position_allocation_sum_must_match_total_allocated():
+    with pytest.raises(ValidationError) as exc:
+        _portfolio(
+            positions=[_position(allocation_pct=20.0)],
+            deployed_pct=30.0,   # positions sum to 20 but total says 30
+            reserved_pct=0.0,
+            total_allocated_pct=30.0,
             cash_reserve_pct=70.0,
-            overall_strategy=(
-                "Selective single-name allocation with significant cash reserve to manage "
-                "downside risk and capitalize on further pullbacks across the sector."
-            ),
-            risk_level="Medium",
         )
-    assert "does not match" in str(exc_info.value)
+    assert "does not match" in str(exc.value)
+
+
+def test_investor_strategic_with_scaled_entry_position():
+    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
+                       stop_loss=118.34, take_profit=129.32)
+    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
+                       stop_loss=106.7, take_profit=121.9)
+    scaled_pos = _position(
+        ticker="XOM",
+        action="SCALED-ENTRY",
+        composite_score=73.5,
+        allocation_pct=20.0,
+        current_price=122.0,
+        trade_setup=None,
+        scaled_entry_setups=[imm, plb],
+    )
+    output = _portfolio(
+        positions=[scaled_pos],
+        deployed_pct=10.0,   # half of 20% SCALED-ENTRY
+        reserved_pct=10.0,
+        total_allocated_pct=20.0,
+        cash_reserve_pct=80.0,
+    )
+    assert output.positions[0].action == "SCALED-ENTRY"
+    assert len(output.positions[0].scaled_entry_setups) == 2
+
+
+# ── CriticOutput ─────────────────────────────────────────────────────────────
+
+def test_critic_output_valid():
+    output = CriticOutput(
+        sector="Technology",
+        draft_assessment=(
+            "Draft portfolio has LONG-BUY on AAPL despite RSI=74 above overbought "
+            "threshold. Rationale does not acknowledge overbought conditions."
+        ),
+        per_ticker_critiques=[
+            CritiqueItem(
+                ticker="AAPL",
+                severity="CRITICAL",
+                issue_type="OVERBOUGHT_IGNORED",
+                finding="RSI=74 and Stochastic=82 but action is LONG-BUY with no acknowledgment.",
+                instruction="Change action to WAIT-FOR-ENTRY or add overbought caveat and exit trigger.",
+            )
+        ],
+        portfolio_level_issues=[
+            "deployed_pct + reserved_pct + cash_reserve_pct = 101% — bucket sum error."
+        ],
+        revision_directives=[
+            "AAPL: Change action to WAIT-FOR-ENTRY because RSI=74 and Stochastic=82."
+        ],
+        approved_positions=[],
+    )
+    assert output.per_ticker_critiques[0].severity == "CRITICAL"
+    assert output.per_ticker_critiques[0].issue_type == "OVERBOUGHT_IGNORED"

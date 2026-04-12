@@ -19,7 +19,8 @@ class InvestorStrategicAgent(BaseAgent):
             backstory=self.backstory,
             verbose=True,
             allow_delegation=False,
-            llm=self._get_llm()
+            llm=self._get_llm(),
+            max_iter=self.max_iter,
         )
     
     def execute_task(self, comprehensive_analysis: Dict[str, Any]) -> Dict[str, Any]:

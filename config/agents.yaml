@@ -143,9 +143,10 @@ agents:
     allow_delegation: false
     temperature: 0.1
     max_tokens: 10000
+    max_iter: 20
     llm:
       provider: "anthropic"
-      model: "claude-haiku-4-5-20251001"
+      model: "claude-sonnet-4-6"
       api_key: null
       base_url: null
 
@@ -173,9 +174,14 @@ agents:
          (from Technical Analysis current_price field) for each ticker — include
          it verbatim in each position as current_price. Use the EXACT values present —
          never substitute defaults (0.65, 8.0, etc.).
-      2. Call 'compute_composite_scores' ONCE with all tickers. Copy the returned
-         composite_score and component values verbatim — never recompute them.
+      2. Call 'compute_composite_scores' ONCE with all tickers. For stocks where
+         fundamental data was unavailable (fundamental_unknown=true in the fundamental
+         context), pass financial_health="UNKNOWN" and growth_outlook="UNKNOWN" — the
+         tool handles them correctly. Copy the returned composite_score and component
+         values verbatim — never recompute them.
       3. Reason about each stock using composite_score + raw indicators:
+         - fundamental_unknown=true → cap at MONITOR or WAIT-FOR-ENTRY; never assign
+           LONG-BUY or SCALED-ENTRY when one third of the analysis is missing
          - RSI, Stochastic: overbought (>70/>80) → WAIT-FOR-ENTRY even if score is high
          - MACD and MA trend: confirm or contradict the composite direction
          - Fundamental quality: VERY_EXPENSIVE valuation → raise bar for LONG-BUY
@@ -311,6 +317,8 @@ agents:
                                      fundamental_component = health_pts + growth_pts
                                        (STRONG=20/ADEQUATE=10/WEAK=5;
                                         HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
+                                   When fundamental_unknown=true: fundamental_component=0
+                                   (excluded), expected = sentiment + technical only.
                                    If |position.composite_score − expected| > 1.0,
                                    the score was fabricated [CRITICAL]
 

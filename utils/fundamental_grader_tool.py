@@ -51,6 +51,20 @@ class FundamentalGraderTool(BaseTool):
         except (json.JSONDecodeError, TypeError) as e:
             return json.dumps({"ticker": ticker, "error": f"Invalid JSON: {e}"})
 
+        # If fetch_fundamental_data returned an error, propagate UNKNOWN so
+        # downstream agents never invent or default fundamental scores.
+        if "error" in raw:
+            return json.dumps({
+                "ticker":                  ticker.upper(),
+                "fundamental_unknown":     True,
+                "valuation_grade":         "UNKNOWN",
+                "financial_health":        "UNKNOWN",
+                "growth_outlook":          "UNKNOWN",
+                "financial_health_score":  None,
+                "growth_score":            None,
+                "fundamental_component":   None,
+            })
+
         try:
             pe  = raw.get("pe_ratio")
             ps  = raw.get("ps_ratio")

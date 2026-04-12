@@ -39,6 +39,7 @@ class TechnicalAnalystAgent(BaseAgent):
             backstory=self.backstory,
             verbose=self.verbose,
             allow_delegation=self.allow_delegation,
-            llm=self._get_llm()
+            llm=self._get_llm(),
+            max_iter=self.max_iter,
         )
     

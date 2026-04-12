@@ -23,6 +23,10 @@ class BaseAgent(ABC):
         self.allow_delegation = self.settings.get('allow_delegation', False)
         self.temperature = self.settings.get('temperature', 0.1)
         self.max_tokens = self.settings.get('max_tokens', None)
+        global_settings = self.config_loader.get_global_settings()
+        self.max_iter = self.settings.get(
+            'max_iter', global_settings.get('max_iterations', 15)
+        )
 
         self.llm_config = self.settings.get('llm', {})
         self.llm_provider = self.llm_config.get('provider', 'anthropic')

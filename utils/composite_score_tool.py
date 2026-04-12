@@ -70,16 +70,26 @@ class CompositeScoreTool(BaseTool):
 
                 sent_comp = round(min(sentiment * 100, 30), 1)
                 tech_comp = round(momentum * 4, 1)
-                fh_score  = _FINANCIAL_HEALTH_SCORE.get(fh, 5)
-                gr_score  = _GROWTH_OUTLOOK_SCORE.get(growth, 5)
-                fund_comp = fh_score + gr_score
-                score     = round(sent_comp + tech_comp + fund_comp, 1)
+
+                # UNKNOWN means fetch_fundamental_data had no data for this ticker.
+                # Do NOT default to any score — exclude the fundamental component
+                # entirely so the composite reflects only sentiment + technical.
+                fund_unknown = fh == "UNKNOWN" or growth == "UNKNOWN"
+                if fund_unknown:
+                    fund_comp = None
+                    score     = round(sent_comp + tech_comp, 1)
+                else:
+                    fh_score  = _FINANCIAL_HEALTH_SCORE.get(fh, 5)
+                    gr_score  = _GROWTH_OUTLOOK_SCORE.get(growth, 5)
+                    fund_comp = fh_score + gr_score
+                    score     = round(sent_comp + tech_comp + fund_comp, 1)
 
                 results.append({
                     "ticker":                ticker,
                     "sentiment_component":   sent_comp,
                     "technical_component":   tech_comp,
                     "fundamental_component": fund_comp,
+                    "fundamental_unknown":   fund_unknown,
                     "composite_score":       score,
                 })
 
