@@ -116,9 +116,8 @@ def _mock_crew_result(output_dict):
 def _patched_crew():
     mock_crew_instance = MagicMock()
     mock_crew_instance.kickoff.return_value = _mock_crew_result(SAMPLE_PIPELINE_OUTPUT)
-    # Only mock Crew.kickoff — LLM is created for real with the fake Anthropic key
-    # (crewai.LLM with anthropic provider does not make network calls at init time)
-    return (patch("crewai.Crew", return_value=mock_crew_instance),)
+    # Patch where Crew is actually used (prospect_ai_crew imports it directly)
+    return (patch("prospect_ai_crew.Crew", return_value=mock_crew_instance),)
 
 
 # ── Initialization ────────────────────────────────────────────────────────────

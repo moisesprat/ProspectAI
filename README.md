@@ -6,9 +6,9 @@
 
 ## Overview
 
-ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages four specialized AI agents to provide comprehensive investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
+ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.1.4**
+**Current release: v1.5.9**
 
 ### ⚠️ Important Disclaimer
 
@@ -18,7 +18,7 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 
 ## Features
 
-- **Multi-Agent System**: Four specialized AI agents for different aspects of investment analysis
+- **Multi-Agent System**: Five specialized AI agents across a six-task pipeline for rigorous investment analysis
 - **Anthropic Claude**: Powered by Claude models (Sonnet, Opus) by default
 - **Ollama Support**: Run fully locally with Ollama models
 - **Real Reddit Integration**: Live Reddit sentiment analysis using public JSON endpoints — no credentials required
@@ -30,37 +30,59 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 
 ## Architecture
 
-The system consists of four specialized agents working in sequence:
+The system runs five specialized agents across a six-task sequential pipeline. Each task receives the full output of all prior tasks as context.
 
 ```
-MarketAnalystAgent → TechnicalAnalystAgent → FundamentalAnalystAgent → InvestorStrategicAgent
+MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist → Critic → FinalStrategist
+    Task 1           Task 2             Task 3              Task 4         Task 5      Task 6
 ```
 
-Each agent receives the full output of all prior agents as context.
+### Pipeline Tasks & Agents
 
-### Market Analyst Agent
-- **Purpose**: Entry point of the investment pipeline
-- **Function**: Analyzes Reddit discussions to identify trending stocks at the current moment in time, incorporating macro/geopolitical context
-- **Data Sources**: Reddit public JSON API with Serper web search as fallback
+| Task | Agent | Tools | Input context |
+|---|---|---|---|
+| 1. Market Analysis | MarketAnalyst | `RedditSentimentTool`, `SerperDevTool` | — |
+| 2. Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool`, `TechnicalInterpretationTool` | Task 1 |
+| 3. Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool`, `FundamentalGraderTool` | Tasks 1–2 |
+| 4. Draft Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–3 |
+| 5. Critic Review | Critic | — (synthesis only) | Tasks 1–4 |
+| 6. Final Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–5 |
+
+### Agent Descriptions
+
+#### Market Analyst Agent (Task 1)
+- **Purpose**: Entry point — identifies candidate stocks from live market signals
+- **Function**: Analyzes Reddit discussions to surface trending stocks, incorporating macro/geopolitical context at execution time
+- **Data Sources**: Reddit API (PRAW) with Serper web search as fallback
 - **Output**: Top 5 candidate stocks with sentiment scores and relevance metrics
 
-### Technical Analyst Agent
+#### Technical Analyst Agent (Task 2)
 - **Purpose**: Quantitative technical analysis
-- **Function**: Runs 13+ technical indicators per ticker using `yfinance` + `ta` library
+- **Function**: Runs 13+ technical indicators per ticker using `yfinance` + `ta` library, then interprets signals using `TechnicalInterpretationTool`
 - **Indicators**: RSI, MACD, Bollinger Bands, ATR, SMA, EMA, VWAP, ADX, and more
-- **Output**: Per-stock signals, momentum scores (1–10), risk levels, entry zones, stop-loss levels
+- **Output**: Per-stock signals, momentum scores (1–10), market regime (TRENDING/REVERTING), entry zones, stop-loss levels
 
-### Fundamental Analyst Agent
+#### Fundamental Analyst Agent (Task 3)
 - **Purpose**: Financial statement and valuation analysis
-- **Function**: Fetches real P/E, margins, debt ratios, FCF, and growth rates via `yfinance`
+- **Function**: Fetches real P/E, margins, debt ratios, FCF, and growth rates via `yfinance`; grades each metric using `FundamentalGraderTool`
 - **Output**: Valuation grades (CHEAP/FAIR/EXPENSIVE), financial health ratings, growth outlook
 
-### Investor Strategic Agent
-- **Purpose**: Final synthesis and portfolio construction
-- **Function**: Applies the composite score formula and builds portfolio allocations
+#### Investor Strategic Agent — Draft (Task 4)
+- **Purpose**: First-pass portfolio construction
+- **Function**: Computes composite scores via `CompositeScoreTool`, allocates positions via `PortfolioAllocatorTool`
 - **Composite Score**: 30 pts sentiment + 40 pts momentum + 30 pts fundamentals (max 100)
-- **Recommendations**: `STRONG_BUY / BUY / HOLD / REDUCE / AVOID`
-- **Output**: Machine-readable JSON with allocation percentages summing to 100%
+- **Recommendations**: `STRONG_BUY / BUY / HOLD / REDUCE / AVOID` — allocation cap 40% per position
+- **Trade setups**: `LONG-BUY`, `SCALED-ENTRY`, `WAIT-FOR-ENTRY`
+
+#### Critic Agent (Task 5)
+- **Purpose**: Adversarial quality gate between the draft and final strategy
+- **Function**: Reviews the draft portfolio against 12 failure-mode checks (schema validity, allocation math, entry zone logic, R/R ratios, regime consistency, etc.) and emits structured directives for correction
+- **Output**: `CriticOutput` — list of `CritiqueItem` objects with `field`, `severity`, and `directive`; `approved` flag if no issues
+
+#### Investor Strategic Agent — Final (Task 6)
+- **Purpose**: Revised, production-ready portfolio
+- **Function**: Incorporates all Critic directives and produces the definitive `InvestorStrategicOutput` — identical schema to the draft but corrected
+- **Output**: Machine-readable JSON (`pipeline_version: "2.0"`) with allocation percentages summing to 100%, post-generation validation warnings attached
 
 ## Installation
 
@@ -223,25 +245,35 @@ After installing in editable mode the `prospectai` command is available and pick
 
 ```
 ProspectAI/
-├── agents/                          # AI agent implementations
+├── agents/                              # AI agent implementations
 │   ├── base_agent.py
 │   ├── market_analyst_agent.py
 │   ├── technical_analyst_agent.py
 │   ├── fundamental_analyst_agent.py
-│   └── investor_strategic_agent.py
+│   ├── investor_strategic_agent.py
+│   └── critic_agent.py                 # Adversarial reviewer (v1.5.0+)
 ├── config/
-│   ├── agents.yaml                  # Agent behavior (role, goal, model, temperature)
-│   ├── tasks.yaml                   # Task definitions (descriptions, output schemas)
+│   ├── agents.yaml                     # Agent behavior (role, goal, model, temperature)
+│   ├── tasks.yaml                      # Task definitions (descriptions, output schemas)
 │   ├── agent_config_loader.py
 │   ├── task_config_loader.py
 │   └── config.py
+├── schemas/
+│   └── agent_outputs.py                # Pydantic output schemas for all 5 agents
 ├── utils/
-│   ├── reddit_sentiment_tool.py     # Reddit public JSON sentiment tool
-│   ├── technical_analysis_tool.py
-│   └── fundamental_data_tool.py
+│   ├── reddit_sentiment_tool.py        # Reddit PRAW sentiment tool
+│   ├── technical_analysis_tool.py      # 13+ indicator calculator
+│   ├── technical_interpretation_tool.py
+│   ├── fundamental_data_tool.py        # yfinance financial data fetcher
+│   ├── fundamental_grader_tool.py      # Grades individual fundamental metrics
+│   ├── composite_score_tool.py         # 30/40/30 composite scoring
+│   ├── portfolio_allocator_tool.py     # Allocation math with 40% cap
+│   └── recommendation_validator.py    # Post-generation validation
+├── scripts/
+│   └── deploy.sh                       # Bump version, build, publish to PyPI, deploy Modal
 ├── tests/
-├── main.py                          # CLI entry point (prospectai command)
-├── prospect_ai_crew.py              # CrewAI orchestration
+├── main.py                             # CLI entry point (prospectai command)
+├── prospect_ai_crew.py                 # CrewAI orchestration (6-task pipeline)
 ├── pyproject.toml
 └── README.md
 ```
@@ -275,22 +307,49 @@ twine upload dist/*
 | Ollama model not found | Run `ollama pull <model-name>` |
 | No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
 
+## Release Notes
+
+### v1.5.9 — Test coverage & graceful unknowns
+- Comprehensive test suite for `FundamentalDataTool`, `RedditSentimentTool`, `TechnicalAnalysisTool`, and `CompositeScoreTool`
+- `FundamentalGraderTool` now propagates `UNKNOWN` states instead of crashing on missing data
+- `CompositeScoreTool` handles unknown fundamental data gracefully, preventing scoring errors on tickers with incomplete financials
+- Added `FundamentalGraderTool` test coverage
+
+### v1.5.8 — Composite score validation & deploy script
+- Added `composite_score` validation in agent and task configurations to enforce score integrity
+- Introduced `scripts/deploy.sh` for one-command version bumping, PyPI publishing, and Modal deployment
+
+### v1.5.7 — Trade setup rule hardening
+- Tightened WAIT-FOR-ENTRY, SCALED-ENTRY, and LONG-BUY trade setup rules in `agents.yaml` and `tasks.yaml`
+- Added additional schema validation guards for entry zone and stop-loss consistency
+
+### v1.5.5 / v1.5.6 — WAIT-FOR-ENTRY & SCALED-ENTRY fixes
+- WAIT-FOR-ENTRY now always returns a `pending` trade setup (never defaults to LONG-BUY)
+- Fixed SCALED-ENTRY schema guard to correctly enforce the current-price vs entry zone boundary
+- Fixed R/R ratio calculation rule in draft strategy for SCALED-ENTRY positions
+- Corrected WAIT-FOR-ENTRY description typo
+
+### v1.5.0 — Critic agent & draft→critique→final pipeline
+- **New `CriticAgent`** (`agents/critic_agent.py`) — adversarial reviewer with 12 failure-mode checks; runs at temperature 0.2 using `claude-sonnet-4-6`
+- Replaced the single `investment_strategy` task with a three-task sequence: **Draft Strategy → Critic Review → Final Strategy**
+- Added `CriticOutput` and `CritiqueItem` Pydantic schemas in `schemas/agent_outputs.py`
+- Added `SCALED-ENTRY` action for trending stocks trading slightly above the entry zone
+- Switched agents 1–3 to `claude-haiku-4-5-20251001` for cost efficiency; Critic and Strategist keep `claude-sonnet-4-6`
+- `AGENT_CRITIC_MODEL` env override added to `config.py`
+- `ProspectAICrew` now wires six tasks with correct context chains and names progress events accordingly
+
 ## Roadmap
 
-### v1.1 - Enhanced Market Analysis
+### Next — Multi-sector analysis
+- Support analyzing up to 3 sectors in a single pipeline run
+- Stocks from all sectors compete on composite score for portfolio slots
+- Cross-sector portfolio diversification rules
+
+### Future
 - Integration with financial news APIs (Bloomberg, Reuters)
-- Real-time market sentiment from multiple sources
-- Enhanced sector rotation analysis
-
-### v1.2 - Agent Improvements
-- Enhanced financial modeling capabilities
-- More sophisticated valuation algorithms
-- Advanced portfolio optimization
-
-### v1.3 - Advanced Risk Management
 - Monte Carlo simulations for portfolio scenarios
 - Advanced risk metrics (VaR, CVaR, Sharpe ratios)
-- Dynamic risk adjustment based on market conditions
+- PDF report generation with charts
 
 ## Contributing
 

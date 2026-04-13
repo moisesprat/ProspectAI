@@ -4,10 +4,11 @@
 #
 # Steps:
 #   1. Bumps patch version in pyproject.toml and prospectai-backend/serve.py
-#   2. Cleans dist/
-#   3. Builds wheel + sdist
-#   4. Uploads to PyPI via twine
-#   5. Deploys new image to Modal
+#   2. Updates README.md version badge and release notes (last 5 entries, auto-generated from git log)
+#   3. Cleans dist/
+#   4. Builds wheel + sdist
+#   5. Uploads to PyPI via twine
+#   6. Deploys new image to Modal
 #
 # Usage:
 #   ./scripts/deploy.sh              # auto-bump patch (e.g. 1.5.7 → 1.5.8)
@@ -25,6 +26,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_SERVE="$REPO_ROOT/../prospectai-backend/serve.py"
 PYPROJECT="$REPO_ROOT/pyproject.toml"
+README="$REPO_ROOT/README.md"
 DIST_DIR="$REPO_ROOT/dist"
 
 # Resolve python3 / pip3
@@ -74,6 +76,81 @@ if [[ -f "$BACKEND_SERVE" ]]; then
   echo "    prospectai-backend/serve.py updated"
 else
   echo "    WARNING: $BACKEND_SERVE not found — skipping serve.py update"
+fi
+
+# ── 3b. Update README.md (version badge + release notes) ─────────────────────
+if [[ -f "$README" ]]; then
+  "$PYTHON" - "$README" "$NEW_VERSION" "$CURRENT_VERSION" <<'PYEOF'
+import re, subprocess, sys
+
+readme_path  = sys.argv[1]
+new_version  = sys.argv[2]
+prev_version = sys.argv[3]
+
+# ── Collect commits made since the previous version bump ─────────────────────
+log_lines = subprocess.run(
+    ["git", "log", "--oneline"],
+    capture_output=True, text=True, check=True
+).stdout.strip().splitlines()
+
+# Find the line that bumped pyproject.toml to prev_version
+bump_idx = next(
+    (i for i, l in enumerate(log_lines) if prev_version in l),
+    None
+)
+# Everything before that index = new work going into new_version
+new_commits = log_lines[:bump_idx] if bump_idx else log_lines[:10]
+
+# Filter out pure meta-commits; strip conventional-commit prefixes
+SKIP = re.compile(r'bump version|chore:|Co-Authored|^Merge ', re.IGNORECASE)
+PREFIX = re.compile(r'^(feat|fix|refactor|chore|docs|test|style|perf|build):\s*', re.IGNORECASE)
+bullets = []
+title_candidate = None
+for line in new_commits:
+    msg = line.split(" ", 1)[1] if " " in line else line
+    if SKIP.search(msg):
+        continue
+    clean = PREFIX.sub("", msg).strip()
+    if title_candidate is None:
+        title_candidate = clean
+    bullets.append(f"- {clean}")
+
+if not bullets:
+    bullets = ["- Maintenance and stability improvements"]
+title = (title_candidate or "Maintenance release")[:60]
+new_entry = f"### v{new_version} — {title}\n" + "\n".join(bullets)
+
+# ── Rewrite README ────────────────────────────────────────────────────────────
+content = open(readme_path).read()
+
+# Update version badge
+content = content.replace(
+    f"**Current release: v{prev_version}**",
+    f"**Current release: v{new_version}**",
+)
+
+# Find the Release Notes section (between "## Release Notes\n\n" and the next "## ")
+rn = re.search(r'(## Release Notes\n\n)(.*?)(\n## )', content, re.DOTALL)
+if rn:
+    body = rn.group(2).rstrip()
+    existing = [e.strip() for e in re.split(r'(?=### v)', body) if e.strip()]
+    # New entry + 4 existing = 5 total
+    kept = "\n\n".join([new_entry] + existing[:4])
+    content = (
+        content[:rn.start()]
+        + rn.group(1) + kept + "\n"
+        + rn.group(3)
+        + content[rn.end():]
+    )
+else:
+    print("WARNING: '## Release Notes' section not found — skipping notes update",
+          file=sys.stderr)
+
+open(readme_path, "w").write(content)
+print(f"    README.md updated — v{new_version} release notes prepended, last 5 kept")
+PYEOF
+else
+  echo "    WARNING: $README not found — skipping README update"
 fi
 
 # ── 4. Clean dist/ ────────────────────────────────────────────────────────────

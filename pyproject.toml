@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prospectai"
-version = "1.5.8"
+version = "1.5.9"
 description = "Multi-Agent Investment Analysis System powered by CrewAI and Claude"
 readme = "README.md"
 license = { text = "MIT" }
@@ -48,3 +48,7 @@ include = ["agents*", "config*", "utils*", "data*", "schemas*"]
 # Include the YAML agent configs bundled inside the config package
 [tool.setuptools.package-data]
 config = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short --no-header -p no:warnings"
