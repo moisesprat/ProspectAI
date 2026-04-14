@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.5.9**
+**Current release: v1.5.10**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.5.10 — Enhance task configurations to handle price data errors; upd
+- Enhance task configurations to handle price data errors; update schemas for optional current_price and price_data_error fields
+
 ### v1.5.9 — Test coverage & graceful unknowns
 - Comprehensive test suite for `FundamentalDataTool`, `RedditSentimentTool`, `TechnicalAnalysisTool`, and `CompositeScoreTool`
 - `FundamentalGraderTool` now propagates `UNKNOWN` states instead of crashing on missing data
@@ -328,15 +331,6 @@ twine upload dist/*
 - Fixed SCALED-ENTRY schema guard to correctly enforce the current-price vs entry zone boundary
 - Fixed R/R ratio calculation rule in draft strategy for SCALED-ENTRY positions
 - Corrected WAIT-FOR-ENTRY description typo
-
-### v1.5.0 — Critic agent & draft→critique→final pipeline
-- **New `CriticAgent`** (`agents/critic_agent.py`) — adversarial reviewer with 12 failure-mode checks; runs at temperature 0.2 using `claude-sonnet-4-6`
-- Replaced the single `investment_strategy` task with a three-task sequence: **Draft Strategy → Critic Review → Final Strategy**
-- Added `CriticOutput` and `CritiqueItem` Pydantic schemas in `schemas/agent_outputs.py`
-- Added `SCALED-ENTRY` action for trending stocks trading slightly above the entry zone
-- Switched agents 1–3 to `claude-haiku-4-5-20251001` for cost efficiency; Critic and Strategist keep `claude-sonnet-4-6`
-- `AGENT_CRITIC_MODEL` env override added to `config.py`
-- `ProspectAICrew` now wires six tasks with correct context chains and names progress events accordingly
 
 ## Roadmap
 
