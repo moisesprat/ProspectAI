@@ -5,7 +5,7 @@ Computes the numeric composite_score and its three components for each stock.
 Returns numbers. Does NOT map scores to actions — that is the LLM's reasoning job.
 
 Formula:
-  sentiment_component  = min(average_sentiment × 100, 30)   [max 30 pts]
+  sentiment_component  = ((average_sentiment + 1) / 2) × 30  [max 30 pts, linear -1→0, 0→15, +1→30]
   technical_component  = momentum_score × 4                  [max 40 pts]
   fundamental_component = financial_health_score + growth_score  [max 30 pts, min 6]
   composite_score = sum, rounded to 1 decimal
@@ -68,7 +68,7 @@ class CompositeScoreTool(BaseTool):
                 fh        = str(s.get("financial_health", "ADEQUATE")).upper()
                 growth    = str(s.get("growth_outlook",   "MODERATE")).upper()
 
-                sent_comp = round(min(sentiment * 100, 30), 1)
+                sent_comp = round(((sentiment + 1) / 2) * 30, 1)
                 tech_comp = round(momentum * 4, 1)
 
                 # UNKNOWN means fetch_fundamental_data had no data for this ticker.

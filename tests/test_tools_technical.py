@@ -207,17 +207,30 @@ def _compute(*stocks) -> list:
 
 class TestCompositeScoreFormula:
 
-    def test_sentiment_capped_at_30(self):
+    def test_sentiment_max_at_positive_one(self):
         scores = _compute({"ticker": "A", "average_sentiment": 1.0,
                            "momentum_score": 0, "financial_health": "WEAK",
                            "growth_outlook": "DECLINING"})
         assert scores[0]["sentiment_component"] == 30.0
 
-    def test_sentiment_scales_linearly_below_cap(self):
+    def test_sentiment_neutral_gives_15(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0,
+                           "momentum_score": 0, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["sentiment_component"] == pytest.approx(15.0)
+
+    def test_sentiment_negative_one_gives_zero(self):
+        scores = _compute({"ticker": "A", "average_sentiment": -1.0,
+                           "momentum_score": 0, "financial_health": "WEAK",
+                           "growth_outlook": "DECLINING"})
+        assert scores[0]["sentiment_component"] == pytest.approx(0.0)
+
+    def test_sentiment_scales_linearly(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.2,
                            "momentum_score": 0, "financial_health": "WEAK",
                            "growth_outlook": "DECLINING"})
-        assert scores[0]["sentiment_component"] == pytest.approx(20.0)
+        # ((0.2 + 1) / 2) * 30 = 18.0
+        assert scores[0]["sentiment_component"] == pytest.approx(18.0)
 
     def test_technical_component_max_40(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
