@@ -63,7 +63,8 @@ class TechnicalScore(BaseModel):
 
 class StockTechnicalAnalysis(BaseModel):
     ticker: str
-    current_price: float = Field(..., gt=0)
+    current_price: Optional[float] = Field(None, gt=0)
+    price_data_error: Optional[str] = None
     momentum_analysis: MomentumAnalysis
     technical_score: TechnicalScore
     investment_recommendation: str = Field(..., min_length=50)

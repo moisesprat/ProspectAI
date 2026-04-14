@@ -162,6 +162,10 @@ tasks:
       - overall_signal and key_signals are YOUR reasoned assessment of the raw data.
       - If the tool returns an error for a ticker, set error to that string and all other
         fields (current_price, raw_indicators, interpretation) to null.
+      - If current_price cannot be retrieved (tool error or zero value), set current_price
+        to null and populate price_data_error with a short description of the failure
+        (e.g. "yfinance returned no price data for TICKER"). The Investment Strategist
+        will use this field to decide how to handle the position.
       - Do not skip any ticker from the market analyst output.
     expected_output: >
       Python dict with sector='$sector', analysis_date,
@@ -311,6 +315,10 @@ tasks:
         and growth_outlook="UNKNOWN" to compute_composite_scores. The tool will exclude
         the fundamental component from that stock's score and flag fundamental_unknown=true.
         Copy the returned composite_score verbatim — it already reflects missing data.
+        CRITICAL: If a stock has price_data_error set (current_price is null), it means
+        live price data could not be retrieved. You MUST cap that stock at MONITOR or AVOID —
+        do NOT assign LONG-BUY, SCALED-ENTRY, or WAIT-FOR-ENTRY. Include the price_data_error
+        message in the rationale so the user understands why no trade was initiated.
 
       STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
           compute_composite_scores(stocks_json='[
