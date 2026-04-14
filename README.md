@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.5.10**
+**Current release: v1.5.11**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.5.11 — Refactor sentiment component calculation in CompositeScoreTo
+- Refactor sentiment component calculation in CompositeScoreTool; update tests for sentiment scoring logic
+
 ### v1.5.10 — Enhance task configurations to handle price data errors; upd
 - Enhance task configurations to handle price data errors; update schemas for optional current_price and price_data_error fields
 
@@ -325,12 +328,6 @@ twine upload dist/*
 ### v1.5.7 — Trade setup rule hardening
 - Tightened WAIT-FOR-ENTRY, SCALED-ENTRY, and LONG-BUY trade setup rules in `agents.yaml` and `tasks.yaml`
 - Added additional schema validation guards for entry zone and stop-loss consistency
-
-### v1.5.5 / v1.5.6 — WAIT-FOR-ENTRY & SCALED-ENTRY fixes
-- WAIT-FOR-ENTRY now always returns a `pending` trade setup (never defaults to LONG-BUY)
-- Fixed SCALED-ENTRY schema guard to correctly enforce the current-price vs entry zone boundary
-- Fixed R/R ratio calculation rule in draft strategy for SCALED-ENTRY positions
-- Corrected WAIT-FOR-ENTRY description typo
 
 ## Roadmap
 
