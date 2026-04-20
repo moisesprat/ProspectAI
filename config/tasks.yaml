@@ -531,19 +531,13 @@ tasks:
         BUCKET_SUM_ERROR         deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
                                  (tolerance ±0.5%). CRITICAL.
         COMPOSITE_SCORE_MISMATCH composite_score on the position does not match the
-                                 value derivable from the pipeline inputs. Recompute:
-                                   sentiment_component  = min(average_sentiment × 100, 30)
-                                   technical_component  = momentum_score × 4
-                                   fundamental_component = health_pts + growth_pts
-                                     (STRONG=20/ADEQUATE=10/WEAK=5;
-                                      HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
-                                   When fundamental_unknown=true: fundamental_component=0
-                                   (excluded); expected = sentiment + technical only.
-                                   expected = sentiment_component + technical_component
-                                              + fundamental_component
-                                 If |position.composite_score − expected| > 1.0, flag
-                                 COMPOSITE_SCORE_MISMATCH as CRITICAL — the score was
-                                 fabricated rather than copied from the tool output.
+                                 value returned by the compute_composite_scores tool
+                                 for that ticker. Do NOT recalculate — compare
+                                 position.composite_score directly against the tool
+                                 output value. If |position.composite_score − tool_value|
+                                 > 1.0, flag COMPOSITE_SCORE_MISMATCH as CRITICAL —
+                                 the score was fabricated rather than copied from
+                                 the tool output.
 
         For each finding, state: the exact data value that creates the contradiction
         AND what the draft says about it. Do not describe issues vaguely.
@@ -552,8 +546,8 @@ tasks:
         - Does deployed_pct + reserved_pct + cash_reserve_pct = 100 (±0.5%)?
         - Does any position exceed 40% allocation?
         - Are there at least 3 distinct composite_scores?
-        - Does each position's composite_score field match the value derivable from
-          the pipeline inputs (recompute using formula from STEP 2 checklist)?
+        - Does each position's composite_score field match the value from the
+          compute_composite_scores tool output (do NOT recalculate — compare directly)?
         - Do all monitoring triggers reference specific measurable thresholds?
         - Is the overall_strategy internally consistent with the individual actions?
         - Does overall_strategy accurately describe allocation logic (not falsely claiming

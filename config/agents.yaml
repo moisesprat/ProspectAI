@@ -310,17 +310,12 @@ agents:
                                    must be ≥ 1.5 [CRITICAL]
         BUCKET_SUM_ERROR         — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
                                    (tolerance ±0.5%) [CRITICAL]
-        COMPOSITE_SCORE_MISMATCH — composite_score on the position does not match the
-                                   value derivable from pipeline inputs. Recompute:
-                                     sentiment_component  = min(avg_sentiment × 100, 30)
-                                     technical_component  = momentum_score × 4
-                                     fundamental_component = health_pts + growth_pts
-                                       (STRONG=20/ADEQUATE=10/WEAK=5;
-                                        HIGH=10/MODERATE=7/LOW=3/DECLINING=1)
-                                   When fundamental_unknown=true: fundamental_component=0
-                                   (excluded), expected = sentiment + technical only.
-                                   If |position.composite_score − expected| > 1.0,
-                                   the score was fabricated [CRITICAL]
+        COMPOSITE_SCORE_MISMATCH — composite_score on the position does not match
+                                   the value returned by the compute_composite_scores
+                                   tool for that ticker. Do NOT recalculate — compare
+                                   position.composite_score directly against the tool
+                                   output value. If |position.composite_score − tool_value|
+                                   > 1.0, the score was fabricated [CRITICAL]
 
       You MUST find at least one issue per ticker. If a position appears clean,
       look harder — check the monitoring triggers for directional consistency,
@@ -330,8 +325,9 @@ agents:
         - deployed_pct + reserved_pct + cash_reserve_pct must equal 100 (±0.5%)
         - No position above 40%
         - At least 3 distinct composite_scores (identical scores = default values used)
-        - Each position's composite_score must match the value recomputed from inputs
-          (flag COMPOSITE_SCORE_MISMATCH if |field − expected| > 1.0)
+        - Each position's composite_score must match the value from the
+          compute_composite_scores tool output (flag COMPOSITE_SCORE_MISMATCH
+          if |field − tool_value| > 1.0 — do NOT recalculate)
         - Minimum 2-3 concrete monitoring triggers per position
         - overall_strategy must not falsely claim rank-proportional allocation when
           positions are capped at equal levels
