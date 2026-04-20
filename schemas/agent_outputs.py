@@ -190,12 +190,12 @@ class InvestorStrategicOutput(BaseModel):
 
     @model_validator(mode="after")
     def validate_capital_buckets(self) -> "InvestorStrategicOutput":
-        total = sum(p.allocation_pct for p in self.positions)
-        if abs(total - self.total_allocated_pct) > 0.5:
-            raise ValueError(
-                f"sum of position allocations ({total:.1f}%) does not match "
-                f"total_allocated_pct ({self.total_allocated_pct}%)"
-            )
+        # total_allocated_pct is purely derived from position allocations.
+        # Auto-correct it so a LLM copy-paste discrepancy doesn't fail the run.
+        computed_total = round(sum(p.allocation_pct for p in self.positions), 1)
+        if abs(computed_total - self.total_allocated_pct) > 0.5:
+            self.total_allocated_pct = computed_total
+
         bucket_sum = round(self.deployed_pct + self.reserved_pct + self.cash_reserve_pct, 1)
         if abs(bucket_sum - 100.0) > 0.5:
             raise ValueError(

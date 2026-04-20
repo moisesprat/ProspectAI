@@ -630,7 +630,12 @@ tasks:
       STEP 2 — Re-run tool calls only if actions changed.
         If a position action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY):
           Call 'allocate_portfolio' again with the revised actions.
-        If no actions changed: carry forward the draft's allocation_pct verbatim.
+        If no actions changed: carry forward ALL of the following verbatim from the draft:
+          allocation_pct (per position), deployed_pct, reserved_pct,
+          total_allocated_pct, cash_reserve_pct.
+        NEVER hand-edit any allocation number — copy every allocation field from the
+        tool output or the draft verbatim. total_allocated_pct MUST equal the sum of
+        all positions' allocation_pct values.
         You may call 'compute_composite_scores' again only if input values were wrong.
 
       STEP 3 — Write revised qualitative content:
