@@ -53,22 +53,32 @@ class RedditSentimentTool(BaseTool):
         "Technology": [
             "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN",
             "TSLA", "AMD", "INTC", "CRM", "ORCL", "ADBE", "QCOM", "AVGO",
+            "ARM", "SMCI", "PLTR", "NOW", "SNOW", "ANET", "MU", "MRVL",
+            "PANW", "CRWD", "NET", "DDOG", "APP", "UBER",
         ],
         "Healthcare": [
             "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO",
             "ABT", "AMGN", "GILD", "ISRG", "MDT", "CVS", "BMY",
+            "MRNA", "REGN", "VRTX", "HCA", "CI", "ELV", "DXCM",
+            "IDXX", "IQV", "BSX", "SYK", "ZBH", "BIIB", "ILMN",
         ],
         "Finance": [
             "JPM", "BAC", "WFC", "GS", "MS", "BRK.B", "V",
             "MA", "AXP", "C", "SCHW", "BLK", "SPGI", "CB",
+            "COF", "USB", "PNC", "TFC", "ICE", "CME", "MCO",
+            "FIS", "PYPL", "SQ", "COIN", "HOOD", "SOFI", "NU",
         ],
         "Energy": [
             "XOM", "CVX", "COP", "SLB", "EOG", "PSX", "VLO",
             "MPC", "OXY", "HAL", "DVN", "FANG", "HES", "BKR",
+            "WMB", "KMI", "ET", "LNG", "CTRA", "PR", "MRO",
+            "APA", "NOV", "CHK", "AR", "RRC", "SM", "MTDR",
         ],
         "Consumer": [
             "WMT", "AMZN", "HD", "NKE", "SBUX", "MCD", "TGT",
             "COST", "LOW", "TJX", "BABA", "PG", "KO", "PEP",
+            "TSLA", "F", "GM", "RIVN", "LCID", "CMG", "YUM",
+            "DG", "DLTR", "ROST", "EBAY", "ETSY", "DASH", "ABNB",
         ],
     }
 

@@ -5,6 +5,7 @@ typed structures. The Investor Strategic Agent reads these directly.
 """
 
 from __future__ import annotations
+from datetime import datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -25,6 +26,7 @@ class MarketAnalysisOutput(BaseModel):
     sector: str
     candidate_stocks: List[CandidateStock] = Field(..., min_length=1, max_length=10)
     summary: str = Field(..., min_length=100)
+    analysis_timestamp: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------

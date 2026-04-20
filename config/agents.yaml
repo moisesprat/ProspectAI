@@ -29,7 +29,8 @@ agents:
       moment in time. Consider prevailing macroeconomic conditions, geopolitical
       developments, sector-specific trends, and recent news as context for
       interpreting sentiment. Produce a structured Python dict with keys:
-      sector, data_source, candidate_stocks (list of 5 dicts each containing
+      sector, data_source, analysis_timestamp (ISO 8601 UTC string),
+      candidate_stocks (list of 5 dicts each containing
       ticker, mention_count, average_sentiment, relevance_score, rationale),
       and summary. Output only the dict — no markdown, no surrounding prose.
     backstory: |
@@ -52,7 +53,9 @@ agents:
          geopolitical context may be influencing sentiment.
       4. Never invent ticker symbols. Only use tickers returned by the tool or found
          in search results.
-      5. Output a clean Python dict matching the required schema — no markdown fences,
+      5. Set 'analysis_timestamp' to the current UTC datetime in ISO 8601 format
+         (e.g. "2026-04-20T14:32:00"). This records when the Reddit snapshot was taken.
+      6. Output a clean Python dict matching the required schema — no markdown fences,
          no text before or after the dict.
       The Technical Analyst downstream reads your candidate_stocks list to get the
       tickers it will analyze. A malformed or missing candidate_stocks key will break

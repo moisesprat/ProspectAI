@@ -5,6 +5,7 @@ composite_score / deployed_pct / reserved_pct fields added in v1.5+.
 """
 
 import pytest
+from datetime import datetime
 from pydantic import ValidationError
 
 from schemas.agent_outputs import (
@@ -78,6 +79,31 @@ def _portfolio(**kwargs) -> InvestorStrategicOutput:
 # ── MarketAnalysisOutput ──────────────────────────────────────────────────────
 
 def test_market_analysis_output_valid():
+    ts = datetime(2026, 4, 20, 12, 0, 0)
+    output = MarketAnalysisOutput(
+        sector="Technology",
+        candidate_stocks=[
+            CandidateStock(
+                ticker="AAPL",
+                mention_count=120,
+                average_sentiment=0.65,
+                relevance_score=0.9,
+                rationale="Apple dominates consumer tech with strong brand loyalty and consistent earnings growth.",
+            )
+        ],
+        summary=(
+            "The Technology sector shows strong bullish momentum driven by AI adoption. "
+            "Apple leads mentions with positive sentiment across major subreddits including "
+            "r/investing and r/stocks, supported by robust earnings expectations."
+        ),
+        analysis_timestamp=ts,
+    )
+    assert output.sector == "Technology"
+    assert output.candidate_stocks[0].ticker == "AAPL"
+    assert output.analysis_timestamp == ts
+
+
+def test_market_analysis_output_timestamp_optional():
     output = MarketAnalysisOutput(
         sector="Technology",
         candidate_stocks=[
@@ -95,8 +121,7 @@ def test_market_analysis_output_valid():
             "r/investing and r/stocks, supported by robust earnings expectations."
         ),
     )
-    assert output.sector == "Technology"
-    assert output.candidate_stocks[0].ticker == "AAPL"
+    assert output.analysis_timestamp is None
 
 
 # ── TechnicalAnalysisOutput ───────────────────────────────────────────────────

@@ -52,6 +52,7 @@ tasks:
       {
         "sector": "$sector",
         "data_source": "reddit",
+        "analysis_timestamp": "<current UTC datetime as ISO 8601 string, e.g. 2026-04-20T14:32:00>",
         "candidate_stocks": [
           {
             "ticker": "<TICKER_FROM_STEP_1_OR_2>",
@@ -69,8 +70,9 @@ tasks:
       - Do NOT invent tickers. Use only tickers returned by the tool or found in search results.
       - All numeric values must be numbers, not strings.
       - The 'summary' must be at least 150 words.
+      - 'analysis_timestamp' must be a string in ISO 8601 format — never omit it.
     expected_output: >
-      Python dict with sector='$sector', data_source,
+      Python dict with sector='$sector', data_source, analysis_timestamp (ISO 8601 string),
       candidate_stocks (list of 5 dicts: ticker, mention_count,
       average_sentiment, relevance_score, rationale), and summary string.
 
