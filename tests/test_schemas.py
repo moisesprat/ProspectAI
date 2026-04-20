@@ -334,16 +334,17 @@ def test_three_bucket_sum_must_equal_100():
     assert "100" in str(exc.value)
 
 
-def test_position_allocation_sum_must_match_total_allocated():
-    with pytest.raises(ValidationError) as exc:
-        _portfolio(
-            positions=[_position(allocation_pct=20.0)],
-            deployed_pct=30.0,   # positions sum to 20 but total says 30
-            reserved_pct=0.0,
-            total_allocated_pct=30.0,
-            cash_reserve_pct=70.0,
-        )
-    assert "does not match" in str(exc.value)
+def test_position_allocation_sum_auto_corrects_total_allocated():
+    # The validator auto-corrects total_allocated_pct from position sums
+    # rather than raising, so a LLM copy-paste discrepancy doesn't fail the run.
+    output = _portfolio(
+        positions=[_position(allocation_pct=20.0)],
+        deployed_pct=20.0,
+        reserved_pct=0.0,
+        total_allocated_pct=30.0,  # wrong — positions only sum to 20
+        cash_reserve_pct=80.0,
+    )
+    assert output.total_allocated_pct == 20.0
 
 
 def test_investor_strategic_with_scaled_entry_position():

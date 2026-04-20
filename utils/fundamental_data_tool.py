@@ -1,58 +1,57 @@
 #!/usr/bin/env python3
 """
-Fundamental Data Tool - Fetches real financial data for a stock ticker via yfinance.
-Provides valuation metrics, profitability ratios, growth figures, and balance sheet data.
+Fundamental Data Tool — fetches real financial data for a batch of tickers via yfinance.
+Call ONCE with all tickers; the tool loops internally and returns all results.
 """
 
-from typing import Any, Dict, Optional
+import json
+from typing import Any, Dict
 from crewai.tools import BaseTool
 
 
 class FundamentalDataTool(BaseTool):
     """
-    Fetches fundamental financial data for a single stock ticker using yfinance.
-    All returned values come directly from the API — nothing is estimated or inferred.
-    Returns an error key (instead of raising) when data is unavailable.
+    Fetches fundamental financial data for a batch of stock tickers using yfinance.
+    Accepts a JSON array of ticker strings; returns all results in one call.
+    Per-ticker errors are included inline — they never abort the batch.
     """
 
     name: str = "fetch_fundamental_data"
-    description: str = """Fetch fundamental financial data for a stock ticker using yfinance.
+    description: str = """Fetch fundamental financial data for a list of stock tickers using yfinance.
+
+    Call this tool ONCE with ALL tickers as a JSON array. The tool loops internally
+    and returns all results together — no need to call it per ticker.
 
     Args:
-        ticker: Stock ticker symbol (e.g. 'AAPL', 'NVDA', 'JPM')
+        tickers_json: JSON array of ticker strings, e.g. '["AAPL","NVDA","MSFT"]'
 
-    Returns a nested dict with sections:
-        meta          - company_name, sector, industry, employees, description_snippet
-        valuation     - market_cap, enterprise_value, pe_ratio, forward_pe,
-                        pb_ratio, ps_ratio, ev_ebitda
-        profitability - gross_margin, operating_margin, net_margin,
-                        return_on_equity, return_on_assets
-        growth        - revenue_growth_yoy, earnings_growth_yoy,
-                        revenue_ttm, net_income_ttm
-        balance_sheet - total_debt, total_cash, debt_to_equity,
-                        current_ratio, quick_ratio, free_cash_flow
-        dividend      - dividend_yield, payout_ratio
-
-    On failure returns: {ticker, error: str}
-    All monetary values are in USD. Ratios and margins are decimal (e.g. 0.25 = 25%).
+    Returns JSON: {"fundamentals": [one entry per ticker]}
+    Each entry contains sections: meta, valuation, profitability, growth,
+    balance_sheet, dividend — or {"ticker": "X", "error": "..."} on failure.
     """
 
-    def _run(self, ticker: str) -> Dict[str, Any]:
-        """Fetch and return fundamental data for the given ticker."""
+    def _run(self, tickers_json: str) -> str:
+        try:
+            tickers = json.loads(tickers_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            return json.dumps({"error": f"Invalid JSON: {e}"})
+
+        if not isinstance(tickers, list) or len(tickers) == 0:
+            return json.dumps({"error": "tickers_json must be a non-empty JSON array of ticker strings"})
+
+        return json.dumps({"fundamentals": [self._fetch_one(t) for t in tickers]})
+
+    def _fetch_one(self, ticker: str) -> Dict[str, Any]:
         try:
             import yfinance as yf
         except ImportError:
-            return {
-                "ticker": ticker,
-                "error": "yfinance not installed. Run: pip install yfinance",
-            }
+            return {"ticker": ticker, "error": "yfinance not installed. Run: pip install yfinance"}
 
         try:
             stock = yf.Ticker(ticker.upper())
             info = stock.info
 
-            if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
-                # Ticker not found or delisted
+            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
                 return {
                     "ticker": ticker,
                     "error": f"No data returned by yfinance for ticker '{ticker}'. "
@@ -60,11 +59,9 @@ class FundamentalDataTool(BaseTool):
                 }
 
             def safe(key: str, default=None):
-                """Return info[key] if present and not None, else default."""
                 val = info.get(key)
                 return val if val is not None else default
 
-            # --- Income statement (trailing twelve months) ---
             revenue_ttm = None
             net_income_ttm = None
             try:
@@ -77,7 +74,6 @@ class FundamentalDataTool(BaseTool):
             except Exception:
                 pass
 
-            # --- Free cash flow from cash flow statement ---
             free_cash_flow = None
             try:
                 cf = stock.cashflow
@@ -93,11 +89,8 @@ class FundamentalDataTool(BaseTool):
             except Exception:
                 pass
 
-            # --- Company description (truncated for token efficiency) ---
             description = safe("longBusinessSummary", "")
-            description_snippet = (
-                description[:400] + "…" if len(description) > 400 else description
-            )
+            description_snippet = description[:400] + "…" if len(description) > 400 else description
 
             return {
                 "ticker": ticker.upper(),
@@ -142,8 +135,7 @@ class FundamentalDataTool(BaseTool):
                     "total_cash": safe("totalCash"),
                     # yfinance returns debtToEquity as a percentage-scaled number
                     # (e.g. 150.0 for a D/E ratio of 1.5). Divide by 100 to
-                    # normalise to a plain ratio, consistent with the tool contract
-                    # "Ratios and margins are decimal (e.g. 0.25 = 25%)".
+                    # normalise to a plain ratio, consistent with the tool contract.
                     "debt_to_equity": (
                         safe("debtToEquity") / 100
                         if safe("debtToEquity") is not None else None
@@ -161,7 +153,4 @@ class FundamentalDataTool(BaseTool):
             }
 
         except Exception as e:
-            return {
-                "ticker": ticker,
-                "error": f"Unexpected error fetching data for '{ticker}': {str(e)}",
-            }
+            return {"ticker": ticker, "error": f"Unexpected error fetching data for '{ticker}': {str(e)}"}

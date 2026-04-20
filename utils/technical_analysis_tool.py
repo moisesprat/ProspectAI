@@ -41,14 +41,17 @@ class TechnicalAnalysisTool(BaseTool):
     def _run(self, ticker: str, period: str = "1y") -> Dict[str, Any]:
         """Calculate comprehensive technical indicators for a stock"""
         try:
-            # Get stock data
-            stock_data = self._get_stock_data(ticker, period)
+            # Fetch history once and pass it to both helpers
+            hist = self._fetch_history(ticker, period)
+            if isinstance(hist, dict):
+                return hist
+
+            stock_data = self._get_stock_data(ticker, period, hist)
             if "error" in stock_data:
                 return stock_data
-            
-            # Calculate all technical indicators
-            indicators = self._calculate_all_indicators(stock_data)
-            
+
+            indicators = self._calculate_all_indicators(hist)
+
             return {
                 "ticker": ticker,
                 "analysis_period": period,
@@ -56,21 +59,24 @@ class TechnicalAnalysisTool(BaseTool):
                 "stock_data": stock_data,
                 "technical_indicators": indicators
             }
-            
+
         except Exception as e:
             return {"error": f"Error in technical analysis for {ticker}: {str(e)}"}
-    
-    def _get_stock_data(self, ticker: str, period: str) -> Dict[str, Any]:
-        """Fetch historical stock data"""
+
+    def _fetch_history(self, ticker: str, period: str):
+        """Fetch raw OHLCV history. Returns DataFrame on success, error dict on failure."""
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period, interval=self.default_interval)
-            
+            hist = yf.Ticker(ticker).history(period=period, interval=self.default_interval)
             if hist.empty:
                 return {"error": f"No data found for {ticker}"}
-            
-            # Convert to dictionary format
-            data = {
+            return hist
+        except Exception as e:
+            return {"error": f"Error fetching data for {ticker}: {str(e)}"}
+
+    def _get_stock_data(self, ticker: str, period: str, hist: "pd.DataFrame") -> Dict[str, Any]:
+        """Build the stock_data summary dict from an already-fetched DataFrame."""
+        try:
+            return {
                 "ticker": ticker,
                 "period": period,
                 "data_points": len(hist),
@@ -84,24 +90,12 @@ class TechnicalAnalysisTool(BaseTool):
                 "volume": int(hist['Volume'].iloc[-1]),
                 "avg_volume": int(hist['Volume'].mean())
             }
-            
-            return data
-            
         except Exception as e:
-            return {"error": f"Error fetching data for {ticker}: {str(e)}"}
-    
-    def _calculate_all_indicators(self, stock_data: Dict[str, Any]) -> Dict[str, Any]:
+            return {"error": f"Error building stock data for {ticker}: {str(e)}"}
+
+    def _calculate_all_indicators(self, hist: "pd.DataFrame") -> Dict[str, Any]:
         """Calculate all technical indicators using the ta package"""
         try:
-            # Get the actual stock data for calculations
-            ticker = stock_data['ticker']
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=stock_data['period'], interval=self.default_interval)
-            
-            if hist.empty:
-                return {"error": "No historical data available for calculations"}
-            
-            # Import ta package
             try:
                 import ta
             except ImportError:

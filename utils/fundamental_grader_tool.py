@@ -1,14 +1,15 @@
 """
-Fundamental Grader Tool — deterministic financial health grading.
+Fundamental Grader Tool — deterministic financial health grading for a batch of tickers.
 
-Takes raw fundamental metrics already fetched by FundamentalDataTool and
-applies all threshold-based grading rules without any LLM involvement:
+Accepts the full JSON output from FundamentalDataTool and grades every entry in one call.
+Extracts the needed fields from the nested structure returned by fetch_fundamental_data.
+
+Grading rules:
   - valuation_grade  (P/E or P/S thresholds)
   - financial_health (current_ratio, D/E, FCF)
   - growth_outlook   (revenue_growth_yoy)
 
-Scores never go negative — a bad metric earns the lowest positive score,
-not a penalty.
+Scores never go negative — a bad metric earns the lowest positive score, not a penalty.
 """
 
 import json
@@ -21,57 +22,62 @@ _GROWTH_OUTLOOK_SCORE   = {"HIGH": 10, "MODERATE": 7, "LOW": 3, "DECLINING": 1}
 
 class FundamentalGraderTool(BaseTool):
     name: str = "grade_fundamental_data"
-    description: str = """Compute deterministic fundamental grades from raw financial metrics.
+    description: str = """Compute deterministic fundamental grades for a batch of tickers.
 
-    Call this tool immediately after 'fetch_fundamental_data' for each ticker.
-    Pass the raw fundamental metrics as a JSON string. Returns grades and numeric
-    scores — no LLM calculation required.
+    Pass the complete JSON output from 'fetch_fundamental_data' directly to this tool.
+    Call this tool ONCE — it grades all tickers in the batch and returns all results.
 
     Args:
-        ticker: Stock ticker symbol (e.g. 'AAPL')
-        raw_fundamentals_json: JSON string with these fields (use null for missing):
-            {
-              "pe_ratio":            <float | null>,
-              "ps_ratio":            <float | null>,
-              "current_ratio":       <float | null>,
-              "debt_to_equity":      <float | null>,   normalized ratio (e.g. 1.5, not 150)
-              "free_cash_flow":      <float | null>,   in USD
-              "revenue_growth_yoy":  <float | null>    decimal (e.g. 0.12 = 12 %)
-            }
+        fundamentals_batch_json: The exact JSON string returned by fetch_fundamental_data,
+            i.e. {"fundamentals": [...one entry per ticker...]}
 
-    Returns JSON with:
+    Returns JSON: {"grades": [one entry per ticker]} with fields:
         ticker, valuation_grade, financial_health, growth_outlook,
         financial_health_score, growth_score, fundamental_component
         (= financial_health_score + growth_score, always >= 0)
+    On fetch error for a ticker: fundamental_unknown=true, all grades="UNKNOWN".
     """
 
-    def _run(self, ticker: str, raw_fundamentals_json: str) -> str:
+    def _run(self, fundamentals_batch_json: str) -> str:
         try:
-            raw = json.loads(raw_fundamentals_json)
+            batch = json.loads(fundamentals_batch_json)
         except (json.JSONDecodeError, TypeError) as e:
-            return json.dumps({"ticker": ticker, "error": f"Invalid JSON: {e}"})
+            return json.dumps({"error": f"Invalid JSON: {e}"})
+
+        fundamentals = batch.get("fundamentals", []) if isinstance(batch, dict) else batch
+        if not isinstance(fundamentals, list):
+            return json.dumps({"error": "Expected {'fundamentals': [...]} from fetch_fundamental_data"})
+
+        return json.dumps({"grades": [self._grade_one(entry) for entry in fundamentals]})
+
+    def _grade_one(self, raw: dict) -> dict:
+        ticker = str(raw.get("ticker", "UNKNOWN")).upper()
 
         # If fetch_fundamental_data returned an error, propagate UNKNOWN so
         # downstream agents never invent or default fundamental scores.
         if "error" in raw:
-            return json.dumps({
-                "ticker":                  ticker.upper(),
-                "fundamental_unknown":     True,
-                "valuation_grade":         "UNKNOWN",
-                "financial_health":        "UNKNOWN",
-                "growth_outlook":          "UNKNOWN",
-                "financial_health_score":  None,
-                "growth_score":            None,
-                "fundamental_component":   None,
-            })
+            return {
+                "ticker":                ticker,
+                "fundamental_unknown":   True,
+                "valuation_grade":       "UNKNOWN",
+                "financial_health":      "UNKNOWN",
+                "growth_outlook":        "UNKNOWN",
+                "financial_health_score": None,
+                "growth_score":          None,
+                "fundamental_component": None,
+            }
 
         try:
-            pe  = raw.get("pe_ratio")
-            ps  = raw.get("ps_ratio")
-            cr  = raw.get("current_ratio")
-            de  = raw.get("debt_to_equity")
-            fcf = raw.get("free_cash_flow")
-            rev = raw.get("revenue_growth_yoy")
+            val = raw.get("valuation", {})
+            bs  = raw.get("balance_sheet", {})
+            gr  = raw.get("growth", {})
+
+            pe  = val.get("pe_ratio")
+            ps  = val.get("ps_ratio")
+            cr  = bs.get("current_ratio")
+            de  = bs.get("debt_to_equity")
+            fcf = bs.get("free_cash_flow")
+            rev = gr.get("revenue_growth_yoy")
 
             # ── Valuation grade ───────────────────────────────────────────────
             if pe is not None:
@@ -93,7 +99,7 @@ class FundamentalGraderTool(BaseTool):
                 else:
                     valuation_grade = "EXPENSIVE"
             else:
-                valuation_grade = "FAIR"  # default when no data
+                valuation_grade = "FAIR"
 
             # ── Financial health ──────────────────────────────────────────────
             cr_val  = float(cr)  if cr  is not None else None
@@ -135,17 +141,16 @@ class FundamentalGraderTool(BaseTool):
             # ── Numeric scores (never negative) ──────────────────────────────
             fh_score     = _FINANCIAL_HEALTH_SCORE.get(financial_health, 5)
             growth_score = _GROWTH_OUTLOOK_SCORE.get(growth_outlook, 5)
-            fundamental_component = fh_score + growth_score
 
-            return json.dumps({
-                "ticker":                ticker.upper(),
+            return {
+                "ticker":                ticker,
                 "valuation_grade":       valuation_grade,
                 "financial_health":      financial_health,
                 "growth_outlook":        growth_outlook,
                 "financial_health_score": fh_score,
                 "growth_score":          growth_score,
-                "fundamental_component": fundamental_component,
-            })
+                "fundamental_component": fh_score + growth_score,
+            }
 
         except Exception as e:
-            return json.dumps({"ticker": ticker, "error": f"Computation error: {e}"})
+            return {"ticker": ticker, "error": f"Computation error: {e}"}

@@ -80,10 +80,42 @@ def _make_ticker(info=None, financials=None, cashflow=None):
     return ticker
 
 
+def _fetch_one(tickers=None, **yf_kwargs):
+    """Call FundamentalDataTool with a batch and return the first (or only) result dict."""
+    if tickers is None:
+        tickers = ["NVDA"]
+    with patch("yfinance.Ticker", return_value=_make_ticker(**yf_kwargs)):
+        raw = json.loads(FundamentalDataTool()._run(json.dumps(tickers)))
+    return raw["fundamentals"][0]
+
+
 # ── FundamentalDataTool — structure ───────────────────────────────────────────
 
 def test_fetch_tool_name():
     assert FundamentalDataTool().name == "fetch_fundamental_data"
+
+
+def test_fetch_returns_batch_wrapper():
+    with patch("yfinance.Ticker", return_value=_make_ticker()):
+        raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+    assert "fundamentals" in raw
+    assert len(raw["fundamentals"]) == 1
+
+
+def test_fetch_returns_all_tickers_in_batch():
+    with patch("yfinance.Ticker", return_value=_make_ticker()):
+        raw = json.loads(FundamentalDataTool()._run('["NVDA", "AAPL"]'))
+    assert len(raw["fundamentals"]) == 2
+
+
+def test_fetch_invalid_json_returns_error():
+    raw = json.loads(FundamentalDataTool()._run("not-json"))
+    assert "error" in raw
+
+
+def test_fetch_empty_array_returns_error():
+    raw = json.loads(FundamentalDataTool()._run("[]"))
+    assert "error" in raw
 
 
 class TestFundamentalDataSuccess:
@@ -94,66 +126,67 @@ class TestFundamentalDataSuccess:
             yield
 
     def test_top_level_sections_present(self):
-        result = FundamentalDataTool()._run("NVDA")
+        result = _fetch_one()
         for section in ("ticker", "meta", "valuation", "profitability",
                         "growth", "balance_sheet", "dividend"):
             assert section in result, f"Missing section: {section}"
 
     def test_ticker_is_uppercased(self):
-        result = FundamentalDataTool()._run("nvda")
+        result = _fetch_one(["nvda"])
         assert result["ticker"] == "NVDA"
 
     def test_meta_section_fields(self):
-        meta = FundamentalDataTool()._run("NVDA")["meta"]
+        meta = _fetch_one()["meta"]
         for field in ("company_name", "sector", "industry"):
             assert field in meta
 
     def test_valuation_section_fields(self):
-        val = FundamentalDataTool()._run("NVDA")["valuation"]
+        val = _fetch_one()["valuation"]
         for field in ("market_cap", "pe_ratio", "pb_ratio", "ps_ratio"):
             assert field in val
 
     def test_profitability_section_fields(self):
-        prof = FundamentalDataTool()._run("NVDA")["profitability"]
+        prof = _fetch_one()["profitability"]
         for field in ("gross_margin", "operating_margin", "net_margin",
                       "return_on_equity", "return_on_assets"):
             assert field in prof
 
     def test_growth_section_fields(self):
-        growth = FundamentalDataTool()._run("NVDA")["growth"]
+        growth = _fetch_one()["growth"]
         for field in ("revenue_growth_yoy", "earnings_growth_yoy",
                       "revenue_ttm", "net_income_ttm"):
             assert field in growth
 
     def test_balance_sheet_section_fields(self):
-        bs = FundamentalDataTool()._run("NVDA")["balance_sheet"]
+        bs = _fetch_one()["balance_sheet"]
         for field in ("total_debt", "total_cash", "debt_to_equity",
                       "current_ratio", "free_cash_flow"):
             assert field in bs
 
     def test_free_cash_flow_is_op_cf_plus_capex(self):
         # op_cf=600M, capex=-100M → FCF = 500M
-        bs = FundamentalDataTool()._run("NVDA")["balance_sheet"]
+        bs = _fetch_one()["balance_sheet"]
         assert bs["free_cash_flow"] == pytest.approx(500_000_000.0)
 
     def test_revenue_ttm_from_financials(self):
-        growth = FundamentalDataTool()._run("NVDA")["growth"]
+        growth = _fetch_one()["growth"]
         assert growth["revenue_ttm"] == pytest.approx(2_000_000_000.0)
 
     def test_net_income_ttm_from_financials(self):
-        growth = FundamentalDataTool()._run("NVDA")["growth"]
+        growth = _fetch_one()["growth"]
         assert growth["net_income_ttm"] == pytest.approx(400_000_000.0)
 
     def test_debt_to_equity_normalised(self):
         # yfinance returns 40.0 (percentage-scaled); tool divides by 100 → 0.40
-        bs = FundamentalDataTool()._run("NVDA")["balance_sheet"]
+        bs = _fetch_one()["balance_sheet"]
         assert bs["debt_to_equity"] == pytest.approx(0.40)
 
     def test_description_snippet_truncated_at_400_chars(self):
         long_desc = "x" * 600
-        ticker = _make_ticker(info=_make_info(longBusinessSummary=long_desc))
-        with patch("yfinance.Ticker", return_value=ticker):
-            meta = FundamentalDataTool()._run("NVDA")["meta"]
+        ticker_mock = _make_ticker(info=_make_info(longBusinessSummary=long_desc))
+        with patch("yfinance.Ticker", return_value=ticker_mock):
+            raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+        meta = raw["fundamentals"][0]["meta"]
         assert len(meta["description_snippet"]) <= 402  # 400 chars + "…"
 
 
@@ -162,41 +195,64 @@ class TestFundamentalDataMissingValues:
     def test_none_values_are_returned_as_none(self):
         info = _make_info(trailingPE=None, dividendYield=None)
         with patch("yfinance.Ticker", return_value=_make_ticker(info=info)):
-            result = FundamentalDataTool()._run("NVDA")
+            raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+        result = raw["fundamentals"][0]
         assert result["valuation"]["pe_ratio"] is None
         assert result["dividend"]["dividend_yield"] is None
 
     def test_missing_financials_does_not_crash(self):
         with patch("yfinance.Ticker", return_value=_make_ticker(financials=pd.DataFrame())):
-            result = FundamentalDataTool()._run("NVDA")
+            raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+        result = raw["fundamentals"][0]
         assert "error" not in result
         assert result["growth"]["revenue_ttm"] is None
 
     def test_missing_cashflow_does_not_crash(self):
         with patch("yfinance.Ticker", return_value=_make_ticker(cashflow=pd.DataFrame())):
-            result = FundamentalDataTool()._run("NVDA")
+            raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+        result = raw["fundamentals"][0]
         assert "error" not in result
         assert result["balance_sheet"]["free_cash_flow"] is None
 
 
 class TestFundamentalDataErrors:
 
-    def test_no_market_price_returns_error(self):
+    def test_no_market_price_returns_error_entry(self):
         info = _make_info(regularMarketPrice=None, currentPrice=None)
         with patch("yfinance.Ticker", return_value=_make_ticker(info=info)):
-            result = FundamentalDataTool()._run("FAKE")
-        assert "error" in result
+            raw = json.loads(FundamentalDataTool()._run('["FAKE"]'))
+        assert "error" in raw["fundamentals"][0]
 
-    def test_empty_info_dict_returns_error(self):
+    def test_empty_info_dict_returns_error_entry(self):
         with patch("yfinance.Ticker", return_value=_make_ticker(info={})):
-            result = FundamentalDataTool()._run("FAKE")
-        assert "error" in result
+            raw = json.loads(FundamentalDataTool()._run('["FAKE"]'))
+        assert "error" in raw["fundamentals"][0]
 
-    def test_exception_returns_error_dict_with_ticker(self):
+    def test_exception_returns_error_entry_with_ticker(self):
         with patch("yfinance.Ticker", side_effect=Exception("network timeout")):
-            result = FundamentalDataTool()._run("NVDA")
-        assert "error" in result
-        assert "ticker" in result
+            raw = json.loads(FundamentalDataTool()._run('["NVDA"]'))
+        entry = raw["fundamentals"][0]
+        assert "error" in entry
+        assert "ticker" in entry
+
+    def test_one_failing_ticker_does_not_abort_batch(self):
+        good_ticker = _make_ticker()
+        bad_info = _make_info(regularMarketPrice=None, currentPrice=None)
+        bad_ticker = _make_ticker(info=bad_info)
+
+        call_count = {"n": 0}
+        def side_effect(symbol):
+            call_count["n"] += 1
+            return bad_ticker if symbol.upper() == "FAKE" else good_ticker
+
+        with patch("yfinance.Ticker", side_effect=side_effect):
+            raw = json.loads(FundamentalDataTool()._run('["NVDA", "FAKE"]'))
+
+        assert len(raw["fundamentals"]) == 2
+        good = next(e for e in raw["fundamentals"] if e["ticker"] == "NVDA")
+        bad  = next(e for e in raw["fundamentals"] if e["ticker"] == "FAKE")
+        assert "error" not in good
+        assert "error" in bad
 
 
 # ── FundamentalGraderTool ─────────────────────────────────────────────────────
@@ -205,14 +261,34 @@ def test_grader_tool_name():
     assert FundamentalGraderTool().name == "grade_fundamental_data"
 
 
-def _grade(ticker="TEST", **kwargs) -> dict:
-    defaults = {
+def _make_raw_entry(ticker="TEST", error=None, **metric_overrides):
+    """Build a fake fetch_fundamental_data entry for use in grader tests."""
+    if error:
+        return {"ticker": ticker, "error": error}
+    metrics = {
         "pe_ratio": None, "ps_ratio": None, "current_ratio": None,
         "debt_to_equity": None, "free_cash_flow": None, "revenue_growth_yoy": None,
     }
-    defaults.update(kwargs)
-    raw = json.dumps(defaults)
-    return json.loads(FundamentalGraderTool()._run(ticker, raw))
+    metrics.update(metric_overrides)
+    return {
+        "ticker": ticker,
+        "valuation":    {"pe_ratio": metrics["pe_ratio"], "ps_ratio": metrics["ps_ratio"]},
+        "balance_sheet": {
+            "current_ratio": metrics["current_ratio"],
+            "debt_to_equity": metrics["debt_to_equity"],
+            "free_cash_flow": metrics["free_cash_flow"],
+        },
+        "growth":       {"revenue_growth_yoy": metrics["revenue_growth_yoy"]},
+        "meta": {}, "profitability": {}, "dividend": {},
+    }
+
+
+def _grade(ticker="TEST", **kwargs) -> dict:
+    """Grade a single ticker by wrapping it in a batch."""
+    entry = _make_raw_entry(ticker=ticker, **kwargs)
+    batch = json.dumps({"fundamentals": [entry]})
+    result = json.loads(FundamentalGraderTool()._run(batch))
+    return result["grades"][0]
 
 
 class TestValuationGrade:
@@ -303,3 +379,27 @@ class TestFundamentalComponent:
         # Worst case: WEAK + DECLINING = 5 + 1 = 6
         result = _grade(current_ratio=0.5, free_cash_flow=-1, revenue_growth_yoy=-0.5)
         assert result["fundamental_component"] >= 6
+
+
+class TestGraderBatch:
+
+    def test_grades_all_tickers_in_batch(self):
+        entries = [_make_raw_entry("AAPL", pe_ratio=20.0), _make_raw_entry("NVDA", pe_ratio=65.0)]
+        batch = json.dumps({"fundamentals": entries})
+        result = json.loads(FundamentalGraderTool()._run(batch))
+        assert len(result["grades"]) == 2
+        tickers = {g["ticker"] for g in result["grades"]}
+        assert tickers == {"AAPL", "NVDA"}
+
+    def test_error_ticker_gets_unknown_grades(self):
+        entries = [_make_raw_entry("GOOD", pe_ratio=20.0), _make_raw_entry("BAD", error="no data")]
+        batch = json.dumps({"fundamentals": entries})
+        result = json.loads(FundamentalGraderTool()._run(batch))
+        grades = {g["ticker"]: g for g in result["grades"]}
+        assert grades["GOOD"]["valuation_grade"] != "UNKNOWN"
+        assert grades["BAD"]["fundamental_unknown"] is True
+        assert grades["BAD"]["valuation_grade"] == "UNKNOWN"
+
+    def test_invalid_json_returns_error(self):
+        result = json.loads(FundamentalGraderTool()._run("not-json"))
+        assert "error" in result

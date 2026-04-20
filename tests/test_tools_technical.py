@@ -1,7 +1,7 @@
 """
 Tests for TechnicalAnalysisTool and CompositeScoreTool.
-yfinance is mocked via patch on the tool's internal method — avoids
-the double yf.Ticker call in _get_stock_data + _calculate_all_indicators.
+yfinance is mocked via patch — history is fetched once in _fetch_history
+and passed to both _get_stock_data and _calculate_all_indicators.
 """
 
 import json

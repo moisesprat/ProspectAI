@@ -185,32 +185,27 @@ tasks:
       You receive context from the Market Analyst (sentiment) and Technical Analyst (indicators).
       Fetch real financial data for each stock and produce a structured fundamental report.
 
-      MANDATORY: You MUST call 'fetch_fundamental_data' AND 'grade_fundamental_data' for
-      EVERY ticker before writing any output. The context you received contains technical
-      and sentiment data only — it does NOT contain fundamental financial metrics.
+      MANDATORY: You MUST make exactly TWO tool calls — one batch fetch, one batch grade.
+      The tools loop internally over all tickers. Do NOT call them per ticker.
       Do NOT use training data, memory, or prior knowledge to fill in financial numbers.
-      Do NOT output the result dict until all tool calls are complete.
-      If you cannot call the tools, output {"error": "tool calls incomplete"} instead.
 
       STEP 1 — Extract tickers:
-        Read the technical analysis context. Find 'stock_analyses'. Extract each 'ticker'.
+        Read the technical analysis context. Find 'stock_analyses'. Extract ALL tickers
+        into a JSON array, e.g. ["AAPL","NVDA","MSFT","GOOGL","AMZN"].
 
-      STEP 2 — Call the tool for EACH ticker:
-        Call 'fetch_fundamental_data' with ticker="<TICKER>".
-        Collect all results.
+      STEP 2 — Fetch ALL fundamentals in one call:
+        Call 'fetch_fundamental_data' ONCE with the full ticker array from STEP 1.
+        Example: fetch_fundamental_data(tickers_json='["AAPL","NVDA","MSFT"]')
+        The tool returns {"fundamentals": [one entry per ticker]}.
+        Save the complete output string — you will pass it to the next tool.
 
-      STEP 3 — For each ticker, call 'grade_fundamental_data':
-        Always call this tool — even if fetch returned an error.
-        Pass the raw result from STEP 2 verbatim as raw_fundamentals_json (including
-        the {"error": "..."} dict if that is what fetch returned).
-        The tool will return {"fundamental_unknown": true, "valuation_grade": "UNKNOWN",
-        "financial_health": "UNKNOWN", "growth_outlook": "UNKNOWN",
-        "fundamental_component": null} when data was unavailable.
-        Copy this result verbatim into the assessment sub-dict — do NOT substitute
-        any other grade or invent a valuation.
-        When data is available (no error key in STEP 2 result), pass the full raw
-        JSON from STEP 2 to the tool. Record the returned valuation_grade,
-        financial_health, growth_outlook, and fundamental_component verbatim.
+      STEP 3 — Grade ALL fundamentals in one call:
+        Pass the ENTIRE output string from STEP 2 directly to 'grade_fundamental_data'.
+        Example: grade_fundamental_data(fundamentals_batch_json='<exact string from STEP 2>')
+        The tool returns {"grades": [one entry per ticker]} with valuation_grade,
+        financial_health, growth_outlook, and fundamental_component for each ticker.
+        Tickers where fetch failed will have fundamental_unknown=true and all grades="UNKNOWN".
+        Copy all returned values verbatim — do NOT substitute or invent any grade.
         Write risk_factors, catalysts, and fundamental_summary yourself,
         citing specific numbers from the raw data.
         When fundamental_unknown=true: set risk_factors=["Fundamental data unavailable"],
