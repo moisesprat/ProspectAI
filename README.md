@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.5.15**
+**Current release: v1.5.17**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.5.17 — Maintenance release
+- Maintenance and stability improvements
+
+### v1.5.16 — Maintenance release
+- Maintenance and stability improvements
+
 ### v1.5.15 — Fix TechnicalAnalysisTool double yfinance fetch
 - Fix TechnicalAnalysisTool to fetch yfinance history once and pass it to both helpers, halving API calls and eliminating time-gap inconsistency
 
@@ -317,16 +323,6 @@ twine upload dist/*
 
 ### v1.5.13 — Fix Critic composite score validation
 - Fix Critic agent COMPOSITE_SCORE_MISMATCH check to compare against tool output instead of recalculating with a wrong formula
-
-### v1.5.12 — Refactor sentiment component calculation in CompositeScoreTo
-- Refactor sentiment component calculation in CompositeScoreTool; update tests for sentiment scoring logic
-- Enhance task configurations to handle price data errors; update schemas for optional current_price and price_data_error fields
-- Update README and deployment script for version 1.5.9; enhance test coverage and patch Crew usage
-- Refactor tests for FundamentalDataTool, RedditSentimentTool, TechnicalAnalysisTool, and CompositeScoreTool
-- Enhance agent and task configurations to include composite_score validation; add deploy script for version management
-
-### v1.5.11 — Refactor sentiment component calculation in CompositeScoreTo
-- Refactor sentiment component calculation in CompositeScoreTool; update tests for sentiment scoring logic
 
 ## Roadmap
 

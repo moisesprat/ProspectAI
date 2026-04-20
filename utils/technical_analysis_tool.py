@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 import pandas as pd
 from datetime import datetime
 import yfinance as yf
+from utils import yfinance_cache
 
 # Add parent directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -66,7 +67,7 @@ class TechnicalAnalysisTool(BaseTool):
     def _fetch_history(self, ticker: str, period: str):
         """Fetch raw OHLCV history. Returns DataFrame on success, error dict on failure."""
         try:
-            hist = yf.Ticker(ticker).history(period=period, interval=self.default_interval)
+            hist = yfinance_cache.get_history(ticker, period, self.default_interval)
             if hist.empty:
                 return {"error": f"No data found for {ticker}"}
             return hist

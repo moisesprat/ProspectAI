@@ -7,6 +7,7 @@ Call ONCE with all tickers; the tool loops internally and returns all results.
 import json
 from typing import Any, Dict
 from crewai.tools import BaseTool
+from utils import yfinance_cache
 
 
 class FundamentalDataTool(BaseTool):
@@ -43,13 +44,7 @@ class FundamentalDataTool(BaseTool):
 
     def _fetch_one(self, ticker: str) -> Dict[str, Any]:
         try:
-            import yfinance as yf
-        except ImportError:
-            return {"ticker": ticker, "error": "yfinance not installed. Run: pip install yfinance"}
-
-        try:
-            stock = yf.Ticker(ticker.upper())
-            info = stock.info
+            info = yfinance_cache.get_info(ticker)
 
             if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
                 return {
@@ -65,7 +60,7 @@ class FundamentalDataTool(BaseTool):
             revenue_ttm = None
             net_income_ttm = None
             try:
-                fin = stock.financials
+                fin = yfinance_cache.get_financials(ticker)
                 if fin is not None and not fin.empty:
                     if "Total Revenue" in fin.index:
                         revenue_ttm = float(fin.loc["Total Revenue"].iloc[0])
@@ -76,7 +71,7 @@ class FundamentalDataTool(BaseTool):
 
             free_cash_flow = None
             try:
-                cf = stock.cashflow
+                cf = yfinance_cache.get_cashflow(ticker)
                 if cf is not None and not cf.empty:
                     op_cf = None
                     capex = None

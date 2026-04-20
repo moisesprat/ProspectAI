@@ -22,6 +22,7 @@ from utils.fundamental_grader_tool import FundamentalGraderTool
 from utils.composite_score_tool import CompositeScoreTool
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.recommendation_validator import validate_portfolio
+from utils import yfinance_cache
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
@@ -191,6 +192,7 @@ class ProspectAICrew:
         Returns:
             Dict with 'status', 'result' (structured dict), and 'summary' keys.
         """
+        yfinance_cache.clear()
         tasks = self.create_tasks(market_criteria)
 
         # Build unified callbacks that fire both the instance-level hooks
