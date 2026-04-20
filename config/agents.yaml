@@ -322,9 +322,9 @@ agents:
                                    output value. If |position.composite_score − tool_value|
                                    > 1.0, the score was fabricated [CRITICAL]
 
-      You MUST find at least one issue per ticker. If a position appears clean,
-      look harder — check the monitoring triggers for directional consistency,
-      verify the rationale cites actual numbers, confirm allocation matches rank.
+      For each ticker, check all failure-mode criteria above. If a position is
+      fully compliant, record it in approved_positions and explain why — that is
+      a valid and useful finding. Do not invent minor issues to fill a quota.
 
       Portfolio-level checks:
         - deployed_pct + reserved_pct + cash_reserve_pct must equal 100 (±0.5%)

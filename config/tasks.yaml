@@ -586,7 +586,9 @@ tasks:
       }
 
       RULES:
-      - You MUST produce at least one critique per ticker.
+      - For each ticker, check all failure-mode criteria. If a position is fully
+        compliant, record it in approved_positions and explain why — that is a valid
+        and useful finding. Do not invent minor issues to fill a quota.
       - Severity CRITICAL = requires mandatory action change or allocation change.
       - Severity MAJOR = requires rationale or trigger correction.
       - Severity MINOR = recommendation to improve clarity or precision.
@@ -617,6 +619,15 @@ tasks:
             Critic's finding and explain why the original decision stands.
         You MUST address every CRITICAL and MAJOR critique.
         MINOR critiques may be accepted or defended with evidence.
+
+        DATA-TRACEABILITY GATE — apply before acting on any CRITICAL critique:
+          If the critique cites a specific data value (e.g. a composite_score,
+          allocation_pct, or indicator reading), verify that value against the
+          upstream context (Tasks 1–4). If the value the Critic cites differs
+          from what is actually in the upstream context, REJECT the critique with
+          a counter-citation: "Critic cited X but Task N shows Y — critique
+          rejected." Do not re-run tools to satisfy a critique that is based on
+          incorrect data.
 
       STEP 2 — Re-run tool calls only if actions changed.
         If a position action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY):
