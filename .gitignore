@@ -294,3 +294,7 @@ cache/
 # Local development files
 local_config.py
 local_settings.py
+ultraplan_prospect-ai_20042026.md
+.agent/
+.claude/
+.cursor/
