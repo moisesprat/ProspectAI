@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import warnings
 from datetime import datetime
 from crewai import Crew, LLM, Task
 from typing import Any, Callable, Dict, List, Optional
@@ -34,10 +35,24 @@ from schemas.agent_outputs import (
 logger = logging.getLogger(__name__)
 
 
+# DEPRECATED: ProspectAICrew will be removed in a future release.
+# Use ProspectAIFlow (prospect_ai_flow.py) for all new code.
 class ProspectAICrew:
-    """Main orchestrator for ProspectAI multi-agent investment analysis."""
+    """
+    Single-Crew sequential orchestrator for ProspectAI.
+
+    .. deprecated::
+        Use :class:`prospect_ai_flow.ProspectAIFlow` instead.
+        ProspectAICrew is retained as a task/agent factory and for
+        backward-compatibility; it will be removed in a future release.
+    """
 
     def __init__(self, task_callback=None, step_callback=None):
+        warnings.warn(
+            "ProspectAICrew is deprecated; use ProspectAIFlow instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = Config()
         self.task_callback = task_callback
         self.step_callback = step_callback
@@ -73,7 +88,59 @@ class ProspectAICrew:
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Task definitions
+    # Per-phase task builder (used by ProspectAIFlow for mini-Crew wiring)
+    # ─────────────────────────────────────────────────────────────────────────
+    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "") -> Task:
+        """Build a single Task for `phase`.  prior_context is appended to the description."""
+        _PHASE_CONFIG = {
+            "market_analysis": {
+                "agent":  self.market_analyst.get_agent(),
+                "tools":  [RedditSentimentTool(), self.search_tool],
+                "schema": MarketAnalysisOutput,
+            },
+            "technical_analysis": {
+                "agent":  self.technical_analyst.get_agent(),
+                "tools":  [TechnicalAnalysisTool(), TechnicalInterpretationTool()],
+                "schema": TechnicalAnalysisOutput,
+            },
+            "fundamental_analysis": {
+                "agent":  self.fundamental_analyst.get_agent(),
+                "tools":  [FundamentalDataTool(), FundamentalGraderTool()],
+                "schema": FundamentalAnalysisOutput,
+            },
+            "draft_strategy": {
+                "agent":  self.investor_strategist.get_agent(),
+                "tools":  [CompositeScoreTool(), PortfolioAllocatorTool()],
+                "schema": InvestorStrategicOutput,
+            },
+            "critique_review": {
+                "agent":  self.critic.get_agent(),
+                "tools":  [],
+                "schema": CriticOutput,
+            },
+            "final_strategy": {
+                "agent":  self.investor_strategist.get_agent(),
+                "tools":  [CompositeScoreTool(), PortfolioAllocatorTool()],
+                "schema": InvestorStrategicOutput,
+            },
+        }
+        if phase not in _PHASE_CONFIG:
+            raise ValueError(f"Unknown pipeline phase: {phase!r}")
+        pc = _PHASE_CONFIG[phase]
+        cfg = TaskConfigLoader().render(phase, sector=sector, today=today)
+        description = cfg["description"]
+        if prior_context:
+            description = description + "\n\n" + prior_context
+        return Task(
+            description=description,
+            agent=pc["agent"],
+            tools=pc["tools"],
+            expected_output=cfg["expected_output"],
+            output_pydantic=pc["schema"],
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Task definitions (legacy single-Crew path — deprecated)
     # ─────────────────────────────────────────────────────────────────────────
     def create_tasks(self, market_criteria: Dict[str, Any]) -> List[Task]:
         sector = market_criteria.get("sector", "Technology")

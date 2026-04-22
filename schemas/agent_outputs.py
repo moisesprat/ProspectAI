@@ -129,6 +129,11 @@ class TradeSetup(BaseModel):
     stop_loss: float = Field(..., gt=0)
     take_profit: float = Field(..., gt=0)
 
+    @field_validator("direction", mode="before")
+    @classmethod
+    def _upper(cls, v: object) -> object:
+        return v.upper() if isinstance(v, str) else v
+
     @model_validator(mode="after")
     def validate_long_trade_structure(self) -> TradeSetup:
         if not (self.stop_loss < self.entry_zone_low):
@@ -163,8 +168,21 @@ class PositionRecommendation(BaseModel):
     monitoring_triggers: List[str] = Field(..., min_length=1)
     review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
 
+    @field_validator("action", "review_frequency", mode="before")
+    @classmethod
+    def _upper(cls, v: object) -> object:
+        return v.upper() if isinstance(v, str) else v
+
     @model_validator(mode="after")
     def validate_setup_fields_by_action(self) -> "PositionRecommendation":
+        if self.action == "WAIT-FOR-ENTRY":
+            if self.trade_setup is None:
+                raise ValueError(
+                    f"WAIT-FOR-ENTRY requires trade_setup with entry_zone_low, "
+                    f"entry_zone_high, stop_loss, and take_profit — call "
+                    f"allocate_portfolio with action=WAIT-FOR-ENTRY and current_price "
+                    f"to get these values, then copy them verbatim."
+                )
         if self.action == "SCALED-ENTRY":
             n = len(self.scaled_entry_setups) if self.scaled_entry_setups else 0
             if n != 2:
@@ -217,6 +235,11 @@ class CritiqueItem(BaseModel):
     issue_type: str = Field(..., min_length=3)
     finding: str = Field(..., min_length=30)
     instruction: str = Field(..., min_length=30)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _upper(cls, v: object) -> object:
+        return v.upper() if isinstance(v, str) else v
 
 
 class CriticOutput(BaseModel):

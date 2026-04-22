@@ -1,5 +1,5 @@
 """
-Tests for ProspectAICrew orchestration.
+Tests for ProspectAICrew (legacy) and ProspectAIFlow orchestration.
 All LLM calls and Crew execution are mocked — no real AI inference.
 """
 
@@ -286,3 +286,75 @@ class TestParseResult:
         raw.json_dict = {"sector": "Energy", "positions": []}
         parsed = crew._parse_result(raw)
         assert parsed["sector"] == "Energy"
+
+
+# ── ProspectAIFlow.run_analysis ───────────────────────────────────────────────
+
+class TestProspectAIFlowRunAnalysis:
+    """run_analysis on ProspectAIFlow returns the same contract as ProspectAICrew."""
+
+    @pytest.fixture
+    def result(self):
+        mock_crew_out = _mock_crew_result(SAMPLE_PIPELINE_OUTPUT)
+        with patch.dict(os.environ, ANTHROPIC_ENV):
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                from prospect_ai_flow import ProspectAIFlow
+                flow = ProspectAIFlow()
+        # Pre-set the final result so kickoff (mocked to no-op) doesn't need to run.
+        flow._final_crew_result = mock_crew_out
+        flow.kickoff = lambda *_, **__: None
+        yield flow.run_analysis({"sector": "Technology"})
+
+    def test_returns_status_success(self, result):
+        assert result["status"] == "success"
+
+    def test_returns_required_keys(self, result):
+        assert "status" in result
+        assert "result" in result
+        assert "summary" in result
+
+    def test_result_contains_positions(self, result):
+        assert "positions" in result["result"]
+
+    def test_result_contains_capital_buckets(self, result):
+        r = result["result"]
+        assert "deployed_pct" in r
+        assert "reserved_pct" in r
+        assert "cash_reserve_pct" in r
+
+    def test_result_contains_overall_strategy(self, result):
+        assert "overall_strategy" in result["result"]
+
+
+# ── Deprecation warning ───────────────────────────────────────────────────────
+
+class TestProspectAICrewDeprecation:
+
+    def test_instantiation_raises_deprecation_warning(self):
+        with patch.dict(os.environ, ANTHROPIC_ENV):
+            from prospect_ai_crew import ProspectAICrew
+            with pytest.warns(DeprecationWarning, match="ProspectAICrew is deprecated"):
+                ProspectAICrew()
+
+
+# ── Smoke: CrewAI Flow imports ────────────────────────────────────────────────
+
+class TestCrewAIFlowImports:
+
+    def test_flow_symbols_importable(self):
+        from crewai.flow.flow import Flow, listen, start, and_
+        assert Flow is not None
+        assert listen is not None
+        assert start is not None
+        assert and_ is not None
+
+    def test_prospect_ai_flow_importable(self):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with patch.dict(os.environ, ANTHROPIC_ENV):
+                from prospect_ai_flow import ProspectAIFlow, ProspectAIFlowState
+        assert ProspectAIFlow is not None
+        assert ProspectAIFlowState is not None

@@ -175,7 +175,7 @@ def main():
     provider = os.getenv("MODEL_PROVIDER", "anthropic")
     os.environ["MODEL"] = f"{provider}/{raw_model}"
 
-    from prospect_ai_crew import ProspectAICrew
+    from prospect_ai_flow import ProspectAIFlow
 
     if provider == "ollama":
         print(f"MODEL_PROVIDER=ollama | global model id: {raw_model} @ {os.getenv('OLLAMA_BASE_URL')}")
@@ -184,7 +184,7 @@ def main():
 
     print(f"Analyzing sector: {args.sector}")
     print("Initializing ProspectAI...")
-    prospect_ai = ProspectAICrew()
+    prospect_ai = ProspectAIFlow()
 
     market_criteria = {
         "sector": args.sector,
