@@ -333,11 +333,19 @@ tasks:
 
       STEP 3 — Decide the investment action for each stock:
         Choose one action per stock: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
-        Apply these rules:
+        Apply these rules in order:
+          - PRICE WITHIN ENTRY ZONE (check this FIRST):
+            If entry_zone_low ≤ current_price ≤ entry_zone_high, price is already at the
+            textbook entry. Use LONG-BUY by default. Use SCALED-ENTRY only if valuation is
+            VERY_EXPENSIVE or financial_health is WEAK (staged caution). WAIT-FOR-ENTRY is
+            NEVER valid when current_price is inside the zone — WAIT-FOR-ENTRY means
+            waiting for price to come DOWN into the zone; if it is already there, you act.
           - fundamental_unknown=true → cap at MONITOR or WAIT-FOR-ENTRY; do NOT assign
             LONG-BUY or SCALED-ENTRY when fundamental data is missing
-          - RSI > 70 or Stochastic > 80 → prefer WAIT-FOR-ENTRY
-          - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% → WAIT-FOR-ENTRY
+          - RSI > 70 or Stochastic > 80 AND current_price > entry_zone_high → prefer
+            WAIT-FOR-ENTRY (overbought AND above zone — wait for both to cool)
+          - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% (current_price is more than
+            5% above entry_zone_high) → WAIT-FOR-ENTRY
           - entry_zone_status = "PULLBACK_ENTRY" with gap < 5% + regime="TRENDING"
             + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY (half allocation, max 20%)
           - VERY_EXPENSIVE valuation → raise bar for LONG-BUY
@@ -350,16 +358,20 @@ tasks:
             MONITOR = watch-list with no capital (different from AVOID: signals interest
             but conditions not yet met, e.g. waiting for earnings clarity).
             To express a staged or partial entry, use SCALED-ENTRY.
-          - Trade setup R/R rule: if current_price > entry_zone_high (position is above
-            its entry zone), you must choose ONE of the following — do not mix them:
-            OPTION A: set action=WAIT-FOR-ENTRY. The allocator will compute the trade
-              setup and earmark up to 15% of capital for this position automatically.
-            OPTION B: set action=LONG-BUY. The allocator will compute a zone-anchored
-              setup — ensure current_price is close enough to entry_zone_high that the
-              stop/TP produce a valid R/R at your actual entry price.
-            OPTION C: set action=SCALED-ENTRY. The allocator will compute two setups:
-              immediate tranche (R/R 2:1 anchored to current_price) and pullback tranche
-              (zone-anchored). Pass current_price in the allocate_portfolio call.
+          - Trade setup R/R rule: the correct action depends on where current_price sits
+            relative to the entry zone:
+            If current_price ≤ entry_zone_high (at or inside the zone):
+              → Use LONG-BUY (or SCALED-ENTRY for caution). See PRICE WITHIN ENTRY ZONE.
+            If current_price > entry_zone_high (above the zone, pullback scenario):
+              → Choose ONE of the following — do not mix them:
+              OPTION A: set action=WAIT-FOR-ENTRY. The allocator will compute the trade
+                setup and earmark up to 15% of capital for this position automatically.
+              OPTION B: set action=LONG-BUY. The allocator will compute a zone-anchored
+                setup — ensure current_price is close enough to entry_zone_high that the
+                stop/TP produce a valid R/R at your actual entry price.
+              OPTION C: set action=SCALED-ENTRY. The allocator will compute two setups:
+                immediate tranche (R/R 2:1 anchored to current_price) and pullback tranche
+                (zone-anchored). Pass current_price in the allocate_portfolio call.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
           allocate_portfolio(stocks_json='[
@@ -392,10 +404,12 @@ tasks:
         monitoring_triggers: 2-3 specific, measurable thresholds directionally
           consistent with your action. LONG-BUY triggers must fire on bearish
           reversal patterns, not normal uptrend levels.
-          For WAIT-FOR-ENTRY: at least one trigger must name the zone entry price from
-          trade_setup (e.g. "Price retraces to entry_zone_high of $$X.XX"). Also include
-          an RSI or MACD condition that confirms the pullback is a healthy retracement,
-          not a breakdown.
+          For WAIT-FOR-ENTRY: current_price is ABOVE entry_zone_high — you are waiting
+          for price to move DOWN into the zone. At least one trigger must describe price
+          falling to the zone (e.g. "Price falls/retraces to entry_zone_high of $$X.XX").
+          Never write a trigger that describes price moving up toward zone_high — that
+          is the wrong direction. Also include an RSI or MACD condition that confirms
+          the pullback is a healthy retracement, not a breakdown.
           For SCALED-ENTRY: at least one trigger must reference the pullback zone
           (e.g. "Price retraces to pullback zone low of $$X.XX").
           For MONITOR: triggers must describe conditions that would upgrade to WAIT-FOR-ENTRY
@@ -492,6 +506,11 @@ tasks:
         You MUST find at least one issue per position.
         Flag every violation using these issue types:
 
+        PRICE_IN_ZONE_WAIT       WAIT-FOR-ENTRY when entry_zone_low ≤ current_price ≤
+                                 entry_zone_high — price is already inside the entry zone;
+                                 LONG-BUY (or SCALED-ENTRY for caution) must be used.
+                                 WAIT-FOR-ENTRY is reserved for current_price > entry_zone_high.
+                                 CRITICAL.
         OVERBOUGHT_IGNORED       RSI > 70 or Stochastic > 80 and action is LONG-BUY
                                  with no explicit overbought acknowledgment in rationale.
         ENTRY_ZONE_VIOLATED      LONG-BUY with entry_zone_status="PULLBACK_ENTRY" and

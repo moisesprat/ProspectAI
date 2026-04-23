@@ -30,6 +30,6 @@
 
 ## 5. Validation
 
-- [ ] 5.1 Run the full pipeline end-to-end (`python main.py --sector Technology`) and confirm Technical and Fundamental phases start concurrently (visible in verbose CrewAI logs)
-- [ ] 5.2 Confirm output schema is unchanged: `pipeline_version`, `stock_recommendations` (5 items), `portfolio_summary` all present
+- [x] 5.1 Run the full pipeline end-to-end (`python main.py --sector Technology`) and confirm Technical and Fundamental phases start concurrently (visible in verbose CrewAI logs)
+- [x] 5.2 Confirm output schema is unchanged: `pipeline_version`, `stock_recommendations` (5 items), `portfolio_summary` all present
 - [x] 5.3 Run `python -m pytest tests/` and confirm all tests pass
