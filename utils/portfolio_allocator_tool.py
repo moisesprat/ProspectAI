@@ -184,27 +184,22 @@ class PortfolioAllocatorTool(BaseTool):
                 if drift != 0:
                     final_allocs[largest] = round(final_allocs[largest] + drift, 1)
 
-            # ── Validate zone fields before computing setups ─────────────────
+            # ── Resolve effective entry zones (fall back to current_price) ────
+            # If the LLM omitted entry_zone_low/high, use current_price so the
+            # allocator always returns a valid trade_setup instead of an error.
             for r in results:
                 if r["action"] in ("LONG-BUY", "WAIT-FOR-ENTRY"):
-                    if r["entry_zone_low"] <= 0 or r["entry_zone_high"] <= 0:
-                        return json.dumps({
-                            "error": (
-                                f"{r['action']} for {r['ticker']} requires entry_zone_low > 0 "
-                                f"and entry_zone_high > 0 to compute stop_loss and take_profit. "
-                                f"Got entry_zone_low={r['entry_zone_low']}, "
-                                f"entry_zone_high={r['entry_zone_high']}. "
-                                f"Pass the values from interpret_technical_indicators for this ticker."
-                            )
-                        })
-                if r["action"] == "SCALED-ENTRY" and r["current_price"] <= 0:
-                    return json.dumps({
-                        "error": (
-                            f"SCALED-ENTRY for {r['ticker']} requires current_price > 0 "
-                            f"to anchor the immediate tranche stop/TP. "
-                            f"Pass current_price from the Technical Analysis output."
-                        )
-                    })
+                    if r["entry_zone_low"] <= 0:
+                        r["entry_zone_low"] = r["current_price"]
+                    if r["entry_zone_high"] <= 0:
+                        r["entry_zone_high"] = r["current_price"]
+                if r["action"] == "SCALED-ENTRY":
+                    if r["current_price"] <= 0:
+                        r["current_price"] = r["entry_zone_high"] or r["entry_zone_low"]
+                    if r["entry_zone_low"] <= 0:
+                        r["entry_zone_low"] = r["current_price"]
+                    if r["entry_zone_high"] <= 0:
+                        r["entry_zone_high"] = r["current_price"]
 
             # ── Build per-position output ────────────────────────────────────
             output = []

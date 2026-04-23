@@ -351,6 +351,16 @@ class ProspectAICrew:
         if hasattr(crew_result, "json_dict") and crew_result.json_dict:
             return crew_result.json_dict
 
+        # Mini-Crews (ProspectAIFlow) store the result in tasks_output, not on the
+        # CrewOutput directly. Check the last task's pydantic/json_dict first.
+        tasks_output = getattr(crew_result, "tasks_output", None)
+        if tasks_output:
+            last = tasks_output[-1]
+            if getattr(last, "pydantic", None):
+                return last.pydantic.model_dump(mode="json")
+            if getattr(last, "json_dict", None):
+                return last.json_dict
+
         raw = getattr(crew_result, "raw", None) or str(crew_result)
 
         # Strip markdown code fences if the LLM wrapped the output

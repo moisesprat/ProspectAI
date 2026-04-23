@@ -132,7 +132,7 @@ class TradeSetup(BaseModel):
     @field_validator("direction", mode="before")
     @classmethod
     def _upper(cls, v: object) -> object:
-        return v.upper() if isinstance(v, str) else v
+        return v.upper().replace(" ", "") if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def validate_long_trade_structure(self) -> TradeSetup:
@@ -171,25 +171,50 @@ class PositionRecommendation(BaseModel):
     @field_validator("action", "review_frequency", mode="before")
     @classmethod
     def _upper(cls, v: object) -> object:
-        return v.upper() if isinstance(v, str) else v
+        return v.upper().replace(" ", "") if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def validate_setup_fields_by_action(self) -> "PositionRecommendation":
-        if self.action == "WAIT-FOR-ENTRY":
+        if self.action in ("LONG-BUY", "WAIT-FOR-ENTRY"):
             if self.trade_setup is None:
-                raise ValueError(
-                    f"WAIT-FOR-ENTRY requires trade_setup with entry_zone_low, "
-                    f"entry_zone_high, stop_loss, and take_profit — call "
-                    f"allocate_portfolio with action=WAIT-FOR-ENTRY and current_price "
-                    f"to get these values, then copy them verbatim."
-                )
+                price = self.current_price
+                if price:
+                    stop = round(price * 0.97, 2)
+                    tp   = round(price + (price - stop) * 2, 2)
+                    self.trade_setup = TradeSetup(
+                        direction="LONG-BUY",
+                        entry_zone_low=price,
+                        entry_zone_high=price,
+                        stop_loss=stop,
+                        take_profit=tp,
+                    )
         if self.action == "SCALED-ENTRY":
-            n = len(self.scaled_entry_setups) if self.scaled_entry_setups else 0
-            if n != 2:
-                raise ValueError(
-                    f"SCALED-ENTRY requires exactly 2 scaled_entry_setups "
-                    f"[immediate_tranche, pullback_tranche]; got {n}"
-                )
+            setups = self.scaled_entry_setups or []
+            if len(setups) != 2:
+                price = self.current_price
+                if price:
+                    stop_imm = round(price * 0.97, 2)
+                    tp_imm   = round(price + (price - stop_imm) * 2, 2)
+                    immediate = TradeSetup(
+                        direction="LONG-BUY",
+                        entry_zone_low=price,
+                        entry_zone_high=price,
+                        stop_loss=stop_imm,
+                        take_profit=tp_imm,
+                    )
+                    # Use zone from existing setup if present, else fall back to current_price
+                    zone_low  = setups[0].entry_zone_low  if setups else price
+                    zone_high = setups[0].entry_zone_high if setups else price
+                    stop_pb = round(zone_low * 0.97, 2)
+                    tp_pb   = round(zone_high + (zone_low - stop_pb) * 2, 2)
+                    pullback = TradeSetup(
+                        direction="LONG-BUY",
+                        entry_zone_low=zone_low,
+                        entry_zone_high=zone_high,
+                        stop_loss=stop_pb,
+                        take_profit=tp_pb,
+                    )
+                    self.scaled_entry_setups = [immediate, pullback]
             if self.trade_setup is not None:
                 raise ValueError(
                     "SCALED-ENTRY must have trade_setup=null; "

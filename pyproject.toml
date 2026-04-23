@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prospectai"
-version = "1.5.18"
+version = "1.6.2"
 description = "Multi-Agent Investment Analysis System powered by CrewAI and Claude"
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,9 +37,9 @@ dependencies = [
 [project.scripts]
 prospectai = "main:main"
 
-# Root-level modules (main.py, prospect_ai_crew.py)
+# Root-level modules (main.py, prospect_ai_crew.py, prospect_ai_flow.py)
 [tool.setuptools]
-py-modules = ["main", "prospect_ai_crew"]
+py-modules = ["main", "prospect_ai_crew", "prospect_ai_flow"]
 
 # Subpackages — explicitly scoped to avoid picking up .venv or test noise
 [tool.setuptools.packages.find]
