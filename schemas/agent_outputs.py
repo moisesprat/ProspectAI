@@ -233,6 +233,15 @@ class InvestorStrategicOutput(BaseModel):
     overall_strategy: str = Field(..., min_length=100)
     risk_level: Literal["Low", "Medium", "High", "Very High"]
 
+    @field_validator("deployed_pct", "reserved_pct", "total_allocated_pct", "cash_reserve_pct", mode="before")
+    @classmethod
+    def _clamp_pct(cls, v: object) -> object:
+        # LLM float arithmetic can produce values like 100.1 or -0.1 due to rounding.
+        # Clamp to [0, 100] before Pydantic's ge/le constraints run.
+        if isinstance(v, (int, float)):
+            return round(min(100.0, max(0.0, float(v))), 2)
+        return v
+
     @model_validator(mode="after")
     def validate_capital_buckets(self) -> "InvestorStrategicOutput":
         # total_allocated_pct is purely derived from position allocations.

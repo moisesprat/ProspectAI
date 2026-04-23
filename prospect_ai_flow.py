@@ -9,6 +9,7 @@ from crewai.crews.crew_output import CrewOutput
 from crewai.flow.flow import Flow, and_, listen, start
 from pydantic import BaseModel
 
+from utils.execution_tracker import ExecutionTracker
 from utils.recommendation_validator import validate_portfolio
 from utils import yfinance_cache
 
@@ -62,6 +63,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._step_callback = step_callback
         self._progress_callback = progress_callback
         self._final_crew_result = None
+        self._tracker: Optional[ExecutionTracker] = None
 
         # Build the shared agent/tool factory, suppressing the deprecation
         # warning because this is internal infrastructure, not user code.
@@ -91,6 +93,13 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             step_callback=self._step_callback,
             verbose=True,
         )
+
+    @staticmethod
+    def _model_id(task) -> str:
+        try:
+            return task.agent.llm.model
+        except Exception:
+            return "unknown"
 
     def _fmt_ctx(self, label: str, content: str) -> str:
         return f"=== {label} ===\n{content}"
@@ -302,7 +311,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     async def market_analysis(self):
         self._check_error()
         task = self._factory.build_task("market_analysis", self.state.sector, self.state.today)
+        if self._tracker:
+            self._tracker.start_phase("market_analysis")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task))
         self.state.market_output = result.raw or ""
         self._emit_progress(0, self.state.market_output)
         return self.state.market_output
@@ -312,7 +325,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._check_error()
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
         task = self._factory.build_task("technical_analysis", self.state.sector, self.state.today, ctx)
+        if self._tracker:
+            self._tracker.start_phase("technical_analysis")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task))
         self.state.technical_output = result.raw or ""
         self._emit_progress(1, self.state.technical_output)
         return self.state.technical_output
@@ -322,7 +339,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._check_error()
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
         task = self._factory.build_task("fundamental_analysis", self.state.sector, self.state.today, ctx)
+        if self._tracker:
+            self._tracker.start_phase("fundamental_analysis")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task))
         self.state.fundamental_output = result.raw or ""
         self._emit_progress(2, self.state.fundamental_output)
         return self.state.fundamental_output
@@ -336,7 +357,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
         ])
         task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx)
+        if self._tracker:
+            self._tracker.start_phase("draft_strategy")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task))
         self.state.draft_output = result.raw or ""
         self._emit_progress(3, self.state.draft_output)
         return self.state.draft_output
@@ -351,7 +376,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
         ])
         task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx)
+        if self._tracker:
+            self._tracker.start_phase("critique_review")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task))
         self.state.critique_output = result.raw or ""
         self._emit_progress(4, self.state.critique_output)
         return self.state.critique_output
@@ -367,7 +396,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Critic Review Output", self._slim_critique()),
         ])
         task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx)
+        if self._tracker:
+            self._tracker.start_phase("final_strategy")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
+        if self._tracker:
+            self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task))
         self._final_crew_result = result
         self._emit_progress(5, result.raw or "")
         return result.raw or ""
@@ -388,7 +421,14 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         sector = market_criteria.get("sector", "Technology")
         today = datetime.now().strftime("%Y-%m-%d")
 
-        self.kickoff(inputs={"sector": sector, "today": today})
+        tracker = ExecutionTracker()
+        tracker.set_sector(sector)
+        tracker.start()
+        self._tracker = tracker
+        try:
+            self.kickoff(inputs={"sector": sector, "today": today})
+        finally:
+            tracker.finish()
 
         from prospect_ai_crew import ProspectAICrew
         structured = ProspectAICrew._parse_result(self._final_crew_result)
@@ -409,11 +449,17 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             or str(structured)[:300]
         )
 
+        metrics = tracker.to_dict()
+
+        if self._progress_callback:
+            self._progress_callback({"event": "execution_complete", "metrics": metrics})
+
         return {
             "status": "success",
             "workflow_completed": True,
             "result": structured,
             "summary": summary,
+            "execution_metrics": metrics,
             "validation_warnings": [
                 {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
                 for i in validation_issues

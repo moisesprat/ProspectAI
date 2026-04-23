@@ -4,6 +4,7 @@ ProspectAI - Multi-Agent Investment Analysis System
 Main entry point for the application
 """
 
+import json
 import os
 import sys
 import argparse
@@ -200,6 +201,9 @@ def main():
         print("Analysis completed successfully!")
         print("Results:")
         print(result["summary"])
+        if result.get("execution_metrics"):
+            print("\n=== Execution Metrics ===")
+            print(json.dumps(result["execution_metrics"], indent=2))
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
         sys.exit(1)
