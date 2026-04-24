@@ -206,8 +206,8 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "interpretation": {
                     "overall_signal": ma.overall_signal,
                     "key_signals": ma.key_signals,
-                    "entry_zone_low": sr.support,
-                    "entry_zone_high": sr.resistance,
+                    "entry_zone_low": ma.entry_zone_low if ma.entry_zone_low is not None else sr.support,
+                    "entry_zone_high": ma.entry_zone_high if ma.entry_zone_high is not None else sr.resistance,
                     "entry_zone_status": ma.entry_zone_status,
                     "regime": ma.regime,
                     "momentum_score": ma.momentum_score,

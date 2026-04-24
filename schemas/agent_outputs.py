@@ -64,8 +64,10 @@ class MomentumAnalysis(BaseModel):
     support_resistance: SupportResistance
     comprehensive_analysis: str = Field(..., min_length=50)
     overall_signal: Optional[str] = None       # "BULLISH", "BEARISH", "MIXED", "NEUTRAL"
-    entry_zone_status: Optional[str] = None    # "PULLBACK_ENTRY", "AT_ZONE", etc.
-    regime: Optional[str] = None               # "TRENDING", "RANGING", etc.
+    entry_zone_status: Optional[str] = None    # "PULLBACK_ENTRY", "CURRENT_ENTRY", "BELOW_ZONE"
+    entry_zone_low: Optional[float] = None     # copied verbatim from interpret_technical_indicators
+    entry_zone_high: Optional[float] = None    # copied verbatim from interpret_technical_indicators
+    regime: Optional[str] = None               # "TRENDING", "REVERTING", "NEUTRAL"
 
 
 class TechnicalScore(BaseModel):

@@ -151,30 +151,25 @@ class TechnicalAnalysisTool(BaseTool):
                 "rsi": {
                     "current": float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None,
                     "status": self._get_rsi_status(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None,
-                    "description": "Relative Strength Index - measures speed and magnitude of price changes"
                 },
                 "macd": {
                     "macd_line": float(macd_line.iloc[-1]) if not pd.isna(macd_line.iloc[-1]) else None,
                     "signal_line": float(macd_signal.iloc[-1]) if not pd.isna(macd_signal.iloc[-1]) else None,
                     "histogram": float(macd_histogram.iloc[-1]) if not pd.isna(macd_histogram.iloc[-1]) else None,
                     "status": self._get_macd_status(macd_line.iloc[-1], macd_signal.iloc[-1], macd_histogram.iloc[-1]),
-                    "description": "Moving Average Convergence Divergence - trend following momentum indicator"
                 },
                 "stochastic": {
                     "k_percent": float(stoch_k.iloc[-1]) if not pd.isna(stoch_k.iloc[-1]) else None,
                     "d_percent": float(stoch_d.iloc[-1]) if not pd.isna(stoch_d.iloc[-1]) else None,
                     "status": self._get_stochastic_status(stoch_k.iloc[-1], stoch_d.iloc[-1]),
-                    "description": "Stochastic Oscillator - momentum indicator comparing closing price to price range"
                 },
                 "williams_r": {
                     "current": float(williams_r.iloc[-1]) if not pd.isna(williams_r.iloc[-1]) else None,
                     "status": self._get_williams_r_status(williams_r.iloc[-1]) if not pd.isna(williams_r.iloc[-1]) else None,
-                    "description": "Williams %R - momentum indicator measuring overbought/oversold levels"
                 },
                 "cci": {
                     "current": float(cci.iloc[-1]) if not pd.isna(cci.iloc[-1]) else None,
                     "status": self._get_cci_status(cci.iloc[-1]) if not pd.isna(cci.iloc[-1]) else None,
-                    "description": "Commodity Channel Index - measures variation from average price"
                 }
             }
             
@@ -205,23 +200,19 @@ class TechnicalAnalysisTool(BaseTool):
                     "sma_50": float(sma_50.iloc[-1]) if not pd.isna(sma_50.iloc[-1]) else None,
                     "sma_200": float(sma_200.iloc[-1]) if not pd.isna(sma_200.iloc[-1]) else None,
                     "status": self._get_ma_status(sma_20.iloc[-1], sma_50.iloc[-1], sma_200.iloc[-1]),
-                    "description": "Simple Moving Averages - trend identification and support/resistance levels"
                 },
                 "exponential_moving_averages": {
                     "ema_12": float(ema_12.iloc[-1]) if not pd.isna(ema_12.iloc[-1]) else None,
                     "ema_26": float(ema_26.iloc[-1]) if not pd.isna(ema_26.iloc[-1]) else None,
                     "status": self._get_ema_status(ema_12.iloc[-1], ema_26.iloc[-1]),
-                    "description": "Exponential Moving Averages - weighted moving averages for trend analysis"
                 },
                 "adx": {
                     "current": float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else None,
                     "status": self._get_adx_status(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else None,
-                    "description": "Average Directional Index - measures trend strength"
                 },
                 "parabolic_sar": {
                     "current": float(psar.iloc[-1]) if not pd.isna(psar.iloc[-1]) else None,
                     "status": self._get_psar_status(hist['Close'].iloc[-1], psar.iloc[-1]),
-                    "description": "Parabolic SAR - trend following indicator and stop-loss tool"
                 }
             }
             
@@ -251,16 +242,13 @@ class TechnicalAnalysisTool(BaseTool):
                     "lower_band": float(bb_lower.iloc[-1]) if not pd.isna(bb_lower.iloc[-1]) else None,
                     "bandwidth": float(bb_width.iloc[-1]) if not pd.isna(bb_width.iloc[-1]) else None,
                     "status": self._get_bollinger_status(hist['Close'].iloc[-1], bb_upper.iloc[-1], bb_lower.iloc[-1]),
-                    "description": "Bollinger Bands - volatility indicator showing price channels"
                 },
                 "atr": {
                     "current": float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else None,
                     "status": self._get_atr_status(atr.iloc[-1]),
-                    "description": "Average True Range - measures market volatility"
                 },
                 "standard_deviation": {
                     "current": float(std_dev),
-                    "description": "Standard deviation of closing prices - volatility measure"
                 }
             }
             
@@ -282,15 +270,12 @@ class TechnicalAnalysisTool(BaseTool):
             return {
                 "volume_sma": {
                     "current": float(volume_sma.iloc[-1]) if not pd.isna(volume_sma.iloc[-1]) else None,
-                    "description": "Volume Simple Moving Average - average volume over time"
                 },
                 "obv": {
                     "current": float(obv.iloc[-1]) if not pd.isna(obv.iloc[-1]) else None,
-                    "description": "On Balance Volume - cumulative volume indicator"
                 },
                 "vwap": {
                     "current": float(vwap.iloc[-1]) if not pd.isna(vwap.iloc[-1]) else None,
-                    "description": "Volume Weighted Average Price - price weighted by volume"
                 }
             }
             
