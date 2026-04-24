@@ -48,6 +48,14 @@ class SupportResistance(BaseModel):
         return self
 
 
+class RawIndicators(BaseModel):
+    rsi: Optional[float] = None
+    stochastic_status: Optional[str] = None
+    macd_status: Optional[str] = None
+    ma_status: Optional[str] = None
+    adx: Optional[float] = None
+
+
 class MomentumAnalysis(BaseModel):
     momentum_score: float = Field(..., ge=0.0, le=10.0)
     risk_level: Literal["Low", "Medium", "High"]
@@ -55,6 +63,9 @@ class MomentumAnalysis(BaseModel):
     key_signals: List[str]
     support_resistance: SupportResistance
     comprehensive_analysis: str = Field(..., min_length=50)
+    overall_signal: Optional[str] = None       # "BULLISH", "BEARISH", "MIXED", "NEUTRAL"
+    entry_zone_status: Optional[str] = None    # "PULLBACK_ENTRY", "AT_ZONE", etc.
+    regime: Optional[str] = None               # "TRENDING", "RANGING", etc.
 
 
 class TechnicalScore(BaseModel):
@@ -67,6 +78,7 @@ class StockTechnicalAnalysis(BaseModel):
     ticker: str
     current_price: Optional[float] = Field(None, gt=0)
     price_data_error: Optional[str] = None
+    raw_indicators: Optional[RawIndicators] = None
     momentum_analysis: MomentumAnalysis
     technical_score: TechnicalScore
     investment_recommendation: str = Field(..., min_length=50)

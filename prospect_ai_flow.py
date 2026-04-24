@@ -2,13 +2,22 @@ import json
 import logging
 import warnings
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, Type, TypeVar, cast
+
+_M = TypeVar("_M", bound="BaseModel")
 
 from crewai import Crew
 from crewai.crews.crew_output import CrewOutput
 from crewai.flow.flow import Flow, and_, listen, start
 from pydantic import BaseModel
 
+from schemas.agent_outputs import (
+    MarketAnalysisOutput,
+    TechnicalAnalysisOutput,
+    FundamentalAnalysisOutput,
+    InvestorStrategicOutput,
+    CriticOutput,
+)
 from utils.execution_tracker import ExecutionTracker
 from utils.recommendation_validator import validate_portfolio
 from utils import yfinance_cache
@@ -37,11 +46,11 @@ PHASES = [
 class ProspectAIFlowState(BaseModel):
     sector: str = ""
     today: str = ""
-    market_output: str = ""
-    technical_output: str = ""
-    fundamental_output: str = ""
-    draft_output: str = ""
-    critique_output: str = ""
+    market_output: Optional[MarketAnalysisOutput] = None
+    technical_output: Optional[TechnicalAnalysisOutput] = None
+    fundamental_output: Optional[FundamentalAnalysisOutput] = None
+    draft_output: Optional[InvestorStrategicOutput] = None
+    critique_output: Optional[CriticOutput] = None
     error: str = ""
 
 
@@ -108,201 +117,192 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         if self.state.error:
             raise RuntimeError(self.state.error)
 
+    @staticmethod
+    def _extract_pydantic(result: CrewOutput, model_cls: Type[_M], phase: str) -> _M:
+        """Return validated Pydantic model from mini-Crew result.
+
+        Tries result.tasks_output[0].pydantic first (set by CrewAI when
+        output_pydantic validation succeeds), then falls back to parsing
+        result.raw directly via model_validate_json.
+        """
+        pydantic_model = (
+            result.tasks_output[0].pydantic
+            if result.tasks_output
+            else None
+        )
+        if pydantic_model is not None:
+            return cast(_M, pydantic_model)
+        raw = result.raw or ""
+        try:
+            return cast(_M, model_cls.model_validate_json(raw))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Pydantic validation failed for {phase}. "
+                f"raw[:200]={raw[:200]!r}"
+            ) from exc
+
     # ── Context slim helpers ──────────────────────────────────────────────────
-    # Each helper strips fields that downstream agents don't use.
-    # All fall back to the full raw output if JSON parsing fails.
-    # Output keys match the tasks.yaml format that agent descriptions reference.
+    # Each helper builds a slimmed JSON string from the typed model stored in
+    # state. Output keys match the tasks.yaml format that agent descriptions
+    # reference. Returns "" if the corresponding state field is None.
 
     def _slim_market_for_analysis(self) -> str:
         """Ticker + sentiment only — enough for Technical/Fundamental to know what to analyze."""
-        try:
-            data = json.loads(self.state.market_output)
-            return json.dumps({
-                "sector": data.get("sector"),
-                "candidate_stocks": [
-                    {
-                        "ticker": s["ticker"],
-                        "average_sentiment": s.get("average_sentiment"),
-                        "relevance_score": s.get("relevance_score"),
-                    }
-                    for s in data.get("candidate_stocks", [])
-                ],
-            })
-        except Exception:
-            return self.state.market_output
+        mo = self.state.market_output
+        if mo is None:
+            return ""
+        return json.dumps({
+            "sector": mo.sector,
+            "candidate_stocks": [
+                {
+                    "ticker": s.ticker,
+                    "average_sentiment": s.average_sentiment,
+                    "relevance_score": s.relevance_score,
+                }
+                for s in mo.candidate_stocks
+            ],
+        })
 
     def _slim_market_for_strategy(self) -> str:
         """Ticker + sentiment + mention_count + rationale — needed by Draft/Critic/Final."""
-        try:
-            data = json.loads(self.state.market_output)
-            return json.dumps({
-                "sector": data.get("sector"),
-                "candidate_stocks": [
-                    {
-                        "ticker": s["ticker"],
-                        "mention_count": s.get("mention_count"),
-                        "average_sentiment": s.get("average_sentiment"),
-                        "relevance_score": s.get("relevance_score"),
-                        "rationale": s.get("rationale"),
-                    }
-                    for s in data.get("candidate_stocks", [])
-                ],
-            })
-        except Exception:
-            return self.state.market_output
+        mo = self.state.market_output
+        if mo is None:
+            return ""
+        return json.dumps({
+            "sector": mo.sector,
+            "candidate_stocks": [
+                {
+                    "ticker": s.ticker,
+                    "mention_count": s.mention_count,
+                    "average_sentiment": s.average_sentiment,
+                    "relevance_score": s.relevance_score,
+                    "rationale": s.rationale,
+                }
+                for s in mo.candidate_stocks
+            ],
+        })
 
     def _slim_technical(self) -> str:
-        """Key signals per ticker — strips ATR, Bollinger Band, EMA, and other indicators
-        not referenced in draft/critic/final task descriptions.
-        Normalises both output formats (tasks.yaml: stock_analyses; Pydantic: technical_analysis)
-        to the tasks.yaml layout that downstream descriptions expect.
-        """
-        try:
-            data = json.loads(self.state.technical_output)
-            # Support both tasks.yaml key (stock_analyses) and Pydantic key (technical_analysis)
-            analyses = data.get("stock_analyses") or data.get("technical_analysis") or []
-            slim = []
-            for a in analyses:
-                interp = a.get("interpretation") or {}
-                mom = a.get("momentum_analysis") or {}          # Pydantic schema path
-                sr = mom.get("support_resistance") or {}
-                raw = a.get("raw_indicators") or {}
-
-                slim.append({
-                    "ticker": a.get("ticker"),
-                    "current_price": a.get("current_price"),
-                    "price_data_error": a.get("price_data_error") or a.get("error"),
-                    "raw_indicators": {
-                        "rsi": raw.get("rsi"),
-                        "stochastic_status": raw.get("stochastic_status"),
-                        "macd_status": raw.get("macd_status"),
-                        "ma_status": raw.get("ma_status"),
-                        "adx": raw.get("adx"),
-                    },
-                    "interpretation": {
-                        "overall_signal": interp.get("overall_signal"),
-                        "key_signals": interp.get("key_signals") or mom.get("key_signals"),
-                        "entry_zone_low": (
-                            interp.get("entry_zone_low") or sr.get("support")
-                        ),
-                        "entry_zone_high": (
-                            interp.get("entry_zone_high") or sr.get("resistance")
-                        ),
-                        "entry_zone_status": interp.get("entry_zone_status"),
-                        "regime": interp.get("regime"),
-                        "momentum_score": (
-                            interp.get("momentum_score") or mom.get("momentum_score")
-                        ),
-                        "risk_level": (
-                            interp.get("risk_level") or mom.get("risk_level")
-                        ),
-                        "trend_strength": (
-                            interp.get("trend_strength") or mom.get("trend_strength")
-                        ),
-                    },
-                })
-            return json.dumps({"sector": data.get("sector"), "stock_analyses": slim})
-        except Exception:
-            return self.state.technical_output
+        """Key signals per ticker mapped to tasks.yaml layout (stock_analyses)."""
+        to = self.state.technical_output
+        if to is None:
+            return ""
+        slim = []
+        for a in to.technical_analysis:
+            ma = a.momentum_analysis
+            sr = ma.support_resistance
+            ri = a.raw_indicators
+            slim.append({
+                "ticker": a.ticker,
+                "current_price": a.current_price,
+                "price_data_error": a.price_data_error,
+                "raw_indicators": {
+                    "rsi": ri.rsi if ri else None,
+                    "stochastic_status": ri.stochastic_status if ri else None,
+                    "macd_status": ri.macd_status if ri else None,
+                    "ma_status": ri.ma_status if ri else None,
+                    "adx": ri.adx if ri else None,
+                },
+                "interpretation": {
+                    "overall_signal": ma.overall_signal,
+                    "key_signals": ma.key_signals,
+                    "entry_zone_low": sr.support,
+                    "entry_zone_high": sr.resistance,
+                    "entry_zone_status": ma.entry_zone_status,
+                    "regime": ma.regime,
+                    "momentum_score": ma.momentum_score,
+                    "risk_level": ma.risk_level,
+                    "trend_strength": ma.trend_strength,
+                },
+            })
+        return json.dumps({"sector": to.sector, "stock_analyses": slim})
 
     def _slim_fundamental(self) -> str:
-        """Graded fields per ticker — strips raw financial ratios (P/E, margins, etc.)
-        that are not used by Draft/Critic/Final.
-        Normalises both output formats to the tasks.yaml layout.
+        """Graded fields per ticker mapped to tasks.yaml layout (stock_analyses).
+        fundamental_component and fundamental_unknown are not in FundamentalAnalysisOutput
+        schema — fundamental_unknown defaults to False.
         """
         _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
         _growth_map = {
             "High Growth": "HIGH", "Moderate Growth": "MODERATE",
             "Stable": "LOW", "Declining": "DECLINING",
         }
-        try:
-            data = json.loads(self.state.fundamental_output)
-            # Support both tasks.yaml key (stock_analyses) and Pydantic key (fundamental_analysis)
-            analyses = data.get("stock_analyses") or data.get("fundamental_analysis") or []
-            slim = []
-            for a in analyses:
-                assessment = a.get("assessment") or {}
-                fr = a.get("fundamental_rating") or {}          # Pydantic schema path
-
-                slim.append({
-                    "ticker": a.get("ticker"),
-                    "assessment": {
-                        "valuation_grade": (
-                            assessment.get("valuation_grade") or fr.get("valuation")
-                        ),
-                        "financial_health": (
-                            assessment.get("financial_health")
-                            or _quality_map.get(fr.get("quality", ""), "UNKNOWN")
-                        ),
-                        "growth_outlook": (
-                            assessment.get("growth_outlook")
-                            or _growth_map.get(fr.get("growth", ""), "UNKNOWN")
-                        ),
-                        "fundamental_component": assessment.get("fundamental_component"),
-                        "fundamental_unknown": assessment.get("fundamental_unknown", False),
-                        "fundamental_summary": (
-                            assessment.get("fundamental_summary") or a.get("investment_thesis")
-                        ),
-                        "risk_factors": (
-                            assessment.get("risk_factors") or a.get("key_risks")
-                        ),
-                        "catalysts": (
-                            assessment.get("catalysts") or a.get("key_strengths")
-                        ),
-                    },
-                })
-            return json.dumps({"sector": data.get("sector"), "stock_analyses": slim})
-        except Exception:
-            return self.state.fundamental_output
+        fo = self.state.fundamental_output
+        if fo is None:
+            return ""
+        slim = []
+        for a in fo.fundamental_analysis:
+            fr = a.fundamental_rating
+            slim.append({
+                "ticker": a.ticker,
+                "assessment": {
+                    "valuation_grade": fr.valuation,
+                    "financial_health": _quality_map.get(fr.quality, "UNKNOWN"),
+                    "growth_outlook": _growth_map.get(fr.growth, "UNKNOWN"),
+                    "fundamental_unknown": False,
+                    "fundamental_summary": a.investment_thesis,
+                    "risk_factors": a.key_risks,
+                    "catalysts": a.key_strengths,
+                },
+            })
+        return json.dumps({"sector": fo.sector, "stock_analyses": slim})
 
     def _slim_draft(self) -> str:
         """Draft positions for Critic/Final — truncates per-position rationale to 150 chars
         and overall_strategy to 200 chars.  All structural fields (action, composite_score,
         allocation_pct, trade_setup, scaled_entry_setups, triggers) are kept in full.
-        This prevents the Critic from quoting long prose verbatim in its findings,
-        which causes deeply-nested JSON escaping that blows the output token budget.
         """
-        try:
-            data = json.loads(self.state.draft_output)
-            slim_positions = []
-            for p in data.get("positions", []):
-                slim_positions.append({
-                    "ticker": p.get("ticker"),
-                    "action": p.get("action"),
-                    "composite_score": p.get("composite_score"),
-                    "allocation_pct": p.get("allocation_pct"),
-                    "current_price": p.get("current_price"),
-                    "trade_setup": p.get("trade_setup"),
-                    "scaled_entry_setups": p.get("scaled_entry_setups"),
-                    "monitoring_triggers": p.get("monitoring_triggers"),
-                    "review_frequency": p.get("review_frequency"),
-                    "rationale": (p.get("rationale") or "")[:150],
-                })
-            return json.dumps({
-                "sector": data.get("sector"),
-                "positions": slim_positions,
-                "deployed_pct": data.get("deployed_pct"),
-                "reserved_pct": data.get("reserved_pct"),
-                "total_allocated_pct": data.get("total_allocated_pct"),
-                "cash_reserve_pct": data.get("cash_reserve_pct"),
-                "overall_strategy": (data.get("overall_strategy") or "")[:200],
-                "risk_level": data.get("risk_level"),
+        do = self.state.draft_output
+        if do is None:
+            return ""
+        slim_positions = []
+        for p in do.positions:
+            slim_positions.append({
+                "ticker": p.ticker,
+                "action": p.action,
+                "composite_score": p.composite_score,
+                "allocation_pct": p.allocation_pct,
+                "current_price": p.current_price,
+                "trade_setup": p.trade_setup.model_dump() if p.trade_setup else None,
+                "scaled_entry_setups": (
+                    [s.model_dump() for s in p.scaled_entry_setups]
+                    if p.scaled_entry_setups else None
+                ),
+                "monitoring_triggers": p.monitoring_triggers,
+                "review_frequency": p.review_frequency,
+                "rationale": (p.rationale or "")[:150],
             })
-        except Exception:
-            return self.state.draft_output
+        return json.dumps({
+            "sector": do.sector,
+            "positions": slim_positions,
+            "deployed_pct": do.deployed_pct,
+            "reserved_pct": do.reserved_pct,
+            "total_allocated_pct": do.total_allocated_pct,
+            "cash_reserve_pct": do.cash_reserve_pct,
+            "overall_strategy": (do.overall_strategy or "")[:200],
+            "risk_level": do.risk_level,
+        })
 
     def _slim_critique(self) -> str:
         """Directives + per-ticker critiques — strips approved_positions (not actionable)."""
-        try:
-            data = json.loads(self.state.critique_output)
-            return json.dumps({
-                "sector": data.get("sector"),
-                "draft_assessment": data.get("draft_assessment"),
-                "per_ticker_critiques": data.get("per_ticker_critiques"),
-                "revision_directives": data.get("revision_directives"),
-            })
-        except Exception:
-            return self.state.critique_output
+        co = self.state.critique_output
+        if co is None:
+            return ""
+        return json.dumps({
+            "sector": co.sector,
+            "draft_assessment": co.draft_assessment,
+            "per_ticker_critiques": [
+                {
+                    "ticker": c.ticker,
+                    "severity": c.severity,
+                    "issue_type": c.issue_type,
+                    "finding": c.finding,
+                    "instruction": c.instruction,
+                }
+                for c in co.per_ticker_critiques
+            ],
+            "revision_directives": co.revision_directives,
+        })
 
     # ─────────────────────────────────────────────────────────────────────────
     # Flow methods
@@ -316,9 +316,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
         if self._tracker:
             self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task))
-        self.state.market_output = result.raw or ""
-        self._emit_progress(0, self.state.market_output)
-        return self.state.market_output
+        self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
+        self._emit_progress(0, result.raw or "")
+        return result.raw or ""
 
     @listen(market_analysis)
     async def technical_analysis(self):
@@ -330,9 +330,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
         if self._tracker:
             self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task))
-        self.state.technical_output = result.raw or ""
-        self._emit_progress(1, self.state.technical_output)
-        return self.state.technical_output
+        self.state.technical_output = self._extract_pydantic(result, TechnicalAnalysisOutput, "technical_analysis")
+        self._emit_progress(1, result.raw or "")
+        return result.raw or ""
 
     @listen(market_analysis)
     async def fundamental_analysis(self):
@@ -344,9 +344,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
         if self._tracker:
             self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task))
-        self.state.fundamental_output = result.raw or ""
-        self._emit_progress(2, self.state.fundamental_output)
-        return self.state.fundamental_output
+        self.state.fundamental_output = self._extract_pydantic(result, FundamentalAnalysisOutput, "fundamental_analysis")
+        self._emit_progress(2, result.raw or "")
+        return result.raw or ""
 
     @listen(and_(technical_analysis, fundamental_analysis))
     async def draft_strategy(self):
@@ -362,9 +362,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
         if self._tracker:
             self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task))
-        self.state.draft_output = result.raw or ""
-        self._emit_progress(3, self.state.draft_output)
-        return self.state.draft_output
+        self.state.draft_output = self._extract_pydantic(result, InvestorStrategicOutput, "draft_strategy")
+        self._emit_progress(3, result.raw or "")
+        return result.raw or ""
 
     @listen(draft_strategy)
     async def critique_review(self):
@@ -381,9 +381,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
         if self._tracker:
             self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task))
-        self.state.critique_output = result.raw or ""
-        self._emit_progress(4, self.state.critique_output)
-        return self.state.critique_output
+        self.state.critique_output = self._extract_pydantic(result, CriticOutput, "critique_review")
+        self._emit_progress(4, result.raw or "")
+        return result.raw or ""
 
     @listen(critique_review)
     async def final_strategy(self):
