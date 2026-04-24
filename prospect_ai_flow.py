@@ -304,6 +304,41 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             "revision_directives": co.revision_directives,
         })
 
+    def _critic_reference_table(self) -> str:
+        """Compact per-ticker lookup for the Critic — only the fields its checklist references."""
+        mo = self.state.market_output
+        to = self.state.technical_output
+        fo = self.state.fundamental_output
+
+        if mo is None or to is None or fo is None:
+            return json.dumps({"reference_table": []})
+
+        _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
+
+        sentiment_by_ticker = {s.ticker: s.average_sentiment for s in mo.candidate_stocks}
+        tech_by_ticker      = {a.ticker: a for a in to.technical_analysis}
+        fund_by_ticker      = {a.ticker: a for a in fo.fundamental_analysis}
+
+        rows = []
+        for ticker in tech_by_ticker:
+            ta = tech_by_ticker[ticker]
+            fa = fund_by_ticker.get(ticker)
+            ri = ta.raw_indicators
+            ma = ta.momentum_analysis
+            fr = fa.fundamental_rating if fa else None
+            rows.append({
+                "ticker":            ticker,
+                "rsi":               ri.rsi               if ri else None,
+                "stochastic_status": ri.stochastic_status if ri else None,
+                "macd_status":       ri.macd_status        if ri else None,
+                "entry_zone_status": ma.entry_zone_status  if ma else None,
+                "momentum_score":    ma.momentum_score      if ma else None,
+                "average_sentiment": sentiment_by_ticker.get(ticker),
+                "valuation_grade":   fr.valuation          if fr else None,
+                "financial_health":  _quality_map.get(fr.quality, "UNKNOWN") if fr else None,
+            })
+        return json.dumps({"reference_table": rows})
+
     # ─────────────────────────────────────────────────────────────────────────
     # Flow methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -370,10 +405,8 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     async def critique_review(self):
         self._check_error()
         ctx = "\n\n".join([
-            self._fmt_ctx("Market Analysis Output", self._slim_market_for_strategy()),
-            self._fmt_ctx("Technical Analysis Output", self._slim_technical()),
-            self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
+            self._fmt_ctx("Ticker Reference Table", self._critic_reference_table()),
         ])
         task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx)
         if self._tracker:
@@ -389,9 +422,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     async def final_strategy(self):
         self._check_error()
         ctx = "\n\n".join([
-            self._fmt_ctx("Market Analysis Output", self._slim_market_for_strategy()),
-            self._fmt_ctx("Technical Analysis Output", self._slim_technical()),
-            self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Critic Review Output", self._slim_critique()),
         ])

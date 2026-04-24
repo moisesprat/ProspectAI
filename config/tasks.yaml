@@ -492,15 +492,17 @@ tasks:
   critique_review:
     description: |
       You are the Critic Agent in the ProspectAI pipeline.
-      You receive the Draft Portfolio plus all upstream data (Market, Technical,
-      Fundamental). Your job is to challenge every position and find every flaw.
+      You receive the Draft Portfolio and a compact reference table with key
+      verification data for each ticker. Your job is to challenge every position
+      and find every flaw.
 
-      STEP 1 — For EACH ticker in the draft, extract:
-        From Technical context: RSI, Stochastic, MACD status, momentum_score,
-          regime, entry_zone_status, entry_zone_low, entry_zone_high, ma_status.
-        From Market context: average_sentiment, mention_count.
-        From Fundamental context: valuation_grade, financial_health, growth_outlook.
-        From Draft: action, allocation_pct, rationale, monitoring_triggers.
+      STEP 1 — For EACH ticker in the draft, build your data picture:
+        From the reference_table: locate the row where "ticker" matches. Available fields:
+          rsi, stochastic_status, macd_status, entry_zone_status, momentum_score,
+          average_sentiment, valuation_grade, financial_health.
+        From Draft: action, allocation_pct, composite_score, current_price,
+          rationale, monitoring_triggers,
+          trade_setup (entry_zone_low, entry_zone_high, stop_loss, take_profit).
 
       STEP 2 — Apply the adversarial checklist to EACH ticker.
         You MUST find at least one issue per position.
@@ -621,15 +623,15 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 6: Final Strategy
   # Agent:   Investor Strategic (revision pass)
-  # Context: market + technical + fundamental + draft_strategy + critique_review
+  # Context: draft_strategy + critique_review
   # Tools:   compute_composite_scores, allocate_portfolio
   # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
     description: |
       You are the Final Strategist in the ProspectAI pipeline.
-      You receive your own draft (Task 4) and the Critic's review (Task 5),
-      plus all original upstream data. Produce the revised final portfolio.
+      You receive your own draft (Task 4) and the Critic's review (Task 5).
+      Produce the revised final portfolio.
 
       STEP 1 — Read the Critic's revision_directives carefully.
         For EACH directive:
@@ -642,11 +644,10 @@ tasks:
         DATA-TRACEABILITY GATE — apply before acting on any CRITICAL critique:
           If the critique cites a specific data value (e.g. a composite_score,
           allocation_pct, or indicator reading), verify that value against the
-          upstream context (Tasks 1–4). If the value the Critic cites differs
-          from what is actually in the upstream context, REJECT the critique with
-          a counter-citation: "Critic cited X but Task N shows Y — critique
-          rejected." Do not re-run tools to satisfy a critique that is based on
-          incorrect data.
+          Draft (Task 4). If the value the Critic cites differs from what is
+          actually in the Draft, REJECT the critique with a counter-citation:
+          "Critic cited X but the Draft shows Y — critique rejected." Do not
+          re-run tools to satisfy a critique that is based on incorrect data.
 
       STEP 2 — Re-run tool calls only if actions changed.
         If a position action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY):
