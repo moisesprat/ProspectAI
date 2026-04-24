@@ -93,24 +93,20 @@ tasks:
         Read the context. Find the 'candidate_stocks' list. Extract each 'ticker' value.
         You will typically get 5 tickers.
 
-      STEP 2 — Call the tool for EACH ticker:
-        Call 'calculate_technical_indicators' with ticker="<TICKER>" and period="1y".
-        Collect all results before writing your output. If a ticker returns an 'error'
-        key, record the error and continue to the next ticker.
+      STEP 2 — Fetch ALL technical data in one call:
+        Call 'calculate_technical_indicators' ONCE with the full ticker array from STEP 1.
+        Example: calculate_technical_indicators(tickers_json='["AAPL","NVDA","MSFT"]')
+        The tool loops internally over all tickers. Do NOT call it per ticker.
+        The tool returns {"technical_analysis": [one entry per ticker]}.
+        Entries that contain an 'error' key indicate a failed ticker — record the error
+        and skip that ticker in STEP 3.
 
-      STEP 3 — For each ticker, call 'interpret_technical_indicators':
-        Build a JSON string from the raw values returned in STEP 2 and call:
-          interpret_technical_indicators(
-            ticker="<TICKER>",
-            raw_indicators_json='{"current_price":<val>,"sma_20":<val>,"sma_50":<val>,
-              "sma_200":<val>,"atr":<val>,"rsi":<val>,"macd_status":"<val>",
-              "ma_status":"<val>","bb_status":"<val>",
-              "stochastic_status":"<val>","adx":<val>}'
-          )
-        Include sma_50, sma_200, and stochastic_status in the JSON — they are used
-        for finer-grained momentum_score calculation.
-        Record the returned entry_zone_low, entry_zone_high, momentum_score,
-        and risk_level verbatim — these are computed numbers, not interpretations.
+      STEP 3 — For each ticker entry in the technical_analysis array from STEP 2:
+        Skip entries that contain an 'error' key.
+        Each successful entry already contains an 'interpretation' sub-dict with
+        pre-computed numeric values: entry_zone_low, entry_zone_high, entry_zone_status,
+        momentum_score, risk_level, and regime. Copy these numbers verbatim — do NOT
+        recalculate or modify them.
 
         Then use your own reasoning to produce:
         - overall_signal: your assessment of "BULLISH", "BEARISH", "MIXED", or "NEUTRAL"
@@ -160,7 +156,7 @@ tasks:
       RULES:
       - raw_indicators must use actual numbers from the tool — never invented values.
       - entry_zone_low, entry_zone_high, momentum_score, risk_level must be copied
-        verbatim from the 'interpret_technical_indicators' tool result.
+        verbatim from the 'interpretation' sub-dict in the batch tool result.
       - overall_signal and key_signals are YOUR reasoned assessment of the raw data.
       - If the tool returns an error for a ticker, set error to that string and all other
         fields (current_price, raw_indicators, interpretation) to null.
@@ -622,55 +618,47 @@ tasks:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 6: Final Strategy
-  # Agent:   Investor Strategic (revision pass)
+  # Agent:   Investor Strategic (revision pass — no tools)
   # Context: draft_strategy + critique_review
-  # Tools:   compute_composite_scores, allocate_portfolio
+  # Tools:   none
   # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
     description: |
       You are the Final Strategist in the ProspectAI pipeline.
       You receive your own draft (Task 4) and the Critic's review (Task 5).
-      Produce the revised final portfolio.
+      You have NO tools. Produce the revised final portfolio by copying the
+      draft structure and applying the Critic's directives to rationales and actions.
 
       STEP 1 — Read the Critic's revision_directives carefully.
         For EACH directive:
           - If you agree: implement the change and note it in the rationale.
-          - If you disagree: cite the specific data point that contradicts the
-            Critic's finding and explain why the original decision stands.
+          - If you disagree: cite the specific data point from the Draft that
+            contradicts the Critic's finding and explain why the original stands.
         You MUST address every CRITICAL and MAJOR critique.
         MINOR critiques may be accepted or defended with evidence.
 
-        DATA-TRACEABILITY GATE — apply before acting on any CRITICAL critique:
-          If the critique cites a specific data value (e.g. a composite_score,
-          allocation_pct, or indicator reading), verify that value against the
-          Draft (Task 4). If the value the Critic cites differs from what is
-          actually in the Draft, REJECT the critique with a counter-citation:
-          "Critic cited X but the Draft shows Y — critique rejected." Do not
-          re-run tools to satisfy a critique that is based on incorrect data.
+      STEP 2 — Copy all numbers verbatim from the draft.
+        For EVERY position, copy these fields exactly as they appear in the draft:
+          composite_score, allocation_pct, current_price,
+          trade_setup (direction, entry_zone_low, entry_zone_high, stop_loss, take_profit),
+          scaled_entry_setups.
+        Also copy: deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
+        If an action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY): redistribute allocation
+          using these caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15% /
+          MONITOR 0% / AVOID 0%. Recalculate deployed_pct, reserved_pct,
+          cash_reserve_pct proportionally so they still sum to 100.
+        total_allocated_pct MUST equal the sum of all positions' allocation_pct.
 
-      STEP 2 — Re-run tool calls only if actions changed.
-        If a position action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY):
-          Call 'allocate_portfolio' again with the revised actions.
-        If no actions changed: carry forward ALL of the following verbatim from the draft:
-          allocation_pct (per position), deployed_pct, reserved_pct,
-          total_allocated_pct, cash_reserve_pct.
-        NEVER hand-edit any allocation number — copy every allocation field from the
-        tool output or the draft verbatim. total_allocated_pct MUST equal the sum of
-        all positions' allocation_pct values.
-        You may call 'compute_composite_scores' again only if input values were wrong.
-
-      STEP 3 — Write revised qualitative content:
+      STEP 3 — Write revised qualitative content.
         rationale: 100-150 words per position. If a critique was addressed, state
-          what changed and why. If a critique was rejected, state which data supports
-          the original decision. Every claim must cite a specific number.
-        monitoring_triggers: must be directionally consistent with the action.
+          what changed and why. If rejected, cite the specific number that supports
+          the original decision.
+        monitoring_triggers: directionally consistent with the action.
         review_frequency: DAILY / WEEKLY / MONTHLY.
+        overall_strategy: 2-3 paragraphs summarising the final portfolio.
 
-      STEP 4 — Output the final portfolio in EXACTLY the same JSON structure as
-        the draft_strategy. No mention of the critic process in the output —
-        the output is the final portfolio only.
-
+      STEP 4 — Output the final portfolio in EXACTLY this JSON structure:
       {
         "sector": "$sector",
         "positions": [
@@ -688,10 +676,10 @@ tasks:
               "take_profit": 885.0
             },
             "scaled_entry_setups": null,
-            "rationale": "Revised from draft LONG-BUY: RSI=78 and Stochastic=82
-              confirm overbought conditions as flagged. 12.5% earmarked pending
-              pullback to zone. momentum_score=8.1 remains strong.",
-            "monitoring_triggers": ["Price retraces to entry_zone_high of $$851.00",
+            "rationale": "Revised from draft LONG-BUY: RSI=78 and Stochastic=82 confirm
+              overbought conditions. 12.5% earmarked pending pullback. momentum_score=8.1
+              remains strong.",
+            "monitoring_triggers": ["Price retraces to entry_zone_high of 851.00",
               "RSI drops below 65 confirming healthy retracement"],
             "review_frequency": "WEEKLY"
           }
@@ -707,11 +695,8 @@ tasks:
       RULES:
       - Output only the JSON dict — no text before or after, no markdown fences.
       - All CRITICAL critique issues must be addressed (changed or defended).
-      - allocation_pct, trade_setup, scaled_entry_setups, deployed_pct, reserved_pct,
-        total_allocated_pct, cash_reserve_pct from allocate_portfolio must be copied
-        verbatim — never hand-calculated.
-      - composite_score must be copied verbatim from compute_composite_scores — never
-        cited as a different value in rationale text.
+      - All numeric fields (composite_score, allocation_pct, entry zones, stops) must
+        be copied verbatim from the draft — never recalculated or invented.
       - Valid actions: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
         HOLD and SHORT-SELL are not valid actions.
       - risk_level: Low / Medium / High / Very High.

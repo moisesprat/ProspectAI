@@ -66,59 +66,84 @@ class TestTechnicalAnalysisSuccess:
         with patch("yfinance.Ticker", return_value=_mock_ticker(df)):
             yield df
 
+    def _run_one(self, ticker: str) -> dict:
+        result = TechnicalAnalysisTool()._run(json.dumps([ticker]))
+        return result["technical_analysis"][0]
+
     def test_returns_expected_top_level_keys(self):
-        result = TechnicalAnalysisTool()._run("NVDA")
+        entry = self._run_one("NVDA")
         for key in ("ticker", "analysis_period", "analysis_date",
                     "stock_data", "technical_indicators"):
-            assert key in result, f"Missing key: {key}"
+            assert key in entry, f"Missing key: {key}"
 
     def test_ticker_is_echoed(self):
-        assert TechnicalAnalysisTool()._run("AAPL")["ticker"] == "AAPL"
+        assert self._run_one("AAPL")["ticker"] == "AAPL"
 
     def test_stock_data_has_required_fields(self):
-        sd = TechnicalAnalysisTool()._run("NVDA")["stock_data"]
+        sd = self._run_one("NVDA")["stock_data"]
         for field in ("current_price", "price_change", "high", "low", "volume"):
             assert field in sd
 
     def test_current_price_is_positive(self):
-        sd = TechnicalAnalysisTool()._run("NVDA")["stock_data"]
+        sd = self._run_one("NVDA")["stock_data"]
         assert sd["current_price"] > 0
 
     def test_technical_indicators_four_categories(self):
-        ti = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]
+        ti = self._run_one("NVDA")["technical_indicators"]
         for cat in ("momentum", "trend", "volatility", "volume"):
             assert cat in ti, f"Missing indicator category: {cat}"
 
     def test_momentum_has_rsi_and_macd(self):
-        mom = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["momentum"]
+        mom = self._run_one("NVDA")["technical_indicators"]["momentum"]
         assert "rsi" in mom
         assert "macd" in mom
 
     def test_rsi_in_valid_range(self):
-        rsi = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["momentum"]["rsi"]
+        rsi = self._run_one("NVDA")["technical_indicators"]["momentum"]["rsi"]
         current = rsi.get("current")
         if current is not None:
             assert 0 <= current <= 100
 
     def test_trend_has_moving_averages(self):
-        trend = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["trend"]
+        trend = self._run_one("NVDA")["technical_indicators"]["trend"]
         assert "moving_averages" in trend
         for key in ("sma_20", "sma_50", "sma_200"):
             assert key in trend["moving_averages"]
 
     def test_volatility_has_bollinger_and_atr(self):
-        vol = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["volatility"]
+        vol = self._run_one("NVDA")["technical_indicators"]["volatility"]
         assert "bollinger_bands" in vol
         assert "atr" in vol
 
     def test_volume_has_obv_and_vwap(self):
-        vol = TechnicalAnalysisTool()._run("NVDA")["technical_indicators"]["volume"]
+        vol = self._run_one("NVDA")["technical_indicators"]["volume"]
         assert "obv" in vol
         assert "vwap" in vol
 
     def test_analysis_date_is_parseable(self):
-        date_str = TechnicalAnalysisTool()._run("NVDA")["analysis_date"]
+        date_str = self._run_one("NVDA")["analysis_date"]
         datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+
+    def test_interpretation_sub_dict_present(self):
+        entry = self._run_one("NVDA")
+        assert "interpretation" in entry
+
+    def test_interpretation_has_required_fields(self):
+        interp = self._run_one("NVDA")["interpretation"]
+        for field in ("entry_zone_low", "entry_zone_high", "momentum_score", "risk_level"):
+            assert field in interp, f"Missing interpretation field: {field}"
+
+    def test_momentum_score_in_range(self):
+        interp = self._run_one("NVDA")["interpretation"]
+        assert 0 <= interp["momentum_score"] <= 10
+
+    def test_risk_level_is_valid(self):
+        interp = self._run_one("NVDA")["interpretation"]
+        assert interp["risk_level"] in ("LOW", "MEDIUM", "HIGH")
+
+    def test_entry_zone_low_less_than_high(self):
+        interp = self._run_one("NVDA")["interpretation"]
+        assert interp["entry_zone_low"] < interp["entry_zone_high"]
 
 
 # ── Error handling ────────────────────────────────────────────────────────────
@@ -127,12 +152,20 @@ class TestTechnicalAnalysisErrors:
 
     def test_empty_history_returns_error(self):
         with patch("yfinance.Ticker", return_value=_mock_ticker(pd.DataFrame())):
-            result = TechnicalAnalysisTool()._run("FAKE")
-        assert "error" in result
+            result = TechnicalAnalysisTool()._run('["FAKE"]')
+        assert "error" in result["technical_analysis"][0]
 
     def test_exception_returns_error_dict(self):
         with patch("yfinance.Ticker", side_effect=Exception("network error")):
-            result = TechnicalAnalysisTool()._run("NVDA")
+            result = TechnicalAnalysisTool()._run('["NVDA"]')
+        assert "error" in result["technical_analysis"][0]
+
+    def test_invalid_json_returns_error(self):
+        result = TechnicalAnalysisTool()._run("NVDA")
+        assert "error" in result
+
+    def test_empty_array_returns_error(self):
+        result = TechnicalAnalysisTool()._run("[]")
         assert "error" in result
 
 

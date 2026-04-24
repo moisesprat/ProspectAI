@@ -17,7 +17,6 @@ from config.task_config_loader import TaskConfigLoader
 
 from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
-from utils.technical_interpretation_tool import TechnicalInterpretationTool
 from utils.fundamental_data_tool import FundamentalDataTool
 from utils.fundamental_grader_tool import FundamentalGraderTool
 from utils.composite_score_tool import CompositeScoreTool
@@ -100,7 +99,7 @@ class ProspectAICrew:
             },
             "technical_analysis": {
                 "agent":  self.technical_analyst.get_agent(),
-                "tools":  [TechnicalAnalysisTool(), TechnicalInterpretationTool()],
+                "tools":  [TechnicalAnalysisTool()],
                 "schema": TechnicalAnalysisOutput,
             },
             "fundamental_analysis": {
@@ -120,7 +119,7 @@ class ProspectAICrew:
             },
             "final_strategy": {
                 "agent":  self.investor_strategist.get_agent(),
-                "tools":  [CompositeScoreTool(), PortfolioAllocatorTool()],
+                "tools":  [],
                 "schema": InvestorStrategicOutput,
             },
         }
@@ -166,7 +165,7 @@ class ProspectAICrew:
         technical_analysis_task = Task(
             description=technical_cfg["description"],
             agent=self.technical_analyst.get_agent(),
-            tools=[TechnicalAnalysisTool(), TechnicalInterpretationTool()],
+            tools=[TechnicalAnalysisTool()],
             expected_output=technical_cfg["expected_output"],
             context=[market_analysis_task],
             output_pydantic=TechnicalAnalysisOutput,

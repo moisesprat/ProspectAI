@@ -3,6 +3,7 @@
 Technical Analysis Tool - Calculates technical indicators using the ta package
 """
 
+import json
 import os
 import sys
 from typing import Dict, Any, List
@@ -10,6 +11,7 @@ import pandas as pd
 from datetime import datetime
 import yfinance as yf
 from utils import yfinance_cache
+from utils.technical_interpretation_tool import TechnicalInterpretationTool
 
 # Add parent directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,14 +25,20 @@ class TechnicalAnalysisTool(BaseTool):
     """Single tool for calculating comprehensive technical indicators using the ta package"""
     
     name: str = "calculate_technical_indicators"
-    description: str = """Calculate comprehensive technical indicators for a stock using the ta package.
-    
+    description: str = """Calculate comprehensive technical indicators for multiple stocks using the ta package.
+
+    Accepts a JSON array of ticker symbols and returns indicators for all tickers in one call.
+    Do NOT call this tool once per ticker — call it ONCE with all tickers as a JSON array.
+
     Args:
-        ticker: Stock ticker symbol to analyze
-        period: Analysis period (e.g., '1y', '6mo', '3mo')
-        
+        tickers_json: JSON array of ticker strings, e.g. '["AAPL","NVDA","MSFT"]'
+        period: Analysis period applied to all tickers (e.g., '1y', '6mo', '3mo')
+
     Returns:
-        Dictionary containing all technical indicators and analysis"""
+        {"technical_analysis": [one dict per ticker with stock_data and technical_indicators]}
+        Tickers that fail return {"ticker": "...", "error": "..."} without aborting the batch.
+
+    Example: calculate_technical_indicators(tickers_json='["AAPL","NVDA","MSFT","GOOGL","AMZN"]')"""
     
     # Default values as class variables
     default_period: str = "1y"
@@ -39,30 +47,69 @@ class TechnicalAnalysisTool(BaseTool):
     def __init__(self):
         super().__init__()
     
-    def _run(self, ticker: str, period: str = "1y") -> Dict[str, Any]:
-        """Calculate comprehensive technical indicators for a stock"""
+    def _run(self, tickers_json: str, period: str = "1y") -> Dict[str, Any]:
+        """Calculate comprehensive technical indicators for a batch of tickers."""
         try:
-            # Fetch history once and pass it to both helpers
-            hist = self._fetch_history(ticker, period)
-            if isinstance(hist, dict):
-                return hist
+            tickers = json.loads(tickers_json)
+        except (json.JSONDecodeError, TypeError):
+            return {"error": f"tickers_json must be a JSON array of ticker strings, got: {tickers_json!r}"}
 
-            stock_data = self._get_stock_data(ticker, period, hist)
-            if "error" in stock_data:
-                return stock_data
+        if not tickers:
+            return {"error": "tickers_json array is empty"}
 
-            indicators = self._calculate_all_indicators(hist)
+        results = []
+        for ticker in tickers:
+            try:
+                hist = self._fetch_history(ticker, period)
+                if isinstance(hist, dict):
+                    results.append({"ticker": ticker, "error": hist.get("error", "Unknown error")})
+                    continue
 
-            return {
-                "ticker": ticker,
-                "analysis_period": period,
-                "analysis_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "stock_data": stock_data,
-                "technical_indicators": indicators
+                stock_data = self._get_stock_data(ticker, period, hist)
+                if "error" in stock_data:
+                    results.append({"ticker": ticker, "error": stock_data["error"]})
+                    continue
+
+                indicators = self._calculate_all_indicators(hist)
+                interpretation = self._compute_interpretation(ticker, stock_data, indicators)
+                results.append({
+                    "ticker": ticker,
+                    "analysis_period": period,
+                    "analysis_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "stock_data": stock_data,
+                    "technical_indicators": indicators,
+                    "interpretation": interpretation,
+                })
+            except Exception as e:
+                results.append({"ticker": ticker, "error": f"Error in technical analysis: {str(e)}"})
+
+        return {"technical_analysis": results}
+
+    def _compute_interpretation(self, ticker: str, stock_data: dict, indicators: dict) -> dict:
+        """Run TechnicalInterpretationTool formula inline and return the parsed result dict."""
+        if "error" in indicators:
+            return {"error": indicators["error"]}
+        try:
+            trend = indicators.get("trend", {})
+            momentum = indicators.get("momentum", {})
+            volatility = indicators.get("volatility", {})
+            raw = {
+                "current_price": stock_data.get("current_price"),
+                "sma_20": trend.get("moving_averages", {}).get("sma_20"),
+                "sma_50": trend.get("moving_averages", {}).get("sma_50"),
+                "sma_200": trend.get("moving_averages", {}).get("sma_200"),
+                "atr": volatility.get("atr", {}).get("current"),
+                "rsi": momentum.get("rsi", {}).get("current"),
+                "macd_status": momentum.get("macd", {}).get("status"),
+                "ma_status": trend.get("moving_averages", {}).get("status"),
+                "bb_status": volatility.get("bollinger_bands", {}).get("status"),
+                "stochastic_status": momentum.get("stochastic", {}).get("status"),
+                "adx": trend.get("adx", {}).get("current"),
             }
-
+            result_json = TechnicalInterpretationTool()._run(ticker, json.dumps(raw))
+            return json.loads(result_json)
         except Exception as e:
-            return {"error": f"Error in technical analysis for {ticker}: {str(e)}"}
+            return {"error": f"Interpretation error: {e}"}
 
     def _fetch_history(self, ticker: str, period: str):
         """Fetch raw OHLCV history. Returns DataFrame on success, error dict on failure."""
