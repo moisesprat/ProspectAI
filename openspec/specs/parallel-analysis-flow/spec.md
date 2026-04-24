@@ -50,11 +50,11 @@ A `ProspectAIFlow` class SHALL be the primary orchestration entry point, replaci
 - **AND** the instance is still usable (no functionality removed)
 
 ### Requirement: Pipeline output schema and agent behaviour are unchanged
-The structured output returned by `run_analysis()` SHALL be identical in shape to the existing `InvestorStrategicOutput` schema. No agent prompt, tool, or scoring formula SHALL change.
+The structured output returned by `run_analysis()` SHALL be identical in shape to the existing `InvestorStrategicOutput` schema. No agent prompt, tool, or scoring formula SHALL change. The internal flow state representation (typed models vs strings) is an implementation detail and SHALL NOT affect the public return value.
 
 #### Scenario: Output schema compatibility
 - **WHEN** `ProspectAIFlow.run_analysis()` completes successfully
-- **THEN** the returned dict SHALL contain `pipeline_version`, `stock_recommendations`, and `portfolio_summary` keys, identical to the previous implementation
+- **THEN** the returned dict SHALL contain `status`, `result`, `summary`, `execution_metrics`, and `validation_warnings` keys with the same structure as before this change
 
 ### Requirement: Flow creates a fresh ExecutionTracker per run
 `ProspectAIFlow.run_analysis()` SHALL instantiate a fresh `ExecutionTracker` at the start of each call and assign it to `self._tracker`. The tracker SHALL be active for the duration of the flow and set to `None` is not required — a new instance per call is sufficient to prevent cross-run accumulation.

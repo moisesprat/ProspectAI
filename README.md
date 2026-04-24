@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.6.6**
+**Current release: v1.6.7**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.6.7 — Update requirements for phase methods to include tracker hoo
+- Update requirements for phase methods to include tracker hooks and independent token counts
+- Update ProspectAIFlow to store validated Pydantic models in flow state and rewrite slim helpers for direct attribute access
+- Add execution metrics tracking to ProspectAIFlow
+- Refactor ProspectAICrew into ProspectAIFlow for parallel execution of Technical and Fundamental analysis phases
+
 ### v1.6.6 — Maintenance release
 - Maintenance and stability improvements
 
@@ -320,10 +326,6 @@ twine upload dist/*
 
 ### v1.6.3 — Refactor ProspectAICrew into ProspectAIFlow for parallel exe
 - Refactor ProspectAICrew into ProspectAIFlow for parallel execution of Technical and Fundamental analysis phases
-
-### v1.6.2 — Refactor ProspectAI orchestration to use CrewAI Flow for par
-- Refactor ProspectAI orchestration to use CrewAI Flow for parallel execution
-- Update .gitignore to include local development files and agent directories
 
 ## Roadmap
 
