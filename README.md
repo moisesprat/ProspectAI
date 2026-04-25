@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.6.9**
+**Current release: v1.6.10**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.6.10 — Add optional Portkey API configuration to env.example and u
+- Add optional Portkey API configuration to env.example and update requirements.txt
+
 ### v1.6.9 — Refactor TechnicalAnalysisTool to support batch processing o
 - Refactor TechnicalAnalysisTool to support batch processing of tickers and remove TechnicalInterpretationTool dependency
 - Implement batch processing for TechnicalAnalysisTool to reduce tool call round-trips
@@ -326,9 +329,6 @@ twine upload dist/*
 - Refactor ProspectAICrew into ProspectAIFlow for parallel execution of Technical and Fundamental analysis phases
 
 ### v1.6.6 — Maintenance release
-- Maintenance and stability improvements
-
-### v1.6.5 — Maintenance release
 - Maintenance and stability improvements
 
 ## Roadmap

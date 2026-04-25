@@ -101,6 +101,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             task_callback=self._task_callback,
             step_callback=self._step_callback,
             verbose=True,
+            cache=True,
         )
 
     @staticmethod

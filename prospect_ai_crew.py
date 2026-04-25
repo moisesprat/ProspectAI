@@ -296,6 +296,7 @@ class ProspectAICrew:
             task_callback=_on_task_done,
             step_callback=_on_step,
             verbose=True,
+            cache=True,
         )
 
         crew_result = self.crew.kickoff()
