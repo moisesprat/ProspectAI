@@ -618,17 +618,16 @@ tasks:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 6: Final Strategy
-  # Agent:   Investor Strategic (revision pass — no tools)
+  # Agent:   Investor Strategic (revision pass)
   # Context: draft_strategy + critique_review
-  # Tools:   none
+  # Tools:   allocate_portfolio (used only when actions change)
   # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
     description: |
       You are the Final Strategist in the ProspectAI pipeline.
       You receive your own draft (Task 4) and the Critic's review (Task 5).
-      You have NO tools. Produce the revised final portfolio by copying the
-      draft structure and applying the Critic's directives to rationales and actions.
+      Produce the revised final portfolio by applying the Critic's directives.
 
       STEP 1 — Read the Critic's revision_directives carefully.
         For EACH directive:
@@ -638,17 +637,37 @@ tasks:
         You MUST address every CRITICAL and MAJOR critique.
         MINOR critiques may be accepted or defended with evidence.
 
-      STEP 2 — Copy all numbers verbatim from the draft.
-        For EVERY position, copy these fields exactly as they appear in the draft:
-          composite_score, allocation_pct, current_price,
-          trade_setup (direction, entry_zone_low, entry_zone_high, stop_loss, take_profit),
-          scaled_entry_setups.
-        Also copy: deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
-        If an action changes (e.g. LONG-BUY → WAIT-FOR-ENTRY): redistribute allocation
-          using these caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15% /
-          MONITOR 0% / AVOID 0%. Recalculate deployed_pct, reserved_pct,
-          cash_reserve_pct proportionally so they still sum to 100.
-        total_allocated_pct MUST equal the sum of all positions' allocation_pct.
+      STEP 2 — Determine whether any action changed from the draft.
+
+        CASE A — No action changed (all actions identical to draft):
+          Copy these fields verbatim from the draft for every position:
+            composite_score, allocation_pct, current_price,
+            trade_setup, scaled_entry_setups.
+          Copy verbatim: deployed_pct, reserved_pct, total_allocated_pct,
+            cash_reserve_pct.
+          Do NOT recalculate any numeric field.
+
+        CASE B — One or more actions changed:
+          Call allocate_portfolio ONCE with ALL positions using their REVISED actions:
+            allocate_portfolio(stocks_json='[
+              {
+                "ticker":          "<TICKER>",
+                "action":          "<REVISED ACTION>",
+                "composite_score": <float — copy verbatim from draft>,
+                "entry_zone_low":  <float — copy verbatim from draft>,
+                "entry_zone_high": <float — copy verbatim from draft>,
+                "current_price":   <float — copy verbatim from draft>
+              }, ...
+            ]')
+          From the tool result, copy verbatim for each position:
+            allocation_pct, trade_setup, scaled_entry_setups.
+          From the tool result, copy verbatim for the portfolio:
+            deployed_pct, reserved_pct, cash_reserve_pct, total_allocated_pct.
+          composite_score and current_price: always copy from draft, never from tool.
+
+        In both cases: total_allocated_pct MUST equal the sum of all positions'
+          allocation_pct. NEVER compute deployed_pct, reserved_pct, or
+          cash_reserve_pct by hand — they must come from the draft or the tool.
 
       STEP 3 — Write revised qualitative content.
         rationale: 100-150 words per position. If a critique was addressed, state
