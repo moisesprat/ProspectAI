@@ -14,7 +14,6 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   market_analysis:
     description: |
-      You are the first agent in the ProspectAI pipeline.
       Identify the top 5 most-discussed stocks in the $sector sector from Reddit retail
       investor communities and produce a structured sentiment report.
 
@@ -35,35 +34,19 @@ tasks:
             Each ticker must get a DIFFERENT score reflecting its specific news tone.
         Set data_source to "serper_fallback".
 
-      STEP 3 — Write LLM rationales (200-400 words each):
-        For each stock, write a 'rationale' covering:
-        a) Key themes retail investors are discussing right now
-        b) Sentiment tone (bullish / bearish / mixed) and the specific reasons
-        c) Catalysts or concerns mentioned (products, earnings, regulation, competition)
-        d) Red flags or risks visible in community sentiment
-        e) How current macroeconomic conditions, geopolitical events, or sector trends
-           are influencing investor sentiment at this moment in time
-        Today's date is $today. All analysis must reflect the current market environment.
-        For Reddit data: base rationale on the 'sample_posts' field from the tool output.
-        For Serper fallback: base rationale on the search result snippets.
+      STEP 3 — Write a rationale (80-120 words) for each stock covering:
+        a) Key themes retail investors are discussing and the sentiment tone
+        b) Specific catalysts, concerns, or red flags visible in the data
+        c) Relevant macro/geopolitical context influencing sentiment as of $today
+        Base rationale on 'sample_posts' from the tool output (or search snippets for fallback).
 
-      STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper).
-      Use the actual tickers identified in STEP 1 or STEP 2 — do NOT substitute example tickers:
-      {
-        "sector": "$sector",
-        "data_source": "reddit",
-        "analysis_timestamp": "<current UTC datetime as ISO 8601 string, e.g. 2026-04-20T14:32:00>",
-        "candidate_stocks": [
-          {
-            "ticker": "<TICKER_FROM_STEP_1_OR_2>",
-            "mention_count": <integer>,
-            "average_sentiment": <float>,
-            "relevance_score": <float>,
-            "rationale": "<200-400 words>"
-          }
-        ],
-        "summary": "<2-3 paragraph overview of overall sector sentiment as of $today, key themes, current macro/geopolitical context, and notable patterns — minimum 150 words>"
-      }
+      STEP 4 — Output a pure Python dict (no markdown wrapper) using actual tickers from STEP 1/2:
+        sector: str — "$sector"
+        data_source: str — "reddit" or "serper_fallback"
+        analysis_timestamp: str — current UTC datetime in ISO 8601 format
+        candidate_stocks[]: ticker(str) mention_count(int) average_sentiment(float)
+                            relevance_score(float) rationale(str 80-120 words)
+        summary: str — 2-3 paragraph overview of sector sentiment, min 150 words
 
       RULES:
       - Output exactly 5 stocks (fewer only if truly fewer were found).
@@ -85,9 +68,8 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   technical_analysis:
     description: |
-      You are the Technical Analyst in the ProspectAI pipeline.
-      You receive the Market Analyst output as context. Run technical analysis on every
-      ticker in the candidate_stocks list and produce a structured report.
+      Run technical analysis on every ticker from the Market Analyst's candidate_stocks
+      list and produce a structured report.
 
       STEP 1 — Extract tickers:
         Read the context. Find the 'candidate_stocks' list. Extract each 'ticker' value.
@@ -113,45 +95,20 @@ tasks:
           based on MACD status, MA status, RSI level, and other raw indicators.
         - key_signals: 3-5 plain-English strings describing the most notable readings
 
-        For example:
-          - "RSI at 63 — neutral momentum with room to appreciate before overbought"
-          - "RSI at 71 — approaching overbought; watch for deceleration"
-          - "MACD bullish crossover confirming uptrend continuation"
-          - "Stochastic at 94 — extreme overbought, counter-trend bounce risk"
-          - "Strong uptrend confirmed: SMA20 > SMA50 > SMA200"
+        Examples: "RSI at 63 — neutral momentum", "MACD bullish crossover",
+          "Stochastic at 94 — extreme overbought", "SMA20 > SMA50 > SMA200"
 
-      STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
-      {
-        "sector": "$sector",
-        "analysis_date": "$today",
-        "stock_analyses": [
-          {
-            "ticker": "NVDA",
-            "current_price": 875.50,
-            "period_analyzed": "1y",
-            "raw_indicators": {
-              "rsi": 68.4,
-              "macd_status": "Bullish",
-              "ma_status": "Strong Uptrend",
-              "bb_status": "Normal Range",
-              "adx": 31.2,
-              "atr": 22.5,
-              "sma_20": 851.0,
-              "ema_12": 860.0
-            },
-            "interpretation": {
-              "overall_signal": "BULLISH",
-              "key_signals": ["RSI=68 neutral with room to run", "Strong uptrend SMA20>SMA50>SMA200", "MACD Bullish"],
-              "entry_zone_low": 834.0,
-              "entry_zone_high": 851.0,
-              "momentum_score": 8,
-              "risk_level": "MEDIUM"
-            },
-            "error": null
-          }
-        ],
-        "sector_technical_summary": "2-3 paragraph summary of the overall technical picture for the sector."
-      }
+      STEP 4 — Output a pure Python dict (no markdown wrapper):
+        sector: str
+        analysis_date: str — "$today"
+        stock_analyses[]: ticker(str) current_price(float|null) period_analyzed(str)
+          raw_indicators: rsi(float) macd_status(str) ma_status(str) bb_status(str)
+                          adx(float) atr(float) sma_20(float) ema_12(float)
+          interpretation: overall_signal(str) key_signals(str[]) entry_zone_low(float)
+                          entry_zone_high(float) momentum_score(float) risk_level(str)
+                          regime(str) entry_zone_status(str)
+          error: str|null
+        sector_technical_summary: str
 
       RULES:
       - raw_indicators must use actual numbers from the tool — never invented values.
@@ -179,9 +136,8 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   fundamental_analysis:
     description: |
-      You are the Fundamental Analyst in the ProspectAI pipeline.
-      You receive context from the Market Analyst (sentiment) and Technical Analyst (indicators).
       Fetch real financial data for each stock and produce a structured fundamental report.
+      You receive context from Market Analyst (sentiment) and Technical Analyst (indicators).
 
       MANDATORY: You MUST make exactly TWO tool calls — one batch fetch, one batch grade.
       The tools loop internally over all tickers. Do NOT call them per ticker.
@@ -210,59 +166,19 @@ tasks:
         catalysts=["Data unavailable"], fundamental_summary="No fundamental data
         available for this ticker."
 
-      STEP 4 — Output EXACTLY this structure (pure Python dict, no markdown wrapper):
-      {
-        "sector": "$sector",
-        "analysis_date": "$today",
-        "stock_analyses": [
-          {
-            "ticker": "NVDA",
-            "raw_fundamentals": {
-              "pe_ratio": 65.2,
-              "forward_pe": 38.1,
-              "pb_ratio": 28.4,
-              "ps_ratio": 30.1,
-              "ev_ebitda": 55.3,
-              "market_cap": 2150000000000,
-              "revenue_growth_yoy": 0.122,
-              "net_margin": 0.554,
-              "gross_margin": 0.745,
-              "return_on_equity": 1.234,
-              "debt_to_equity": 0.41,
-              "current_ratio": 4.17,
-              "free_cash_flow": 26900000000,
-              "dividend_yield": null
-            },
-            "assessment": {
-              "valuation_grade": "VERY_EXPENSIVE",
-              "financial_health": "STRONG",
-              "growth_outlook": "MODERATE",
-              "fundamental_component": 27,
-              "fundamental_unknown": false,
-              "fundamental_summary": "...",
-              "risk_factors": ["PE ratio of 65x is historically elevated", "..."],
-              "catalysts": ["Revenue growing at 12% YoY", "..."]
-            },
-            "error": null
-          },
-          {
-            "ticker": "PLUG",
-            "raw_fundamentals": {"ticker": "PLUG", "error": "No data returned by yfinance"},
-            "assessment": {
-              "valuation_grade": "UNKNOWN",
-              "financial_health": "UNKNOWN",
-              "growth_outlook": "UNKNOWN",
-              "fundamental_component": null,
-              "fundamental_unknown": true,
-              "fundamental_summary": "No fundamental data available for this ticker.",
-              "risk_factors": ["Fundamental data unavailable"],
-              "catalysts": ["Data unavailable"]
-            },
-            "error": "No data returned by yfinance"
-          }
-        ],
-        "sector_fundamental_summary": "2-3 paragraph overview of sector-wide fundamental trends."
-      }
+      STEP 4 — Output a pure Python dict (no markdown wrapper):
+        sector: str
+        analysis_date: str — "$today"
+        stock_analyses[]: ticker(str) error(str|null)
+          raw_fundamentals: pe_ratio(float|null) forward_pe(float|null) pb_ratio(float|null)
+            ps_ratio(float|null) ev_ebitda(float|null) market_cap(float|null)
+            revenue_growth_yoy(float|null) net_margin(float|null) gross_margin(float|null)
+            return_on_equity(float|null) debt_to_equity(float|null) current_ratio(float|null)
+            free_cash_flow(float|null) dividend_yield(float|null)
+          assessment: valuation_grade(str) financial_health(str) growth_outlook(str)
+            fundamental_component(int|null) fundamental_unknown(bool)
+            fundamental_summary(str) risk_factors(str[]) catalysts(str[])
+        sector_fundamental_summary: str
 
       RULES:
       - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
@@ -285,11 +201,8 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   draft_strategy:
     description: |
-      You are the Draft Strategist in the ProspectAI pipeline.
       Synthesize the outputs from the Market, Technical, and Fundamental agents
       and produce a machine-readable JSON portfolio draft.
-      NOTE: Your output will be reviewed by a Critic Agent who will challenge
-      every position. Be rigorous — any claim you make must cite specific data.
 
       STEP 1 — Cross-reference data for each ticker:
         From Market context:      average_sentiment (float), rationale
@@ -327,47 +240,23 @@ tasks:
         For tickers with fundamental_unknown=true the tool returns fundamental_component=null —
         copy it as null, do NOT substitute a number.
 
-      STEP 3 — Decide the investment action for each stock:
-        Choose one action per stock: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
-        Apply these rules in order:
-          - PRICE WITHIN ENTRY ZONE (check this FIRST):
-            If entry_zone_low ≤ current_price ≤ entry_zone_high, price is already at the
-            textbook entry. Use LONG-BUY by default. Use SCALED-ENTRY only if valuation is
-            VERY_EXPENSIVE or financial_health is WEAK (staged caution). WAIT-FOR-ENTRY is
-            NEVER valid when current_price is inside the zone — WAIT-FOR-ENTRY means
-            waiting for price to come DOWN into the zone; if it is already there, you act.
-          - fundamental_unknown=true → cap at MONITOR or WAIT-FOR-ENTRY; do NOT assign
-            LONG-BUY or SCALED-ENTRY when fundamental data is missing
-          - RSI > 70 or Stochastic > 80 AND current_price > entry_zone_high → prefer
-            WAIT-FOR-ENTRY (overbought AND above zone — wait for both to cool)
-          - entry_zone_status = "PULLBACK_ENTRY" with gap ≥ 5% (current_price is more than
-            5% above entry_zone_high) → WAIT-FOR-ENTRY
-          - entry_zone_status = "PULLBACK_ENTRY" with gap < 5% + regime="TRENDING"
-            + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY (half allocation, max 20%)
-          - VERY_EXPENSIVE valuation → raise bar for LONG-BUY
-          - financial_health = WEAK → MONITOR or AVOID
-          - Weak composite score (< 55) with no clear catalyst → MONITOR
-          - Poor fundamentals + negative sentiment → AVOID
-          - Valid action values are exactly: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY,
-            MONITOR, AVOID. Any other string (including HOLD or SHORT-SELL) causes a
-            Pydantic validation error that rejects the entire output.
-            MONITOR = watch-list with no capital (different from AVOID: signals interest
-            but conditions not yet met, e.g. waiting for earnings clarity).
-            To express a staged or partial entry, use SCALED-ENTRY.
-          - Trade setup R/R rule: the correct action depends on where current_price sits
-            relative to the entry zone:
-            If current_price ≤ entry_zone_high (at or inside the zone):
-              → Use LONG-BUY (or SCALED-ENTRY for caution). See PRICE WITHIN ENTRY ZONE.
-            If current_price > entry_zone_high (above the zone, pullback scenario):
-              → Choose ONE of the following — do not mix them:
-              OPTION A: set action=WAIT-FOR-ENTRY. The allocator will compute the trade
-                setup and earmark up to 15% of capital for this position automatically.
-              OPTION B: set action=LONG-BUY. The allocator will compute a zone-anchored
-                setup — ensure current_price is close enough to entry_zone_high that the
-                stop/TP produce a valid R/R at your actual entry price.
-              OPTION C: set action=SCALED-ENTRY. The allocator will compute two setups:
-                immediate tranche (R/R 2:1 anchored to current_price) and pullback tranche
-                (zone-anchored). Pass current_price in the allocate_portfolio call.
+      STEP 3 — Decide one action per stock (check rules in order):
+        price_data_error set (current_price=null) → MONITOR or AVOID only.
+        fundamental_unknown=true → MONITOR or WAIT-FOR-ENTRY only.
+        price WITHIN zone (entry_zone_low ≤ price ≤ entry_zone_high):
+          default → LONG-BUY; use SCALED-ENTRY if VERY_EXPENSIVE or WEAK health.
+          WAIT-FOR-ENTRY is invalid when price is already inside the zone.
+        price ABOVE zone:
+          RSI > 70 or Stochastic > 80 → WAIT-FOR-ENTRY
+          gap ≥ 5% above entry_zone_high → WAIT-FOR-ENTRY
+          gap < 5% + regime=TRENDING + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY
+          otherwise → LONG-BUY (allocator uses zone-anchored setup)
+        financial_health = WEAK → MONITOR or AVOID
+        composite < 55 + no clear catalyst → MONITOR
+        poor fundamentals + negative sentiment → AVOID
+        Valid actions only: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
+        HOLD and SHORT-SELL are invalid — they cause schema rejection.
+        MONITOR ≠ AVOID: MONITOR signals interest but conditions not met yet.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
           allocate_portfolio(stocks_json='[
@@ -414,63 +303,17 @@ tasks:
 
       STEP 6 — Determine portfolio risk_level: Low / Medium / High / Very High.
 
-      STEP 7 — Output EXACTLY this JSON structure (no markdown fences):
-      {
-        "sector": "$sector",
-        "positions": [
-          {
-            "ticker": "NVDA",
-            "action": "LONG-BUY",
-            "composite_score": 81.0,
-            "allocation_pct": 35.2,
-            "current_price": 875.50,
-            "trade_setup": {
-              "direction": "LONG-BUY",
-              "entry_zone_low": 834.0,
-              "entry_zone_high": 851.0,
-              "stop_loss": 809.0,
-              "take_profit": 885.0
-            },
-            "scaled_entry_setups": null,
-            "rationale": "100-150 word synthesis citing specific data points",
-            "monitoring_triggers": ["RSI crosses above 76", "Weekly close below SMA50"],
-            "review_frequency": "WEEKLY"
-          },
-          {
-            "ticker": "XOM",
-            "action": "SCALED-ENTRY",
-            "composite_score": 73.5,
-            "allocation_pct": 18.5,
-            "current_price": 120.50,
-            "trade_setup": null,
-            "scaled_entry_setups": [
-              {
-                "direction": "LONG-BUY",
-                "entry_zone_low": 120.50,
-                "entry_zone_high": 120.50,
-                "stop_loss": 116.89,
-                "take_profit": 127.72
-              },
-              {
-                "direction": "LONG-BUY",
-                "entry_zone_low": 112.00,
-                "entry_zone_high": 115.00,
-                "stop_loss": 108.64,
-                "take_profit": 121.72
-              }
-            ],
-            "rationale": "100-150 word synthesis",
-            "monitoring_triggers": ["Price retraces to pullback zone low of $$112.00", "RSI falls below 55"],
-            "review_frequency": "WEEKLY"
-          }
-        ],
-        "deployed_pct": 44.45,
-        "reserved_pct": 24.45,
-        "total_allocated_pct": 53.7,
-        "cash_reserve_pct": 46.3,
-        "overall_strategy": "2-3 paragraph explanation describing allocation logic accurately: capital is distributed proportionally to composite scores among eligible actions, capped per action type — rank order is preserved where caps permit.",
-        "risk_level": "Medium"
-      }
+      STEP 7 — Output a pure JSON dict (no markdown fences):
+        sector: str
+        positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
+          current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
+          rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
+        deployed_pct: float
+        reserved_pct: float
+        total_allocated_pct: float
+        cash_reserve_pct: float
+        overall_strategy: str (2-3 paragraphs, describe allocation logic accurately)
+        risk_level: str — Low/Medium/High/Very High
     expected_output: >
       JSON dict with sector='$sector', positions
       (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
@@ -487,10 +330,8 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   critique_review:
     description: |
-      You are the Critic Agent in the ProspectAI pipeline.
       You receive the Draft Portfolio and a compact reference table with key
-      verification data for each ticker. Your job is to challenge every position
-      and find every flaw.
+      verification data for each ticker. Challenge every position and find every flaw.
 
       STEP 1 — For EACH ticker in the draft, build your data picture:
         From the reference_table: locate the row where "ticker" matches. Available fields:
@@ -504,57 +345,28 @@ tasks:
         You MUST find at least one issue per position.
         Flag every violation using these issue types:
 
-        PRICE_IN_ZONE_WAIT       WAIT-FOR-ENTRY when entry_zone_low ≤ current_price ≤
-                                 entry_zone_high — price is already inside the entry zone;
-                                 LONG-BUY (or SCALED-ENTRY for caution) must be used.
-                                 WAIT-FOR-ENTRY is reserved for current_price > entry_zone_high.
-                                 CRITICAL.
-        OVERBOUGHT_IGNORED       RSI > 70 or Stochastic > 80 and action is LONG-BUY
-                                 with no explicit overbought acknowledgment in rationale.
-        ENTRY_ZONE_VIOLATED      LONG-BUY with entry_zone_status="PULLBACK_ENTRY" and
-                                 gap ≥ 5%, yet not using SCALED-ENTRY or WAIT-FOR-ENTRY.
-        FABRICATED_SIGNAL        Rationale says "strong momentum" but momentum_score < 6,
-                                 or says "bullish" but MACD is Bearish or Mixed.
-        ALLOCATION_MISMATCH      Allocation rank does not match composite_score rank —
-                                 a lower-scoring stock gets a higher allocation.
-        SENTIMENT_CONTRADICTION  average_sentiment < 0.0 with action LONG-BUY and no
-                                 negative-sentiment caveat in the rationale.
-        VALUATION_IGNORED        valuation_grade is VERY_EXPENSIVE with LONG-BUY and
-                                 no valuation risk mentioned in rationale.
-        TRIGGER_CONTRADICTION    A monitoring trigger for LONG-BUY fires during a
-                                 normal uptrend (e.g. RSI > 70 when uptrend is expected).
-        CONCENTRATION_BREACH     allocation_pct > 40.0 for any single position.
-        WEAK_FUNDAMENTALS_BUY    financial_health = WEAK with LONG-BUY and no
-                                 acknowledgment of balance sheet risk.
-        MISSING_STOP_LOGIC       stop_loss is set at or above entry_zone_high.
-        VAGUE_RATIONALE          Rationale makes claims without citing specific numbers
-                                 (no RSI value, no momentum_score, no specific metric).
-        MISSING_SCALED_SETUPS    SCALED-ENTRY with scaled_entry_setups=null or fewer than
-                                 2 setups — execution details are undefined. CRITICAL.
-        WAIT_ENTRY_ZERO_ALLOC    WAIT-FOR-ENTRY with allocation_pct=0 — earmarked capital
-                                 is required; 0% means current_price was not passed to
-                                 allocate_portfolio. CRITICAL.
-        MONITOR_WITH_SETUP       MONITOR with trade_setup or scaled_entry_setups populated
-                                 — MONITOR is watch-list only; no capital, no setup. CRITICAL.
-        AVOID_WITH_SETUP         AVOID with trade_setup or scaled_entry_setups populated. CRITICAL.
-        INVALID_ACTION           Any action not in {LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY,
-                                 MONITOR, AVOID}. HOLD and SHORT-SELL are removed. CRITICAL.
-        IMMEDIATE_RR_BELOW_1_5   SCALED-ENTRY immediate tranche: R/R < 1.5 from current_price.
-                                 R/R = (take_profit − current_price) / (current_price − stop_loss).
-                                 Must be ≥ 1.5. CRITICAL.
-        BUCKET_SUM_ERROR         deployed_pct + reserved_pct + cash_reserve_pct ≠ 100
-                                 (tolerance ±0.5%). CRITICAL.
-        COMPOSITE_SCORE_MISMATCH composite_score on the position does not match the
-                                 value returned by the compute_composite_scores tool
-                                 for that ticker. Do NOT recalculate — compare
-                                 position.composite_score directly against the tool
-                                 output value. If |position.composite_score − tool_value|
-                                 > 1.0, flag COMPOSITE_SCORE_MISMATCH as CRITICAL —
-                                 the score was fabricated rather than copied from
-                                 the tool output.
+        PRICE_IN_ZONE_WAIT      — WAIT-FOR-ENTRY when entry_zone_low ≤ current_price ≤ entry_zone_high (CRITICAL)
+        OVERBOUGHT_IGNORED      — RSI > 70 or Stochastic > 80 with LONG-BUY, no overbought acknowledgment (MAJOR)
+        ENTRY_ZONE_VIOLATED     — LONG-BUY with PULLBACK_ENTRY status and gap ≥ 5% (MAJOR)
+        FABRICATED_SIGNAL       — "strong momentum" with momentum_score < 6, or "bullish" with Bearish/Mixed MACD (MAJOR)
+        ALLOCATION_MISMATCH     — allocation rank does not match composite_score rank (MAJOR)
+        SENTIMENT_CONTRADICTION — average_sentiment < 0.0 with LONG-BUY, no negative caveat (MAJOR)
+        VALUATION_IGNORED       — valuation_grade=VERY_EXPENSIVE with LONG-BUY, no valuation risk mentioned (MAJOR)
+        TRIGGER_CONTRADICTION   — LONG-BUY trigger fires during normal uptrend (MINOR)
+        CONCENTRATION_BREACH    — allocation_pct > 40.0 for any position (CRITICAL)
+        WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
+        MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
+        VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
+        MISSING_SCALED_SETUPS   — SCALED-ENTRY with scaled_entry_setups=null or fewer than 2 setups (CRITICAL)
+        WAIT_ENTRY_ZERO_ALLOC   — WAIT-FOR-ENTRY with allocation_pct=0 (CRITICAL)
+        MONITOR_WITH_SETUP      — MONITOR with trade_setup or scaled_entry_setups populated (CRITICAL)
+        AVOID_WITH_SETUP        — AVOID with trade_setup or scaled_entry_setups populated (CRITICAL)
+        INVALID_ACTION          — action not in {LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID} (CRITICAL)
+        IMMEDIATE_RR_BELOW_1_5  — SCALED-ENTRY immediate tranche R/R < 1.5 from current_price (CRITICAL)
+        BUCKET_SUM_ERROR        — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100 (±0.5%) (CRITICAL)
+        COMPOSITE_SCORE_MISMATCH— |position.composite_score − tool_value| > 1.0 (CRITICAL)
 
-        For each finding, state: the exact data value that creates the contradiction
-        AND what the draft says about it. Do not describe issues vaguely.
+        For each finding, state the exact data value that creates the contradiction and what the draft says.
 
       STEP 3 — Portfolio-level review:
         - Does deployed_pct + reserved_pct + cash_reserve_pct = 100 (±0.5%)?
@@ -574,33 +386,13 @@ tasks:
                   appears in the rationale nor triggers."
         Every CRITICAL and MAJOR issue must have a corresponding directive.
 
-      STEP 5 — Output EXACTLY this structure (pure Python dict, no markdown):
-      {
-        "sector": "$sector",
-        "draft_assessment": "One paragraph summarizing the draft's key weaknesses.
-          Do not praise. State what is wrong and why it matters for risk.",
-        "per_ticker_critiques": [
-          {
-            "ticker": "NVDA",
-            "severity": "CRITICAL",
-            "issue_type": "OVERBOUGHT_IGNORED",
-            "finding": "RSI=78 and Stochastic=82 but action is LONG-BUY. Neither
-              value is mentioned in the 150-word rationale.",
-            "instruction": "Change action to WAIT-FOR-ENTRY or add explicit RSI/
-              Stochastic overbought acknowledgment and set RSI > 75 exit trigger."
-          }
-        ],
-        "portfolio_level_issues": [
-          "AAPL allocation (42%) exceeds the 40% single-position cap.",
-          "Two positions have identical composite_score of 72.4 — input values
-           were almost certainly defaulted rather than extracted from context."
-        ],
-        "revision_directives": [
-          "NVDA: Change action to WAIT-FOR-ENTRY because RSI=78, Stochastic=82.",
-          "AAPL: Reduce allocation from 42% to ≤40% to comply with cap rule."
-        ],
-        "approved_positions": []
-      }
+      STEP 5 — Output a pure Python dict (no markdown):
+        sector: str
+        draft_assessment: str — one paragraph summarizing key weaknesses (no praise)
+        per_ticker_critiques[]: ticker(str) severity(str) issue_type(str) finding(str) instruction(str)
+        portfolio_level_issues: str[] — bucket math, cap violations, score duplicates
+        revision_directives: str[] — "[TICKER]: [change] because [exact data]"
+        approved_positions: str[] — tickers fully compliant (may be empty)
 
       RULES:
       - For each ticker, check all failure-mode criteria. If a position is fully
@@ -625,8 +417,7 @@ tasks:
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
     description: |
-      You are the Final Strategist in the ProspectAI pipeline.
-      You receive your own draft (Task 4) and the Critic's review (Task 5).
+      Receive the draft (Task 4) and the Critic's review (Task 5).
       Produce the revised final portfolio by applying the Critic's directives.
 
       STEP 1 — Read the Critic's revision_directives carefully.
@@ -639,31 +430,16 @@ tasks:
 
       STEP 2 — Determine whether any action changed from the draft.
 
-        CASE A — No action changed (all actions identical to draft):
-          Copy these fields verbatim from the draft for every position:
-            composite_score, allocation_pct, current_price,
-            trade_setup, scaled_entry_setups.
-          Copy verbatim: deployed_pct, reserved_pct, total_allocated_pct,
-            cash_reserve_pct.
+        CASE A — No action changed:
+          Copy all position and portfolio numeric fields verbatim from the draft.
           Do NOT recalculate any numeric field.
 
         CASE B — One or more actions changed:
-          Call allocate_portfolio ONCE with ALL positions using their REVISED actions:
-            allocate_portfolio(stocks_json='[
-              {
-                "ticker":          "<TICKER>",
-                "action":          "<REVISED ACTION>",
-                "composite_score": <float — copy verbatim from draft>,
-                "entry_zone_low":  <float — copy verbatim from draft>,
-                "entry_zone_high": <float — copy verbatim from draft>,
-                "current_price":   <float — copy verbatim from draft>
-              }, ...
-            ]')
-          From the tool result, copy verbatim for each position:
-            allocation_pct, trade_setup, scaled_entry_setups.
-          From the tool result, copy verbatim for the portfolio:
-            deployed_pct, reserved_pct, cash_reserve_pct, total_allocated_pct.
-          composite_score and current_price: always copy from draft, never from tool.
+          Call allocate_portfolio ONCE with all positions using revised actions
+          (pass ticker, action, composite_score, entry zones, current_price — all verbatim from draft).
+          Copy allocation_pct, trade_setup, scaled_entry_setups from tool result.
+          Copy deployed_pct, reserved_pct, cash_reserve_pct, total_allocated_pct from tool result.
+          composite_score and current_price: always from draft, never from tool.
 
         In both cases: total_allocated_pct MUST equal the sum of all positions'
           allocation_pct. NEVER compute deployed_pct, reserved_pct, or
@@ -677,39 +453,17 @@ tasks:
         review_frequency: DAILY / WEEKLY / MONTHLY.
         overall_strategy: 2-3 paragraphs summarising the final portfolio.
 
-      STEP 4 — Output the final portfolio in EXACTLY this JSON structure:
-      {
-        "sector": "$sector",
-        "positions": [
-          {
-            "ticker": "NVDA",
-            "action": "WAIT-FOR-ENTRY",
-            "composite_score": 81.0,
-            "allocation_pct": 12.5,
-            "current_price": 875.50,
-            "trade_setup": {
-              "direction": "LONG-BUY",
-              "entry_zone_low": 834.0,
-              "entry_zone_high": 851.0,
-              "stop_loss": 809.0,
-              "take_profit": 885.0
-            },
-            "scaled_entry_setups": null,
-            "rationale": "Revised from draft LONG-BUY: RSI=78 and Stochastic=82 confirm
-              overbought conditions. 12.5% earmarked pending pullback. momentum_score=8.1
-              remains strong.",
-            "monitoring_triggers": ["Price retraces to entry_zone_high of 851.00",
-              "RSI drops below 65 confirming healthy retracement"],
-            "review_frequency": "WEEKLY"
-          }
-        ],
-        "deployed_pct": 0,
-        "reserved_pct": 12.5,
-        "total_allocated_pct": 12.5,
-        "cash_reserve_pct": 87.5,
-        "overall_strategy": "2-3 paragraph explanation of final portfolio construction",
-        "risk_level": "Low"
-      }
+      STEP 4 — Output a pure JSON dict (no markdown fences):
+        sector: str
+        positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
+          current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
+          rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
+        deployed_pct: float
+        reserved_pct: float
+        total_allocated_pct: float
+        cash_reserve_pct: float
+        overall_strategy: str (2-3 paragraphs)
+        risk_level: str — Low/Medium/High/Very High
 
       RULES:
       - Output only the JSON dict — no text before or after, no markdown fences.

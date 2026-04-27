@@ -229,6 +229,11 @@ class PositionRecommendation(BaseModel):
                         take_profit=tp_pb,
                     )
                     self.scaled_entry_setups = [immediate, pullback]
+                else:
+                    raise ValueError(
+                        "SCALED-ENTRY requires exactly 2 scaled_entry_setups; "
+                        "current_price not available to auto-construct them"
+                    )
             if self.trade_setup is not None:
                 raise ValueError(
                     "SCALED-ENTRY must have trade_setup=null; "

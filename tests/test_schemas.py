@@ -288,13 +288,28 @@ def test_position_avoid_valid():
     assert p.action == "AVOID"
 
 
-def test_position_scaled_entry_requires_two_setups():
+def test_position_scaled_entry_auto_constructs_setups_from_price():
+    # Validator auto-constructs 2 setups from current_price when none provided
+    p = _position(
+        action="SCALED-ENTRY",
+        composite_score=78.0,
+        current_price=183.0,
+        trade_setup=None,
+        scaled_entry_setups=None,
+    )
+    assert p.scaled_entry_setups is not None
+    assert len(p.scaled_entry_setups) == 2
+
+
+def test_position_scaled_entry_requires_two_setups_without_price():
+    # No current_price and no setups — validator cannot auto-construct, must raise
     with pytest.raises(ValidationError) as exc:
         _position(
             action="SCALED-ENTRY",
             composite_score=78.0,
+            current_price=None,
             trade_setup=None,
-            scaled_entry_setups=None,  # missing — should fail
+            scaled_entry_setups=None,
         )
     assert "2 scaled_entry_setups" in str(exc.value)
 
