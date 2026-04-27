@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.6.12**
+**Current release: v1.6.13**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,10 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.6.13 — reduce prompt verbosity by refactoring agent backstories and
+- reduce prompt verbosity by refactoring agent backstories and task descriptions
+- Expand sector options and add subreddit/keyword configurations for Industrials, Real Estate, and Utilities
+
 ### v1.6.12 — Update investment_thesis minimum length from 50 to 10 charac
 - Update investment_thesis minimum length from 50 to 10 characters in StockFundamentalAnalysis
 
@@ -323,10 +327,6 @@ twine upload dist/*
 - Implement batch processing for TechnicalAnalysisTool to reduce tool call round-trips
 - Implement parallel analysis flow for TechnicalAnalysisTool to reduce tool call round-trips
 - Implement compact context for Critic agent with reference table and update critique_review flow
-
-### v1.6.8 — Add capability spec to remove description fields from Techni
-- Add capability spec to remove description fields from TechnicalAnalysisTool output
-- Remove description fields from TechnicalAnalysisTool to reduce token usage in analysis
 
 ## Roadmap
 
