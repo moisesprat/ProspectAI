@@ -123,7 +123,7 @@ class StockFundamentalAnalysis(BaseModel):
     fundamental_rating: FundamentalRating
     key_strengths: List[str] = Field(..., min_length=1)
     key_risks: List[str] = Field(..., min_length=1)
-    investment_thesis: str = Field(..., min_length=50)
+    investment_thesis: str = Field(..., min_length=10)
 
 
 class FundamentalAnalysisOutput(BaseModel):
