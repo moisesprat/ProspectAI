@@ -33,7 +33,8 @@ class RedditSentimentTool(BaseTool):
     ranked by mention frequency and sentiment score.
 
     Args:
-        sector: One of 'Technology', 'Healthcare', 'Finance', 'Energy', 'Consumer'
+        sector: One of 'Technology', 'Healthcare', 'Finance', 'Energy', 'Consumer',
+                'Industrials', 'Real Estate', 'Utilities'
         limit:  Number of posts to fetch per subreddit (default 25)
 
     Returns a dict with keys:
@@ -54,7 +55,7 @@ class RedditSentimentTool(BaseTool):
             "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN",
             "TSLA", "AMD", "INTC", "CRM", "ORCL", "ADBE", "QCOM", "AVGO",
             "ARM", "SMCI", "PLTR", "NOW", "SNOW", "ANET", "MU", "MRVL",
-            "PANW", "CRWD", "NET", "DDOG", "APP", "UBER",
+            "PANW", "CRWD", "NET", "DDOG", "APP", "UBER", "NET", "ALAB",
         ],
         "Healthcare": [
             "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO",
@@ -80,6 +81,24 @@ class RedditSentimentTool(BaseTool):
             "TSLA", "F", "GM", "RIVN", "LCID", "CMG", "YUM",
             "DG", "DLTR", "ROST", "EBAY", "ETSY", "DASH", "ABNB",
         ],
+        "Industrials": [
+            "CAT", "DE", "BA", "HON", "UPS", "LMT", "RTX", "GE",
+            "MMM", "EMR", "ITW", "ETN", "PH", "ROK", "FDX", "NSC",
+            "UNP", "CSX", "GD", "NOC", "TDG", "CARR", "OTIS", "IR",
+            "PCAR", "WM", "RSG", "CTAS", "XYL", "JCI",
+        ],
+        "Real Estate": [
+            "AMT", "PLD", "CCI", "EQIX", "PSA", "WELL", "DLR", "O",
+            "SPG", "VICI", "EXR", "AVB", "EQR", "MAA", "UDR", "CPT",
+            "ARE", "BXP", "KIM", "REG", "FRT", "NNN", "WPC", "STAG",
+            "REXR", "ELS", "SUI", "AMH", "INVH", "VTR",
+        ],
+        "Utilities": [
+            "NEE", "DUK", "SO", "AEP", "EXC", "SRE", "D", "PCG",
+            "XEL", "ED", "ES", "WEC", "DTE", "ETR", "PPL", "FE",
+            "AEE", "LNT", "EVRG", "CMS", "NI", "PNW", "OGE", "AVA",
+            "NWE", "BKH", "OTTER", "AWK", "SWX", "ATO",
+        ],
     }
 
     # Sector-specific subreddit lists for more relevant signal
@@ -103,6 +122,18 @@ class RedditSentimentTool(BaseTool):
         "Consumer": {
             "subreddits": ["investing", "stocks", "wallstreetbets", "consumer", "retail"],
             "keywords":   ["consumer", "retail", "ecommerce", "food", "beverage", "apparel", "luxury"],
+        },
+        "Industrials": {
+            "subreddits": ["investing", "stocks", "wallstreetbets", "manufacturing", "aerospace"],
+            "keywords":   ["industrial", "manufacturing", "aerospace", "defense", "logistics", "machinery", "construction"],
+        },
+        "Real Estate": {
+            "subreddits": ["investing", "stocks", "wallstreetbets", "realestateinvesting", "REITs"],
+            "keywords":   ["REIT", "real estate", "property", "commercial", "residential", "industrial", "office", "datacenter"],
+        },
+        "Utilities": {
+            "subreddits": ["investing", "stocks", "wallstreetbets", "energy", "dividends"],
+            "keywords":   ["utility", "utilities", "electric", "gas", "water", "power grid", "renewable", "dividend"],
         },
     }
 
