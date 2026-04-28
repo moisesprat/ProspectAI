@@ -93,6 +93,8 @@ tasks:
         Then use your own reasoning to produce:
         - overall_signal: your assessment of "BULLISH", "BEARISH", "MIXED", or "NEUTRAL"
           based on MACD status, MA status, RSI level, and other raw indicators.
+        - trend_strength: one of exactly "Very Weak", "Weak", "Neutral", "Strong", "Very Strong"
+          based on ADX level and price action. Use title-case exactly as shown.
         - key_signals: 3-5 plain-English strings describing the most notable readings
 
         Examples: "RSI at 63 — neutral momentum", "MACD bullish crossover",

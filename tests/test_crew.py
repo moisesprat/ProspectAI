@@ -110,6 +110,7 @@ def _mock_crew_result(output_dict):
     result = MagicMock()
     result.raw = json.dumps(output_dict)
     result.json_dict = None
+    result.tasks_output = None  # prevent MagicMock auto-attr from hijacking _parse_result
     return result
 
 
@@ -255,6 +256,7 @@ class TestParseResult:
         raw = MagicMock()
         raw.raw = json.dumps(SAMPLE_PIPELINE_OUTPUT)
         raw.json_dict = None
+        raw.tasks_output = None
         parsed = crew._parse_result(raw)
         assert parsed["sector"] == "Technology"
         assert "positions" in parsed
@@ -263,6 +265,7 @@ class TestParseResult:
         raw = MagicMock()
         raw.raw = "```json\n" + json.dumps(SAMPLE_PIPELINE_OUTPUT) + "\n```"
         raw.json_dict = None
+        raw.tasks_output = None
         parsed = crew._parse_result(raw)
         assert "positions" in parsed
 
@@ -270,6 +273,7 @@ class TestParseResult:
         raw = MagicMock()
         raw.raw = "```\n" + json.dumps(SAMPLE_PIPELINE_OUTPUT) + "\n```"
         raw.json_dict = None
+        raw.tasks_output = None
         parsed = crew._parse_result(raw)
         assert "positions" in parsed
 
@@ -277,6 +281,7 @@ class TestParseResult:
         raw = MagicMock()
         raw.raw = "This is not JSON at all"
         raw.json_dict = None
+        raw.tasks_output = None
         parsed = crew._parse_result(raw)
         assert isinstance(parsed, dict)
         assert parsed.get("parse_error") is True or "raw_output" in parsed

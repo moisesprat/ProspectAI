@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.6.13**
+**Current release: v1.6.14**
 
 ### ⚠️ Important Disclaimer
 
@@ -308,6 +308,10 @@ twine upload dist/*
 | No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
 
 ## Release Notes
+
+### v1.6.14 — fix test mock propagation causing TypeError in validate_portfolio
+- Fix `MagicMock.tasks_output` auto-attribute bypassing `_parse_result` raw-text path
+- Add `tasks_output = None` to all mock crew result objects in test suite
 
 ### v1.6.13 — reduce prompt verbosity by refactoring agent backstories and
 - reduce prompt verbosity by refactoring agent backstories and task descriptions

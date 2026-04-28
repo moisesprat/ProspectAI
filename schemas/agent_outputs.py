@@ -56,10 +56,18 @@ class RawIndicators(BaseModel):
     adx: Optional[float] = None
 
 
+_RISK_LEVEL_MAP = {v.lower(): v for v in ("Low", "Medium", "High")}
+
+
 class MomentumAnalysis(BaseModel):
     momentum_score: float = Field(..., ge=0.0, le=10.0)
     risk_level: Literal["Low", "Medium", "High"]
     trend_strength: Literal["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
+
+    @field_validator("risk_level", mode="before")
+    @classmethod
+    def normalize_risk_level(cls, v: str) -> str:
+        return _RISK_LEVEL_MAP.get(str(v).lower(), v)
     key_signals: List[str]
     support_resistance: SupportResistance
     comprehensive_analysis: str = Field(..., min_length=50)

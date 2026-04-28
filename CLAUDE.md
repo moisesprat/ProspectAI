@@ -6,24 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Setup
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp env.example .env  # then fill in API keys
 
 # Run analysis (Anthropic, default)
-python main.py --sector Technology
+python3 main.py --sector Technology
 
 # Run with a specific Claude model
-python main.py --model claude-opus-4-6 --sector Finance
+python3 main.py --model claude-opus-4-6 --sector Finance
 
 # Run with Ollama local model
-python main.py --ollama --model qwen3.5:9b --sector Finance
+python3 main.py --ollama --model qwen3.5:9b --sector Finance
 
 # Run tests
-python tests/test_skeleton.py
-python tests/test_reddit_output.py [sector]      # sector optional, defaults to Technology
-python tests/test_technical_analyst.py
-python tests/test_market_analyst_llm.py
+python3 tests/test_skeleton.py
+python3 tests/test_reddit_output.py [sector]      # sector optional, defaults to Technology
+python3 tests/test_technical_analyst.py
+python3 tests/test_market_analyst_llm.py
 
 # Supported sectors
 # Technology, Healthcare, Finance, Energy, Consumer
