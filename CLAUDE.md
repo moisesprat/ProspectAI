@@ -20,21 +20,24 @@ python3 main.py --model claude-opus-4-6 --sector Finance
 python3 main.py --ollama --model qwen3.5:9b --sector Finance
 
 # Run tests
-python3 tests/test_skeleton.py
-python3 tests/test_reddit_output.py [sector]      # sector optional, defaults to Technology
-python3 tests/test_technical_analyst.py
-python3 tests/test_market_analyst_llm.py
+pytest tests/ -v
+pytest tests/test_crew.py -v          # orchestration tests
+pytest tests/test_schemas.py -v       # Pydantic schema tests
+pytest tests/test_tools_reddit.py -v
+pytest tests/test_tools_technical.py -v
+pytest tests/test_tools_fundamental.py -v
+pytest tests/test_execution_tracker.py -v
 
 # Supported sectors
-# Technology, Healthcare, Finance, Energy, Consumer
+# Technology, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
 ```
 
 ## Required API Keys (in `.env`)
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | LLM calls (default provider) |
-| `ANTHROPIC_MODEL` | Yes | Claude model name (e.g. `claude-sonnet-4-6`) |
+| `ANTHROPIC_API_KEY` | Yes (default provider) | LLM calls |
+| `MODEL` | Yes | Global model override (e.g. `claude-sonnet-4-6`). Falls back to legacy `ANTHROPIC_MODEL` / `OLLAMA_MODEL` |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | One of these two | Market Analyst Reddit data |
 | `SERPER_API_KEY` | One of these two | Web search fallback when Reddit is unavailable |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | Only with `--ollama` | Local Ollama inference |
@@ -43,53 +46,133 @@ The app validates `.env` at startup and exits with a clear error listing any mis
 
 ## Architecture
 
-ProspectAI is a **CrewAI multi-agent pipeline** that sequentially runs 4 specialized agents to produce investment recommendations for a given market sector.
+ProspectAI is a **CrewAI Flow multi-agent pipeline** that runs 6 phases (with two phases in parallel) to produce investment recommendations for a given market sector.
 
-### Agent Pipeline (sequential, each receives prior output as context)
+### Agent Pipeline
 
 ```
-MarketAnalystAgent → TechnicalAnalystAgent → FundamentalAnalystAgent → InvestorStrategicAgent
+MarketAnalystAgent
+        │
+  ┌─────┴──────┐  (parallel)
+  ▼            ▼
+TechnicalAnalystAgent   FundamentalAnalystAgent
+  └─────┬──────┘
+        ▼
+InvestorStrategicAgent (draft)
+        │
+        ▼
+CriticAgent (adversarial review)
+        │
+        ▼
+InvestorStrategicAgent (final revision)
 ```
 
-1. **MarketAnalystAgent** — scrapes Reddit sentiment via PRAW, identifies top 5 stocks by mention count and sentiment score. Reflects current market conditions and macro/geopolitical context at execution time.
-2. **TechnicalAnalystAgent** — runs 13+ technical indicators (RSI, MACD, BB, ATR, etc.) using `yfinance` + `ta` library via `TechnicalAnalysisTool`
-3. **FundamentalAnalystAgent** — analyzes financial statements, valuation metrics, competitive positioning
-4. **InvestorStrategicAgent** — synthesizes all prior analysis into portfolio allocation recommendations
+1. **MarketAnalystAgent** — calls `RedditSentimentTool` (or `SerperDevTool` fallback), identifies top 5 stocks by mention count + sentiment score.
+2. **TechnicalAnalystAgent** — calls `TechnicalAnalysisTool` (batch, all tickers at once); 13+ indicators (RSI, MACD, BB, ATR, etc.) via `yfinance` + `ta`.
+3. **FundamentalAnalystAgent** — calls `FundamentalDataTool` then `FundamentalGraderTool` (both batch). Phases 2 and 3 run in parallel after Phase 1.
+4. **InvestorStrategicAgent (draft)** — calls `CompositeScoreTool` then `PortfolioAllocatorTool`; decides action + allocation per ticker.
+5. **CriticAgent** — adversarial review of the draft; outputs `revision_directives` and `per_ticker_critiques`.
+6. **InvestorStrategicAgent (final)** — applies critic directives (or defends with data); optionally re-calls `PortfolioAllocatorTool` if actions change.
 
 ### Key Files
 
-- `main.py` — CLI entry point; validates `.env`, sets `MODEL_PROVIDER`, calls `ProspectAICrew.run_analysis()`
-- `prospect_ai_crew.py` — `ProspectAICrew` class: instantiates agents, creates `Task` objects with `context=` chaining, assembles and kicks off the `Crew`. `_parse_result()` extracts structured JSON from final task output.
-- `agents/base_agent.py` — `BaseAgent` ABC; loads config from YAML, exposes `_get_llm()` which returns a `crewai.LLM` instance (Anthropic or Ollama) based on `MODEL_PROVIDER` env var
-- `config/agents.yaml` — **primary place to change agent behavior** (role, goal, backstory, temperature, model, max_tokens). Goals and backstories encode the pipeline data contract.
-- `config/agent_config_loader.py` — reads `agents.yaml` and exposes per-agent config dicts
-- `config/config.py` — `Config` class exposing env vars as properties; no hardcoded defaults
-- `utils/reddit_sentiment_tool.py` — `RedditSentimentTool`: PRAW-based, returns top-5 stocks per sector by Reddit mention count + sentiment. Sets `fallback_required=True` when credentials are missing.
-- `utils/technical_analysis_tool.py` — `TechnicalAnalysisTool`: yfinance + ta library, calculates 13+ indicators.
-- `utils/fundamental_data_tool.py` — `FundamentalDataTool`: yfinance-based, returns real P/E, margins, debt ratios, FCF, growth rates per ticker.
+| File | Purpose |
+|---|---|
+| `main.py` | CLI entry point; validates `.env`, sets `MODEL_PROVIDER`, calls `ProspectAIFlow.run_analysis()` |
+| `prospect_ai_flow.py` | **Current orchestrator** — `ProspectAIFlow(Flow[ProspectAIFlowState])`: 6-phase CrewAI Flow, state model, context slimming helpers, `_extract_pydantic()` for schema validation |
+| `prospect_ai_crew.py` | Legacy single-Crew orchestrator (no longer called by main) |
+| `agents/base_agent.py` | `BaseAgent` ABC; loads YAML config, `_get_llm()` returns `crewai.LLM` based on `MODEL_PROVIDER` |
+| `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
+| `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, temperature, model, max_tokens |
+| `config/tasks.yaml` | Task descriptions and expected outputs with `$sector` / `$today` template variables |
+| `config/agent_config_loader.py` | Reads `agents.yaml`, exposes per-agent config dicts |
+| `config/task_config_loader.py` | `TaskConfigLoader.render(task_key, **kwargs)` — substitutes template variables |
+| `config/config.py` | `Config` class: env var properties, `default_model_id()`, `model_id_for_agent(agent_key)` |
+| `schemas/agent_outputs.py` | Pydantic output contracts for all 5 agent outputs |
+| `utils/reddit_sentiment_tool.py` | `RedditSentimentTool` — Reddit scraper, sets `fallback_required=True` instead of raising |
+| `utils/technical_analysis_tool.py` | `TechnicalAnalysisTool` — batch yfinance + ta; one call covers all tickers |
+| `utils/fundamental_data_tool.py` | `FundamentalDataTool` — batch yfinance fetch (P/E, margins, FCF, growth, etc.) |
+| `utils/fundamental_grader_tool.py` | `FundamentalGraderTool` — deterministic financial health grader; takes FundamentalDataTool output |
+| `utils/composite_score_tool.py` | `CompositeScoreTool` — sentiment + momentum + fundamental → composite score 0-100 |
+| `utils/portfolio_allocator_tool.py` | `PortfolioAllocatorTool` — allocation % and trade setups (entry zone, stop, take-profit) |
+| `utils/recommendation_validator.py` | Post-pipeline validation: stop/TP invariants, R/R checks, allocation sanity |
+| `utils/execution_tracker.py` | Per-phase wall-clock timing + LLM token tracking |
+| `utils/yfinance_cache.py` | In-memory cache (scoped per `run_analysis()` call) to avoid duplicate yfinance calls |
 
-### Task → Tool mapping
+### Task → Tool Mapping
 
-| Task | Agent | Tools | Context from |
+| Phase | Agent | Tools | Runs after |
 |---|---|---|---|
 | 1 Market Analysis | MarketAnalyst | `RedditSentimentTool`, `SerperDevTool` (fallback) | — |
-| 2 Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool` | Task 1 |
-| 3 Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool` | Tasks 1 + 2 |
-| 4 Investment Strategy | InvestorStrategic | none (synthesis only) | Tasks 1 + 2 + 3 |
+| 2 Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool` | Phase 1 |
+| 3 Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool` → `FundamentalGraderTool` | Phase 1 (parallel with 2) |
+| 4 Draft Strategy | InvestorStrategic | `CompositeScoreTool` → `PortfolioAllocatorTool` | Phases 2 + 3 |
+| 5 Critique Review | Critic | none (reasoning only) | Phase 4 |
+| 6 Final Strategy | InvestorStrategic | `PortfolioAllocatorTool` (if actions change) | Phase 5 |
 
-### Final Pipeline Output Schema (Task 4)
+### Pydantic Output Schemas (`schemas/agent_outputs.py`)
 
-Structured JSON with `pipeline_version: "2.0"` containing `stock_recommendations` (ticker, recommendation, composite_score, allocation_pct, entry_zone, stop_loss, key_risks, key_catalysts) and `portfolio_summary`. Composite score formula: 30 pts sentiment + 40 pts momentum + 30 pts fundamentals. Recommendations: `STRONG_BUY / BUY / HOLD / REDUCE / AVOID`.
+Each phase validates its LLM output against a Pydantic model via `_extract_pydantic()` in `ProspectAIFlow`:
 
-### Adding a New Agent
+| Schema | Key fields |
+|---|---|
+| `MarketAnalysisOutput` | `candidate_stocks[]` — ticker, mention_count, average_sentiment [-1,1], relevance_score [0,1], rationale |
+| `TechnicalAnalysisOutput` | `technical_analysis[]` — ticker, raw_indicators, momentum_analysis (momentum_score 0-10, risk_level, regime, entry_zone) |
+| `FundamentalAnalysisOutput` | `fundamental_analysis[]` — ticker, valuation_metrics, fundamental_rating, key_strengths/risks |
+| `InvestorStrategicOutput` | `positions[]` — ticker, action, composite_score, allocation_pct, trade_setup or scaled_entry_setups, rationale |
+| `CriticOutput` | `per_ticker_critiques[]` — severity, issue_type, finding, instruction; `revision_directives[]` |
 
-1. Add an entry to `config/agents.yaml` with the required fields: `name`, `role`, `goal`, `backstory`
-2. Create `agents/new_agent.py` subclassing `BaseAgent`, implement `create_agent()` returning a `crewai.Agent`
-3. Instantiate it in `ProspectAICrew.__init__()` and wire it into `create_tasks()` with appropriate `context=`
+### Final `run_analysis()` Return Value
+
+```python
+{
+    "status": "success",
+    "workflow_completed": True,
+    "result": {                     # InvestorStrategicOutput (final phase)
+        "sector": str,
+        "positions": [
+            {
+                "ticker": str,
+                "action": "LONG-BUY" | "SCALED-ENTRY" | "WAIT-FOR-ENTRY" | "MONITOR" | "AVOID",
+                "composite_score": float,   # 0-100; formula: 30 sentiment + 40 momentum + 30 fundamentals
+                "allocation_pct": float,
+                "current_price": float | None,
+                "trade_setup": {"entry_zone_low", "entry_zone_high", "stop_loss", "take_profit"} | None,
+                "scaled_entry_setups": [{...}, {...}] | None,   # 2 tranches for SCALED-ENTRY
+                "rationale": str,
+                "monitoring_triggers": [str, ...],
+                "review_frequency": "DAILY" | "WEEKLY" | "MONTHLY"
+            }
+        ],
+        "deployed_pct": float,
+        "reserved_pct": float,
+        "cash_reserve_pct": float,
+        "overall_strategy": str,
+        "risk_level": "Low" | "Medium" | "High" | "Very High"
+    },
+    "summary": str,
+    "execution_metrics": {          # from ExecutionTracker
+        "run_at": str,              # ISO 8601
+        "pipeline_elapsed_sec": float,
+        "phases": [{"name", "elapsed_sec", "input_tokens", "output_tokens", "cached_tokens"}],
+        "totals": {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"},
+        "by_model": {model_id: {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"}}
+    },
+    "validation_warnings": [{"severity", "ticker", "field", "message"}]
+}
+```
 
 ### LLM Configuration
 
-- **Global**: `MODEL_PROVIDER` env var (`anthropic` or `ollama`) controls the provider for all agents. Set by the CLI flag.
-- **Per-agent**: each agent in `agents.yaml` has an `llm:` block (`provider`, `model`, `api_key`, `base_url`). The `model` field is respected when it matches the active provider.
+- **Global**: `MODEL_PROVIDER` env var (`anthropic` or `ollama`) — set by `--ollama` CLI flag.
+- **Per-agent env overrides**: `AGENT_MARKET_ANALYST_MODEL`, `AGENT_TECHNICAL_ANALYST_MODEL`, `AGENT_FUNDAMENTAL_ANALYST_MODEL`, `AGENT_INVESTOR_STRATEGIC_MODEL`, `AGENT_CRITIC_MODEL`.
+- **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): Haiku for data-gathering agents (1–3), Sonnet for reasoning agents (4–6).
 - All LLM calls go through `crewai.LLM` backed by LiteLLM — no direct langchain dependencies.
-- All 4 agents default to `anthropic / claude-sonnet-4-6`.
+
+### Adding a New Agent
+
+1. Add an entry to `config/agents.yaml` with `name`, `role`, `goal`, `backstory`, and an `llm:` block.
+2. Add a task entry to `config/tasks.yaml` with `description` and `expected_output`.
+3. Create `agents/new_agent.py` subclassing `BaseAgent`; implement `create_agent()` returning a `crewai.Agent`.
+4. Add the corresponding Pydantic schema to `schemas/agent_outputs.py`.
+5. Add a new `@listen` phase in `prospect_ai_flow.py`, store output in `ProspectAIFlowState`, and wire context via the `_slim_*()` helpers.
