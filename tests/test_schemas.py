@@ -177,7 +177,7 @@ def test_fundamental_analysis_output_valid():
                 company_name="Apple Inc.",
                 valuation_metrics=ValuationMetrics(pe_ratio=28.5, pb_ratio=45.2),
                 fundamental_rating=FundamentalRating(
-                    valuation="Fairly Valued", quality="High",
+                    valuation="EXPENSIVE", quality="High",
                     growth="Moderate Growth", overall="Buy"
                 ),
                 key_strengths=["Industry-leading margins"],

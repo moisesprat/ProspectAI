@@ -118,7 +118,7 @@ class ValuationMetrics(BaseModel):
 
 
 class FundamentalRating(BaseModel):
-    valuation: Literal["Undervalued", "Fairly Valued", "Overvalued"]
+    valuation: Literal["CHEAP", "FAIR", "EXPENSIVE", "VERY_EXPENSIVE"]
     quality: Literal["Low", "Medium", "High"]
     growth: Literal["Declining", "Stable", "Moderate Growth", "High Growth"]
     overall: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
