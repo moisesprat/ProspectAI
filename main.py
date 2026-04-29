@@ -10,6 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
+from utils.reddit_sentiment_tool import RedditSentimentTool
 
 
 def _global_model_configured() -> bool:
@@ -87,7 +88,7 @@ def parse_arguments():
         epilog="""
 Commands / Options:
   --sector SECTOR    Sector to analyze. Choices: Technology (default), Healthcare,
-                     Finance, Energy, Consumer
+                     Finance, Energy, Consumer, Industrials, Real Estate, Utilities
   --model MODEL      Override the global MODEL env var for this run (raw model id,
                      e.g. claude-opus-4-6 or qwen3.5:9b)
   --ollama           Switch provider to Ollama (local inference)
@@ -135,7 +136,7 @@ Examples:
         "--sector",
         type=str,
         default="Technology",
-        choices=["Technology", "Healthcare", "Finance", "Energy", "Consumer"],
+        choices=list(RedditSentimentTool.SECTOR_TICKERS.keys()),
         help="Sector to analyze (default: Technology)"
     )
 

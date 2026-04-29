@@ -28,7 +28,7 @@ pytest tests/test_tools_technical.py -v
 pytest tests/test_tools_fundamental.py -v
 pytest tests/test_execution_tracker.py -v
 
-# Supported sectors
+# Supported sectors (driven by RedditSentimentTool.SECTOR_TICKERS)
 # Technology, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
 ```
 
