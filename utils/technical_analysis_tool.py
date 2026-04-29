@@ -292,7 +292,7 @@ class TechnicalAnalysisTool(BaseTool):
                 },
                 "atr": {
                     "current": float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else None,
-                    "status": self._get_atr_status(atr.iloc[-1]),
+                    "status": self._get_atr_status(atr.iloc[-1], hist['Close'].iloc[-1]),
                 },
                 "standard_deviation": {
                     "current": float(std_dev),
@@ -446,10 +446,13 @@ class TechnicalAnalysisTool(BaseTool):
         else:
             return "Normal Range"
     
-    def _get_atr_status(self, atr: float) -> str:
-        """Get ATR status"""
-        if pd.isna(atr):
+    def _get_atr_status(self, atr: float, current_price: float) -> str:
+        """Classify volatility using ATR ratio (ATR / price)."""
+        if pd.isna(atr) or current_price <= 0:
             return "Insufficient Data"
-        
-        # This is a simplified ATR status - you could make it more sophisticated
+        atr_ratio = atr / current_price
+        if atr_ratio > 0.03:
+            return "High Volatility"
+        if atr_ratio < 0.01:
+            return "Low Volatility"
         return "Normal Volatility"

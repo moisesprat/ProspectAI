@@ -14,10 +14,7 @@ Scores never go negative — a bad metric earns the lowest positive score, not a
 
 import json
 from crewai.tools import BaseTool
-
-
-_FINANCIAL_HEALTH_SCORE = {"STRONG": 20, "ADEQUATE": 10, "WEAK": 5}
-_GROWTH_OUTLOOK_SCORE   = {"HIGH": 10, "MODERATE": 7, "LOW": 3, "DECLINING": 1}
+from utils.scoring_constants import _FINANCIAL_HEALTH_SCORE, _GROWTH_OUTLOOK_SCORE
 
 
 class FundamentalGraderTool(BaseTool):

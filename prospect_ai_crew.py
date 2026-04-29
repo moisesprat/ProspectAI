@@ -34,64 +34,23 @@ from schemas.agent_outputs import (
 logger = logging.getLogger(__name__)
 
 
-# DEPRECATED: ProspectAICrew will be removed in a future release.
-# Use ProspectAIFlow (prospect_ai_flow.py) for all new code.
-class ProspectAICrew:
-    """
-    Single-Crew sequential orchestrator for ProspectAI.
+class TaskFactory:
+    """Agent and task factory used by ProspectAIFlow — no deprecation warning."""
 
-    .. deprecated::
-        Use :class:`prospect_ai_flow.ProspectAIFlow` instead.
-        ProspectAICrew is retained as a task/agent factory and for
-        backward-compatibility; it will be removed in a future release.
-    """
-
-    def __init__(self, task_callback=None, step_callback=None):
-        warnings.warn(
-            "ProspectAICrew is deprecated; use ProspectAIFlow instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    def __init__(self):
         self.config = Config()
-        self.task_callback = task_callback
-        self.step_callback = step_callback
 
-
-        # Agents
+        # Agents (created once, reused across build_task calls)
         self.market_analyst = MarketAnalystAgent()
         self.technical_analyst = TechnicalAnalystAgent()
         self.fundamental_analyst = FundamentalAnalystAgent()
         self.investor_strategist = InvestorStrategicAgent()
         self.critic = CriticAgent()
 
-        # Tools (only what each task actually uses)
-        self.search_tool = SerperDevTool()  # Serper fallback for market analyst
-        self.crew = None
+        self.search_tool = SerperDevTool()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # LLM helper (used at the Crew level as a fallback default)
-    # ─────────────────────────────────────────────────────────────────────────
-    def _get_llm(self):
-        provider = os.getenv("MODEL_PROVIDER", "anthropic")
-        mid = self.config.effective_default_model_id
-        if provider == "ollama":
-            return LLM(
-                model=f"ollama/{mid}",
-                base_url=self.config.OLLAMA_BASE_URL,
-                temperature=0.1,
-            )
-        return LLM(
-            model=f"anthropic/{mid}",
-            api_key=self.config.ANTHROPIC_API_KEY,
-            temperature=0.1,
-        )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Per-phase task builder (used by ProspectAIFlow for mini-Crew wiring)
-    # ─────────────────────────────────────────────────────────────────────────
-    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "") -> Task:
-        """Build a single Task for `phase`.  prior_context is appended to the description."""
-        _PHASE_CONFIG = {
+        # Phase config built once; tools are shared instances
+        self._phase_config = {
             "market_analysis": {
                 "agent":  self.market_analyst.get_agent(),
                 "tools":  [RedditSentimentTool(), self.search_tool],
@@ -123,9 +82,12 @@ class ProspectAICrew:
                 "schema": InvestorStrategicOutput,
             },
         }
-        if phase not in _PHASE_CONFIG:
+
+    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "") -> Task:
+        """Build a single Task for `phase`. prior_context is appended to the description."""
+        if phase not in self._phase_config:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
-        pc = _PHASE_CONFIG[phase]
+        pc = self._phase_config[phase]
         cfg = TaskConfigLoader().render(phase, sector=sector, today=today)
         description = cfg["description"]
         if prior_context:
@@ -136,6 +98,48 @@ class ProspectAICrew:
             tools=pc["tools"],
             expected_output=cfg["expected_output"],
             output_pydantic=pc["schema"],
+        )
+
+
+# DEPRECATED: ProspectAICrew will be removed in a future release.
+# Use ProspectAIFlow (prospect_ai_flow.py) for all new code.
+class ProspectAICrew(TaskFactory):
+    """
+    Single-Crew sequential orchestrator for ProspectAI.
+
+    .. deprecated::
+        Use :class:`prospect_ai_flow.ProspectAIFlow` instead.
+        ProspectAICrew is retained as a task/agent factory and for
+        backward-compatibility; it will be removed in a future release.
+    """
+
+    def __init__(self, task_callback=None, step_callback=None):
+        warnings.warn(
+            "ProspectAICrew is deprecated; use ProspectAIFlow instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__()
+        self.task_callback = task_callback
+        self.step_callback = step_callback
+        self.crew = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # LLM helper (used at the Crew level as a fallback default)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _get_llm(self):
+        provider = os.getenv("MODEL_PROVIDER", "anthropic")
+        mid = self.config.effective_default_model_id
+        if provider == "ollama":
+            return LLM(
+                model=f"ollama/{mid}",
+                base_url=self.config.OLLAMA_BASE_URL,
+                temperature=0.1,
+            )
+        return LLM(
+            model=f"anthropic/{mid}",
+            api_key=self.config.ANTHROPIC_API_KEY,
+            temperature=0.1,
         )
 
     # ─────────────────────────────────────────────────────────────────────────

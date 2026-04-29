@@ -1,6 +1,5 @@
 import json
 import logging
-import warnings
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, cast
 
@@ -21,6 +20,7 @@ from schemas.agent_outputs import (
 from utils.execution_tracker import ExecutionTracker
 from utils.recommendation_validator import validate_portfolio
 from utils import yfinance_cache
+from prospect_ai_crew import TaskFactory
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,44 @@ PHASES = [
     "critique_review",
     "final_strategy",
 ]
+
+
+def _parse_crew_result(crew_result) -> Dict[str, Any]:
+    """Extract a JSON dict from a CrewAI result object.
+
+    Handles pydantic task output, json_dict shortcut, markdown fences, and
+    plain JSON strings. Falls back to a minimal error dict on parse failure.
+    """
+    if hasattr(crew_result, "json_dict") and crew_result.json_dict:
+        return crew_result.json_dict
+
+    tasks_output = getattr(crew_result, "tasks_output", None)
+    if tasks_output:
+        last = tasks_output[-1]
+        if getattr(last, "pydantic", None):
+            return last.pydantic.model_dump(mode="json")
+        if getattr(last, "json_dict", None):
+            return last.json_dict
+
+    raw = getattr(crew_result, "raw", None) or str(crew_result)
+    cleaned = raw.strip()
+    for fence in ("```json", "```python", "```"):
+        if cleaned.startswith(fence):
+            cleaned = cleaned[len(fence):]
+            break
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "pipeline_version": "2.0",
+            "parse_error": True,
+            "raw_output": raw,
+            "portfolio_summary": {"portfolio_rationale": raw[:500]},
+        }
 
 
 class ProspectAIFlowState(BaseModel):
@@ -74,12 +112,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
-        # Build the shared agent/tool factory, suppressing the deprecation
-        # warning because this is internal infrastructure, not user code.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from prospect_ai_crew import ProspectAICrew
-            self._factory = ProspectAICrew()
+        self._factory = TaskFactory()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -461,8 +494,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         finally:
             tracker.finish()
 
-        from prospect_ai_crew import ProspectAICrew
-        structured = ProspectAICrew._parse_result(self._final_crew_result)
+        structured = _parse_crew_result(self._final_crew_result)
 
         validation_issues = validate_portfolio(structured)
         if validation_issues:

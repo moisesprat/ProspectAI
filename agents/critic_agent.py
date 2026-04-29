@@ -13,8 +13,8 @@ class CriticAgent(BaseAgent):
             role=self.role,
             goal=self.goal,
             backstory=self.backstory,
-            verbose=True,
-            allow_delegation=False,
+            verbose=self.verbose,
+            allow_delegation=self.allow_delegation,
             llm=self._get_llm(),
             max_iter=self.max_iter,
         )

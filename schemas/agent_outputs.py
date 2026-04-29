@@ -279,10 +279,17 @@ class InvestorStrategicOutput(BaseModel):
 
         bucket_sum = round(self.deployed_pct + self.reserved_pct + self.cash_reserve_pct, 1)
         if abs(bucket_sum - 100.0) > 0.5:
-            raise ValueError(
-                f"deployed ({self.deployed_pct}%) + reserved ({self.reserved_pct}%) "
-                f"+ cash ({self.cash_reserve_pct}%) = {bucket_sum}% ≠ 100%"
-            )
+            # LLM arithmetic errors (e.g. double-counting cash) are corrected automatically.
+            # Prefer deriving cash from the other two; if deployed+reserved already exceed 100,
+            # normalize all three proportionally.
+            dr_sum = self.deployed_pct + self.reserved_pct
+            if dr_sum <= 100.0:
+                self.cash_reserve_pct = round(100.0 - dr_sum, 2)
+            elif bucket_sum > 0:
+                scale = 100.0 / bucket_sum
+                self.deployed_pct = round(self.deployed_pct * scale, 2)
+                self.reserved_pct = round(self.reserved_pct * scale, 2)
+                self.cash_reserve_pct = round(100.0 - self.deployed_pct - self.reserved_pct, 2)
         return self
 
 

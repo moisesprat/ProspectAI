@@ -367,11 +367,12 @@ def test_investor_strategic_output_valid():
     assert output.reserved_pct == 0.0
 
 
-def test_three_bucket_sum_must_equal_100():
-    with pytest.raises(ValidationError) as exc:
-        _portfolio(deployed_pct=40.0, reserved_pct=20.0, cash_reserve_pct=50.0)
-        # 40 + 20 + 50 = 110 ≠ 100
-    assert "100" in str(exc.value)
+def test_three_bucket_sum_auto_corrects():
+    # Validator auto-corrects by deriving cash from deployed+reserved (same as
+    # the LLM failure mode: 40+20+50=110). cash becomes 100-40-20=40.
+    out = _portfolio(deployed_pct=40.0, reserved_pct=20.0, cash_reserve_pct=50.0)
+    assert abs(out.deployed_pct + out.reserved_pct + out.cash_reserve_pct - 100.0) < 0.1
+    assert out.cash_reserve_pct == pytest.approx(40.0)
 
 
 def test_position_allocation_sum_auto_corrects_total_allocated():
