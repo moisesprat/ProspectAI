@@ -52,3 +52,9 @@ config = ["*.yaml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --tb=short --no-header -p no:warnings"
+
+[tool.coverage.run]
+omit = ["tests/*", ".venv/*", "setup.py"]
+
+[tool.coverage.report]
+show_missing = true

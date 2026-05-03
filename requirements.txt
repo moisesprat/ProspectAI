@@ -11,3 +11,4 @@ ta>=0.10.2
 praw>=7.7.0
 portkey-ai>=1.0.0
 pytest-asyncio>=0.23.0
+pytest-cov>=7.1.0
