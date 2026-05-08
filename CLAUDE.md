@@ -27,6 +27,7 @@ pytest tests/test_tools_reddit.py -v
 pytest tests/test_tools_technical.py -v
 pytest tests/test_tools_fundamental.py -v
 pytest tests/test_execution_tracker.py -v
+pytest tests/test_flow_phases.py -v      # per-phase unit tests (mocked LLM)
 
 # Supported sectors (driven by RedditSentimentTool.SECTOR_TICKERS)
 # Technology, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
@@ -98,6 +99,8 @@ InvestorStrategicAgent (final revision)
 | `utils/recommendation_validator.py` | Post-pipeline validation: stop/TP invariants, R/R checks, allocation sanity |
 | `utils/execution_tracker.py` | Per-phase wall-clock timing + LLM token tracking |
 | `utils/yfinance_cache.py` | In-memory cache (scoped per `run_analysis()` call) to avoid duplicate yfinance calls |
+| `utils/scoring_constants.py` | Shared scoring weight tables used by `FundamentalGraderTool` and `CompositeScoreTool`; single source of truth for grade-to-point mappings |
+| `utils/technical_interpretation_tool.py` | Deterministic numeric layer for `TechnicalAnalysisTool`: computes `momentum_score` (0-10), `entry_zone`, and `risk_level` from raw indicator values; never produces BUY/SELL signals (that is the LLM's job) |
 
 ### Task → Tool Mapping
 
@@ -168,6 +171,19 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
 - **Per-agent env overrides**: `AGENT_MARKET_ANALYST_MODEL`, `AGENT_TECHNICAL_ANALYST_MODEL`, `AGENT_FUNDAMENTAL_ANALYST_MODEL`, `AGENT_INVESTOR_STRATEGIC_MODEL`, `AGENT_CRITIC_MODEL`.
 - **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): Haiku for data-gathering agents (1–3), Sonnet for reasoning agents (4–6).
 - All LLM calls go through `crewai.LLM` backed by LiteLLM — no direct langchain dependencies.
+
+### Related Repositories
+
+The full product spans three repos. Changes to this package's public API or `run_analysis()` return shape may require coordinated updates in both sibling repos.
+
+| Repo | Purpose | Key integration |
+|---|---|---|
+| `../prospectai-backend` | Modal/FastAPI service that runs the pipeline | Imports `ProspectAIFlow`, `Config`; streams SSE to the frontend; **pins a specific `prospectai` version** |
+| `../prospectai-web` | Vanilla-JS SPA deployed on Cloudflare Pages | Consumes SSE events from the backend; renders agent progress + final report |
+
+> **Version coupling:** the backend installs the package via `pip_install("prospectai==X.Y.Z")`.
+> After merging breaking changes here, bump `VERSION.md` / `pyproject.toml`, publish to PyPI, then
+> redeploy the Modal backend so it picks up the new version.
 
 ### Adding a New Agent
 
