@@ -30,7 +30,7 @@ pytest tests/test_execution_tracker.py -v
 pytest tests/test_flow_phases.py -v      # per-phase unit tests (mocked LLM)
 
 # Supported sectors (driven by RedditSentimentTool.SECTOR_TICKERS)
-# Technology, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
+# Technology, Semiconductors, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
 ```
 
 ## Required API Keys (in `.env`)

@@ -52,10 +52,14 @@ class RedditSentimentTool(BaseTool):
     # Small, curated lists reduce false-positive ticker matches.
     SECTOR_TICKERS: ClassVar[dict] = {
         "Technology": [
-            "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN",
-            "TSLA", "AMD", "INTC", "CRM", "ORCL", "ADBE", "QCOM", "AVGO",
-            "ARM", "SMCI", "PLTR", "NOW", "SNOW", "ANET", "MU", "MRVL",
-            "PANW", "CRWD", "NET", "DDOG", "APP", "UBER", "NET", "ALAB",
+            "AAPL", "MSFT", "GOOGL", "GOOG", "META", "AMZN", "TSLA",
+            "CRM", "ORCL", "ADBE", "PLTR", "NOW", "SNOW", "ANET",
+            "PANW", "CRWD", "NET", "DDOG", "APP", "UBER",
+            "EPAM", "INFY", "CTSH", "ACN", "WIT", "IBM", "GLOB", "DXC",
+        ],
+        "Semiconductors": [
+            "NVDA", "AMD", "INTC", "QCOM", "AVGO", "MU", "MRVL", "ALAB",
+            "ASML", "TSM", "KLAC", "LRCX", "AMAT", "ARM", "SMCI",
         ],
         "Healthcare": [
             "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO",
@@ -104,8 +108,12 @@ class RedditSentimentTool(BaseTool):
     # Sector-specific subreddit lists for more relevant signal
     SECTOR_CONFIG: ClassVar[dict] = {
         "Technology": {
-            "subreddits": ["investing", "stocks", "wallstreetbets", "technology", "artificial"],
-            "keywords":   ["tech", "software", "AI", "semiconductor", "cloud", "digital", "innovation"],
+            "subreddits": ["investing", "stocks", "wallstreetbets", "technology", "artificial", "Stocks_picks", "StockInvest"],
+            "keywords":   ["tech", "software", "AI", "cloud", "digital", "innovation", "IT services", "consulting"],
+        },
+        "Semiconductors": {
+            "subreddits": ["investing", "stocks", "wallstreetbets", "hardware", "chipdesign", "Stocks_picks", "StockInvest"],
+            "keywords":   ["semiconductor", "chip", "foundry", "fabless", "wafer", "EUV", "lithography", "GPU", "AI chip", "data center", "HBM", "packaging"],
         },
         "Healthcare": {
             "subreddits": ["investing", "stocks", "wallstreetbets", "healthcare", "biotech"],

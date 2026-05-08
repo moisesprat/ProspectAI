@@ -86,7 +86,7 @@ class TestRedditFallback:
 class TestRedditSuccessfulFetch:
 
     def test_fallback_required_is_false_on_success(self):
-        result = _run_with_posts([_post("$NVDA is booming")] * 10)
+        result = _run_with_posts([_post("$MSFT is booming")] * 10)
         assert result["fallback_required"] is False
 
     def test_returns_at_most_five_stocks(self):
@@ -105,11 +105,11 @@ class TestRedditSuccessfulFetch:
             assert isinstance(stock["average_sentiment"], float)
 
     def test_mention_count_is_positive(self):
-        posts = [_post("$NVDA is bullish today")] * 5
+        posts = [_post("$MSFT is bullish today")] * 5
         result = _run_with_posts(posts)
-        nvda = next((s for s in result["candidate_stocks"] if s["ticker"] == "NVDA"), None)
-        assert nvda is not None
-        assert nvda["mention_count"] > 0
+        msft = next((s for s in result["candidate_stocks"] if s["ticker"] == "MSFT"), None)
+        assert msft is not None
+        assert msft["mention_count"] > 0
 
     def test_stocks_sorted_by_mention_count_descending(self):
         posts = (
@@ -156,6 +156,42 @@ class TestRedditSuccessfulFetch:
         valid = set(RedditSentimentTool.SECTOR_TICKERS["Technology"])
         for stock in result["candidate_stocks"]:
             assert stock["ticker"] in valid
+
+
+# ── Sector definitions ────────────────────────────────────────────────────────
+
+class TestSectorDefinitions:
+
+    def test_no_ticker_overlap_between_technology_and_semiconductors(self):
+        tech = set(RedditSentimentTool.SECTOR_TICKERS["Technology"])
+        semi = set(RedditSentimentTool.SECTOR_TICKERS["Semiconductors"])
+        assert tech & semi == set(), f"Overlapping tickers: {tech & semi}"
+
+    def test_semiconductors_sector_exists_with_key_tickers(self):
+        semi = set(RedditSentimentTool.SECTOR_TICKERS["Semiconductors"])
+        assert "Semiconductors" in RedditSentimentTool.SECTOR_TICKERS
+        for ticker in ("ASML", "TSM", "NVDA"):
+            assert ticker in semi, f"{ticker} missing from Semiconductors"
+
+    def test_it_services_tickers_in_technology(self):
+        tech = set(RedditSentimentTool.SECTOR_TICKERS["Technology"])
+        for ticker in ("EPAM", "INFY", "CTSH"):
+            assert ticker in tech, f"{ticker} missing from Technology"
+
+    def test_semiconductor_tickers_not_in_technology(self):
+        tech = set(RedditSentimentTool.SECTOR_TICKERS["Technology"])
+        moved = {"NVDA", "AMD", "INTC", "QCOM", "AVGO", "MU", "MRVL", "ALAB", "SMCI", "ARM"}
+        assert tech & moved == set(), f"Chip tickers still in Technology: {tech & moved}"
+
+    def test_stocks_picks_and_stockinvest_in_technology_subreddits(self):
+        subs = RedditSentimentTool.SECTOR_CONFIG["Technology"]["subreddits"]
+        assert "Stocks_picks" in subs
+        assert "StockInvest" in subs
+
+    def test_stocks_picks_and_stockinvest_in_semiconductors_subreddits(self):
+        subs = RedditSentimentTool.SECTOR_CONFIG["Semiconductors"]["subreddits"]
+        assert "Stocks_picks" in subs
+        assert "StockInvest" in subs
 
 
 # ── Sentiment scoring ─────────────────────────────────────────────────────────
