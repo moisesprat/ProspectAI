@@ -50,6 +50,6 @@
 ## 8. Release
 
 - [x] 8.1 Bump `prospectai` version (minor) in `VERSION.md` and `pyproject.toml`
-- [ ] 8.2 Publish updated `prospectai` package to PyPI
-- [ ] 8.3 Update `prospectai-backend` `serve.py` to pin the new version, then redeploy on Modal
-- [ ] 8.4 Deploy updated `prospectai-web` to Cloudflare Pages
+- [x] 8.2 Publish updated `prospectai` package to PyPI
+- [x] 8.3 Update `prospectai-backend` `serve.py` to pin the new version, then redeploy on Modal
+- [x] 8.4 Deploy updated `prospectai-web` to Cloudflare Pages
