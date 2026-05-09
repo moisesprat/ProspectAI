@@ -1,5 +1,16 @@
 # ProspectAI Version History
 
+## v1.7.0 - Risk Aversion Profile Selector
+
+- Add `risk_profile` parameter (`conservative` / `aggressive`) to `run_analysis()` and `main.py --risk-profile`
+- `PortfolioAllocatorTool` applies per-profile bounds: allocation cap, stop-loss multiplier, R/R ratio
+- Draft Strategist, Critic, and Final Strategist receive `$risk_profile` in task prompts for qualitative guidance
+- `InvestorStrategicOutput` and `CriticOutput` schemas carry `risk_profile` field
+- Backend `/api/analyze` endpoint accepts `risk_profile` query param; analytics tracks by profile
+- Web UI adds Conservative / Aggressive toggle before pipeline trigger
+
+---
+
 ## v1.0.0 - First Official Release
 
 ### 🎉 Major Features

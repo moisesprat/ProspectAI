@@ -2,32 +2,32 @@
 Portfolio Allocator Tool — deterministic allocation and trade setup calculation.
 
 Takes the LLM's investment decisions (action per stock) as input and computes:
-  - allocation_pct  proportional to composite_score, capped per action type
+  - allocation_pct  proportional to composite_score, capped per risk profile
   - trade_setup     for LONG-BUY and WAIT-FOR-ENTRY positions
   - scaled_entry_setups  for SCALED-ENTRY positions (2 setups)
   - deployed_pct / reserved_pct / cash_reserve_pct  three-bucket capital breakdown
 
-Allocation caps:
-  LONG-BUY        40%  — deployed now
-  SCALED-ENTRY    20%  — half deployed now, half reserved (pullback tranche)
-  WAIT-FOR-ENTRY  15%  — earmarked (reserved until entry trigger fires)
-  MONITOR / AVOID  0%  — no capital
+Profile bounds (from PROFILE_BOUNDS table):
+  conservative: max 15% per position, stop 3% (0.97), R/R 2.5
+  aggressive:   max 30% per position, stop 5% (0.95), R/R 1.5
+
+All positions (LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY) share the same per-profile cap.
+MONITOR / AVOID always receive 0% allocation.
 
 Three-bucket capital breakdown:
   deployed_pct   = LONG-BUY allocations + half of each SCALED-ENTRY allocation
   reserved_pct   = WAIT-FOR-ENTRY allocations + half of each SCALED-ENTRY allocation
   cash_reserve   = 100 - deployed - reserved (unallocated free buffer)
 
-Trade setup formulas:
+Trade setup formulas (stop_multiplier and rr_ratio from PROFILE_BOUNDS):
   LONG-BUY / WAIT-FOR-ENTRY (zone-anchored):
-    stop_loss   = entry_zone_low × 0.97
-    take_profit = entry_zone_high + (entry_zone_low − stop_loss) × 2
+    stop_loss   = entry_zone_low × stop_multiplier
+    take_profit = entry_zone_high + (entry_zone_low − stop_loss) × rr_ratio
     Invariant:  stop_loss < entry_zone_low ≤ entry_zone_high < take_profit
 
-  SCALED-ENTRY immediate tranche (current_price-anchored, R/R = 2.0):
-    stop_loss   = current_price × 0.97   (3% below — stop anchored to current price)
-    take_profit = current_price + (current_price − stop_loss) × 2  (6% above)
-    R/R = 2.0 ≥ 1.5 invariant guaranteed by construction.
+  SCALED-ENTRY immediate tranche (current_price-anchored):
+    stop_loss   = current_price × stop_multiplier
+    take_profit = current_price + (current_price − stop_loss) × rr_ratio
     CRITICAL: stop is NOT copied from the zone — entering above the zone with a
     zone-based stop produces an invalid R/R at the actual entry price.
 
@@ -39,11 +39,24 @@ The LLM decided the actions. This tool only does the math from those decisions.
 import json
 from crewai.tools import BaseTool
 
+PROFILE_BOUNDS = {
+    "conservative": {
+        "max_alloc_pct":   15.0,
+        "stop_multiplier": 0.97,
+        "rr_ratio":        2.5,
+    },
+    "aggressive": {
+        "max_alloc_pct":   30.0,
+        "stop_multiplier": 0.95,
+        "rr_ratio":        1.5,
+    },
+}
 
-def _trade_setup(entry_zone_low: float, entry_zone_high: float) -> dict:
+
+def _trade_setup(entry_zone_low: float, entry_zone_high: float, stop_multiplier: float, rr_ratio: float) -> dict:
     """Zone-anchored setup for LONG-BUY and WAIT-FOR-ENTRY positions."""
-    stop_loss   = round(entry_zone_low * 0.97, 2)
-    take_profit = round(entry_zone_high + (entry_zone_low - stop_loss) * 2, 2)
+    stop_loss   = round(entry_zone_low * stop_multiplier, 2)
+    take_profit = round(entry_zone_high + (entry_zone_low - stop_loss) * rr_ratio, 2)
     return {
         "direction":       "LONG-BUY",
         "entry_zone_low":  round(entry_zone_low,  2),
@@ -53,13 +66,12 @@ def _trade_setup(entry_zone_low: float, entry_zone_high: float) -> dict:
     }
 
 
-def _trade_setup_immediate(current_price: float) -> dict:
+def _trade_setup_immediate(current_price: float, stop_multiplier: float, rr_ratio: float) -> dict:
     """Immediate tranche for SCALED-ENTRY: entered at current_price above the zone.
     Stop/TP anchored to current_price — never copied from the entry zone.
-    R/R = 2.0 from current_price (stop 3% below, TP 6% above).
     """
-    stop_loss   = round(current_price * 0.97, 2)
-    take_profit = round(current_price + (current_price - stop_loss) * 2, 2)
+    stop_loss   = round(current_price * stop_multiplier, 2)
+    take_profit = round(current_price + (current_price - stop_loss) * rr_ratio, 2)
     return {
         "direction":       "LONG-BUY",
         "entry_zone_low":  round(current_price, 2),
@@ -78,18 +90,25 @@ class PortfolioAllocatorTool(BaseTool):
     trade setups. Returns only math — no decisions.
 
     Args:
-        stocks_json: JSON array, one object per stock:
-        [
-          {
-            "ticker":          <str>,
-            "action":          <str>,   LLM-decided: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
-            "composite_score": <float>, from compute_composite_scores
-            "entry_zone_low":  <float>, from interpret_technical_indicators
-            "entry_zone_high": <float>, from interpret_technical_indicators
-            "current_price":   <float>  current market price (required for SCALED-ENTRY)
-          },
-          ...
-        ]
+        stocks_json: JSON object with a top-level "risk_profile" key and a "stocks" array:
+        {
+          "risk_profile": "conservative" | "aggressive",
+          "stocks": [
+            {
+              "ticker":          <str>,
+              "action":          <str>,   LLM-decided: LONG-BUY / SCALED-ENTRY / WAIT-FOR-ENTRY / MONITOR / AVOID
+              "composite_score": <float>, from compute_composite_scores
+              "entry_zone_low":  <float>, from interpret_technical_indicators
+              "entry_zone_high": <float>, from interpret_technical_indicators
+              "current_price":   <float>  current market price (required for SCALED-ENTRY)
+            },
+            ...
+          ]
+        }
+
+    Profile bounds applied by this tool (deterministic, not overridable by LLM):
+      conservative: max 15% per position, stop 3% from entry zone, R/R 2.5
+      aggressive:   max 30% per position, stop 5% from entry zone, R/R 1.5
 
     Returns JSON with:
         stocks: list of {ticker, action, allocation_pct, trade_setup, scaled_entry_setups}
@@ -99,31 +118,47 @@ class PortfolioAllocatorTool(BaseTool):
         total_allocated_pct: deployed + reserved (backward-compat sum)
 
     trade_setup:
-        LONG-BUY:       zone-anchored stop/TP (stop = entry_zone_low × 0.97)
-        WAIT-FOR-ENTRY: same zone-anchored formula; allocation_pct is earmarked (≤ 15%)
+        LONG-BUY:       zone-anchored stop/TP (stop = entry_zone_low × stop_multiplier)
+        WAIT-FOR-ENTRY: same zone-anchored formula; allocation_pct is earmarked
         SCALED-ENTRY:   null — execution details go in scaled_entry_setups
         MONITOR/AVOID:  null
 
     scaled_entry_setups: null for all actions except SCALED-ENTRY.
         SCALED-ENTRY: [immediate_tranche, pullback_tranche]
-          immediate_tranche: R/R 2:1 anchored to current_price (stop 3%, TP 6%)
+          immediate_tranche: anchored to current_price with profile stop/R/R
           pullback_tranche:  zone-anchored (same formula as LONG-BUY)
-
-    Allocation caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15%
     """
 
     def _run(self, stocks_json: str) -> str:
         try:
-            stocks = json.loads(stocks_json)
+            payload = json.loads(stocks_json)
         except (json.JSONDecodeError, TypeError) as e:
             return json.dumps({"error": f"Invalid JSON: {e}"})
 
-        if not isinstance(stocks, list) or len(stocks) == 0:
+        # Support {"risk_profile": ..., "stocks": [...]} and legacy plain array
+        if isinstance(payload, list):
+            stocks_raw = payload
+            risk_profile = "conservative"
+        elif isinstance(payload, dict):
+            raw_profile = payload.get("risk_profile", "conservative")
+            if raw_profile not in PROFILE_BOUNDS:
+                return json.dumps({"error": f"Unknown risk_profile {raw_profile!r}. Valid values: conservative, aggressive"})
+            risk_profile = raw_profile
+            stocks_raw = payload.get("stocks", [])
+        else:
+            return json.dumps({"error": "stocks_json must be a JSON array or object"})
+
+        if not isinstance(stocks_raw, list) or len(stocks_raw) == 0:
             return json.dumps({"error": "stocks_json must be a non-empty JSON array"})
+
+        bounds = PROFILE_BOUNDS[risk_profile]
+        max_alloc_pct   = bounds["max_alloc_pct"]
+        stop_multiplier = bounds["stop_multiplier"]
+        rr_ratio        = bounds["rr_ratio"]
 
         try:
             results = []
-            for s in stocks:
+            for s in stocks_raw:
                 results.append({
                     "ticker":          str(s.get("ticker", "UNKNOWN")).upper(),
                     "action":          str(s.get("action", "MONITOR")),
@@ -133,22 +168,13 @@ class PortfolioAllocatorTool(BaseTool):
                     "current_price":   float(s.get("current_price",   0)),
                 })
 
-            # ── Per-action allocation caps ───────────────────────────────────
-            MAX_LONG_BUY_ALLOC       = 40.0
-            MAX_SCALED_ENTRY_ALLOC   = 20.0
-            MAX_WAIT_FOR_ENTRY_ALLOC = 15.0
-
             DEPLOYED_ACTIONS = ("LONG-BUY", "SCALED-ENTRY", "WAIT-FOR-ENTRY")
 
-            # Build per-ticker cap lookup
-            ticker_cap = {}
-            for r in results:
-                if r["action"] == "LONG-BUY":
-                    ticker_cap[r["ticker"]] = MAX_LONG_BUY_ALLOC
-                elif r["action"] == "SCALED-ENTRY":
-                    ticker_cap[r["ticker"]] = MAX_SCALED_ENTRY_ALLOC
-                elif r["action"] == "WAIT-FOR-ENTRY":
-                    ticker_cap[r["ticker"]] = MAX_WAIT_FOR_ENTRY_ALLOC
+            # Single profile-based cap for all deployed action types
+            ticker_cap = {
+                r["ticker"]: max_alloc_pct
+                for r in results if r["action"] in DEPLOYED_ACTIONS
+            }
 
             deployed    = [r for r in results if r["action"] in DEPLOYED_ACTIONS]
             score_total = sum(r["composite_score"] for r in deployed)
@@ -179,14 +205,12 @@ class PortfolioAllocatorTool(BaseTool):
             final_allocs = {t: round(v, 1) for t, v in capped.items()}
             total_deployed_round = round(sum(final_allocs.values()), 1)
             if final_allocs:
-                largest = max(final_allocs, key=final_allocs.get)
+                largest = max(final_allocs, key=lambda t: final_allocs.get(t, 0.0))
                 drift = round(total_deployed_round - sum(final_allocs.values()), 1)
                 if drift != 0:
                     final_allocs[largest] = round(final_allocs[largest] + drift, 1)
 
             # ── Resolve effective entry zones (fall back to current_price) ────
-            # If the LLM omitted entry_zone_low/high, use current_price so the
-            # allocator always returns a valid trade_setup instead of an error.
             for r in results:
                 if r["action"] in ("LONG-BUY", "WAIT-FOR-ENTRY"):
                     if r["entry_zone_low"] <= 0:
@@ -206,18 +230,18 @@ class PortfolioAllocatorTool(BaseTool):
             for r in results:
                 if r["action"] == "LONG-BUY" and r["ticker"] in final_allocs:
                     alloc  = final_allocs[r["ticker"]]
-                    setup  = _trade_setup(r["entry_zone_low"], r["entry_zone_high"])
+                    setup  = _trade_setup(r["entry_zone_low"], r["entry_zone_high"], stop_multiplier, rr_ratio)
                     scaled = None
                 elif r["action"] == "SCALED-ENTRY" and r["ticker"] in final_allocs:
                     alloc  = final_allocs[r["ticker"]]
                     setup  = None
                     scaled = [
-                        _trade_setup_immediate(r["current_price"]),
-                        _trade_setup(r["entry_zone_low"], r["entry_zone_high"]),
+                        _trade_setup_immediate(r["current_price"], stop_multiplier, rr_ratio),
+                        _trade_setup(r["entry_zone_low"], r["entry_zone_high"], stop_multiplier, rr_ratio),
                     ]
                 elif r["action"] == "WAIT-FOR-ENTRY" and r["ticker"] in final_allocs:
-                    alloc  = final_allocs[r["ticker"]]   # earmarked, capped at 15%
-                    setup  = _trade_setup(r["entry_zone_low"], r["entry_zone_high"])
+                    alloc  = final_allocs[r["ticker"]]
+                    setup  = _trade_setup(r["entry_zone_low"], r["entry_zone_high"], stop_multiplier, rr_ratio)
                     scaled = None
                 else:  # MONITOR, AVOID
                     alloc  = 0.0

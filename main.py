@@ -140,6 +140,15 @@ Examples:
         help="Sector to analyze (default: Technology)"
     )
 
+    parser.add_argument(
+        "--risk-profile",
+        type=str,
+        default="conservative",
+        choices=["conservative", "aggressive"],
+        dest="risk_profile",
+        help="Risk profile for portfolio construction (default: conservative)"
+    )
+
     return parser.parse_args()
 
 
@@ -188,8 +197,10 @@ def main():
     print("Initializing ProspectAI...")
     prospect_ai = ProspectAIFlow()
 
+    print(f"Risk profile: {args.risk_profile}")
     market_criteria = {
         "sector": args.sector,
+        "risk_profile": args.risk_profile,
         "market_cap_range": {"min": 1000000000, "max": 100000000000},
         "risk_tolerance": "Medium",
         "investment_horizon": "Long-term",

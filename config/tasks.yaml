@@ -206,6 +206,20 @@ tasks:
       Synthesize the outputs from the Market, Technical, and Fundamental agents
       and produce a machine-readable JSON portfolio draft.
 
+      RISK PROFILE: $risk_profile
+      Apply the following qualitative guidance throughout your decisions:
+        conservative — Prefer WAIT-FOR-ENTRY over LONG-BUY; use LONG-BUY only when price
+          is inside the zone with strong technicals and solid fundamentals. Spread allocations
+          across positions. Emphasize downside protection, stop rationale, and risk acknowledgment
+          in every rationale. Avoid concentrating more than 10% of commentary on upside alone.
+        aggressive — Prefer LONG-BUY; use WAIT-FOR-ENTRY only when RSI > 70 or Stochastic > 80.
+          Concentrate allocations in highest composite_score positions. Lead rationales with
+          upside catalysts, momentum signals, and price targets. Fewer, larger positions are
+          preferred over spreading thinly.
+      The LLM chooses actions and writes rationale per this guidance.
+      All numeric bounds (allocation caps, stop %, R/R) are enforced by the allocate_portfolio
+      tool — you do NOT compute them.
+
       STEP 1 — Cross-reference data for each ticker:
         From Market context:      average_sentiment (float), rationale
         From Technical context:   momentum_score, entry_zone_low, entry_zone_high,
@@ -261,7 +275,7 @@ tasks:
         MONITOR ≠ AVOID: MONITOR signals interest but conditions not met yet.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
-          allocate_portfolio(stocks_json='[
+          allocate_portfolio(stocks_json='{"risk_profile": "$risk_profile", "stocks": [
             {
               "ticker":          "<TICKER>",
               "action":          "<YOUR DECIDED ACTION>",
@@ -270,17 +284,17 @@ tasks:
               "entry_zone_high": <float from Technical context>,
               "current_price":   <float — current market price; required for SCALED-ENTRY>
             }, ...
-          ]')
+          ]}')
         Copy ALL of the following verbatim from the tool result:
           allocation_pct, trade_setup, scaled_entry_setups,
           deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
         Also copy composite_score verbatim from Step 2 into each position —
         do NOT paraphrase or cite a different value in the rationale text.
-        Allocation caps: LONG-BUY 40% / SCALED-ENTRY 20% / WAIT-FOR-ENTRY 15%.
+        Allocation cap: max $risk_profile per-position limit enforced by the tool (do not compute).
         WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
         SCALED-ENTRY: receives scaled_entry_setups (list of 2 setups) and trade_setup=null.
-          scaled_entry_setups[0] = immediate tranche (R/R 2:1 from current_price)
-          scaled_entry_setups[1] = pullback tranche (zone-anchored)
+          scaled_entry_setups[0] = immediate tranche (profile R/R from current_price)
+          scaled_entry_setups[1] = pullback tranche (zone-anchored, profile R/R)
         MONITOR / AVOID: allocation_pct=0, trade_setup=null, scaled_entry_setups=null.
         The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three separate
         fields. Copy all three into your output.
@@ -307,6 +321,7 @@ tasks:
 
       STEP 7 — Output a pure JSON dict (no markdown fences):
         sector: str
+        risk_profile: str — "$risk_profile" (echo back verbatim)
         positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
           current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
           rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
@@ -317,7 +332,7 @@ tasks:
         overall_strategy: str (2-3 paragraphs, describe allocation logic accurately)
         risk_level: str — Low/Medium/High/Very High
     expected_output: >
-      JSON dict with sector='$sector', positions
+      JSON dict with sector='$sector', risk_profile='$risk_profile', positions
       (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
       rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
       total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
@@ -334,6 +349,18 @@ tasks:
     description: |
       You receive the Draft Portfolio and a compact reference table with key
       verification data for each ticker. Challenge every position and find every flaw.
+
+      RISK PROFILE: $risk_profile
+      Apply profile-relative validation. Bounds for the ACTIVE profile only:
+
+      | Profile      | Max stop from entry_zone_low | Min R/R | Max per-position |
+      |---|---|---|---|
+      | conservative | 3% (stop_loss >= entry_zone_low × 0.97) | 2.5 | 15% |
+      | aggressive   | 5% (stop_loss >= entry_zone_low × 0.95) | 1.5 | 30% |
+
+      Flag as CRITICAL when a trade_setup violates the ACTIVE profile bounds above.
+      Do NOT flag as a violation when bounds are valid for the active profile even if
+      they would be invalid for the other profile.
 
       STEP 1 — For EACH ticker in the draft, build your data picture:
         From the reference_table: locate the row where "ticker" matches. Available fields:
@@ -355,7 +382,7 @@ tasks:
         SENTIMENT_CONTRADICTION — average_sentiment < 0.0 with LONG-BUY, no negative caveat (MAJOR)
         VALUATION_IGNORED       — valuation_grade=VERY_EXPENSIVE with LONG-BUY, no valuation risk mentioned (MAJOR)
         TRIGGER_CONTRADICTION   — LONG-BUY trigger fires during normal uptrend (MINOR)
-        CONCENTRATION_BREACH    — allocation_pct > 40.0 for any position (CRITICAL)
+        CONCENTRATION_BREACH    — allocation_pct > 15.0 (conservative) or > 30.0 (aggressive) for the active $risk_profile (CRITICAL)
         WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
         MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
         VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
@@ -390,6 +417,7 @@ tasks:
 
       STEP 5 — Output a pure Python dict (no markdown):
         sector: str
+        risk_profile: str — "$risk_profile" (echo back verbatim)
         draft_assessment: str — one paragraph summarizing key weaknesses (no praise)
         per_ticker_critiques[]: ticker(str) severity(str) issue_type(str) finding(str) instruction(str)
         portfolio_level_issues: str[] — bucket math, cap violations, score duplicates
@@ -421,6 +449,15 @@ tasks:
     description: |
       Receive the draft (Task 4) and the Critic's review (Task 5).
       Produce the revised final portfolio by applying the Critic's directives.
+
+      RISK PROFILE: $risk_profile
+      You MUST stay within $risk_profile bounds throughout your revision:
+        conservative: max stop 3% from entry_zone_low, min R/R 2.5, max per-position 15%
+        aggressive:   max stop 5% from entry_zone_low, min R/R 1.5, max per-position 30%
+      Do NOT drift toward the other profile when resolving Critic directives. If the Critic
+      flags a trade setup as a violation but it is within the active profile bounds, defend
+      the original with a citation of the profile bounds. If you call allocate_portfolio,
+      include "risk_profile": "$risk_profile" in the JSON payload.
 
       STEP 1 — Read the Critic's revision_directives carefully.
         For EACH directive:
@@ -457,6 +494,7 @@ tasks:
 
       STEP 4 — Output a pure JSON dict (no markdown fences):
         sector: str
+        risk_profile: str — "$risk_profile" (echo back verbatim)
         positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
           current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
           rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
@@ -476,7 +514,7 @@ tasks:
         HOLD and SHORT-SELL are not valid actions.
       - risk_level: Low / Medium / High / Very High.
       - review_frequency: DAILY / WEEKLY / MONTHLY.
-      - Maximum single-position size: 40%.
+      - Maximum single-position size: 15% (conservative) or 30% (aggressive) per $risk_profile.
     expected_output: >
       JSON dict with sector='$sector', positions
       (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/

@@ -252,6 +252,7 @@ class PositionRecommendation(BaseModel):
 
 class InvestorStrategicOutput(BaseModel):
     sector: str
+    risk_profile: Literal["conservative", "aggressive"] = "conservative"
     positions: List[PositionRecommendation] = Field(..., min_length=1)
     deployed_pct: float = Field(..., ge=0.0, le=100.0)
     reserved_pct: float = Field(..., ge=0.0, le=100.0)
@@ -312,6 +313,7 @@ class CritiqueItem(BaseModel):
 
 class CriticOutput(BaseModel):
     sector: str
+    risk_profile: Literal["conservative", "aggressive"] = "conservative"
     draft_assessment: str = Field(..., min_length=50)
     per_ticker_critiques: List[CritiqueItem] = Field(..., min_length=1)
     portfolio_level_issues: List[str]

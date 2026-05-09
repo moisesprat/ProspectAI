@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.6.17**
+**Current release: v1.7.0**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,15 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.7.0 — add risk_profile selector (conservative / aggressive)
+- add risk_profile parameter (conservative / aggressive) flowing through the entire pipeline with per-profile allocation caps, stop-loss multipliers, and R/R ratios
+- PortfolioAllocatorTool applies hardcoded bounds per profile; Draft Strategist, Critic, and Final Strategist receive qualitative profile guidance
+- InvestorStrategicOutput and CriticOutput schemas carry risk_profile field
+- Backend /api/analyze exposes risk_profile query param; analytics tracks usage by profile
+- Web UI adds Conservative / Aggressive toggle before pipeline trigger
+- add /prospectai-analytics project-scoped slash command
+- add Semiconductors sector support and enhance Reddit sentiment configuration
+
 ### v1.6.17 — enhance CLAUDE.md with additional test instructions and rela
 - enhance CLAUDE.md with additional test instructions and related repositories section
 - add comprehensive tests for PortfolioAllocatorTool covering allocation logic, trade setups, and edge cases
@@ -326,10 +335,6 @@ twine upload dist/*
 ### v1.6.14 — fix test mock propagation causing TypeError in validate_portfolio
 - Fix `MagicMock.tasks_output` auto-attribute bypassing `_parse_result` raw-text path
 - Add `tasks_output = None` to all mock crew result objects in test suite
-
-### v1.6.13 — reduce prompt verbosity by refactoring agent backstories and
-- reduce prompt verbosity by refactoring agent backstories and task descriptions
-- Expand sector options and add subreddit/keyword configurations for Industrials, Real Estate, and Utilities
 
 ## Roadmap
 

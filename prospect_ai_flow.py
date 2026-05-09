@@ -81,9 +81,13 @@ def _parse_crew_result(crew_result) -> Dict[str, Any]:
         }
 
 
+_VALID_PROFILES = frozenset({"conservative", "aggressive"})
+
+
 class ProspectAIFlowState(BaseModel):
     sector: str = ""
     today: str = ""
+    risk_profile: str = "conservative"
     market_output: Optional[MarketAnalysisOutput] = None
     technical_output: Optional[TechnicalAnalysisOutput] = None
     fundamental_output: Optional[FundamentalAnalysisOutput] = None
@@ -425,7 +429,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Technical Analysis Output", self._slim_technical()),
             self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
         ])
-        task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx)
+        task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
             self._tracker.start_phase("draft_strategy")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
@@ -442,7 +446,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Ticker Reference Table", self._critic_reference_table()),
         ])
-        task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx)
+        task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
             self._tracker.start_phase("critique_review")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
@@ -459,7 +463,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Critic Review Output", self._slim_critique()),
         ])
-        task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx)
+        task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
             self._tracker.start_phase("final_strategy")
         result = cast(CrewOutput, await self._make_crew(task).akickoff())
@@ -485,12 +489,18 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         sector = market_criteria.get("sector", "Technology")
         today = datetime.now().strftime("%Y-%m-%d")
 
+        risk_profile = market_criteria.get("risk_profile", "conservative")
+        if risk_profile not in _VALID_PROFILES:
+            raise ValueError(
+                f"Invalid risk_profile {risk_profile!r}. Valid values: {sorted(_VALID_PROFILES)}"
+            )
+
         tracker = ExecutionTracker()
         tracker.set_sector(sector)
         tracker.start()
         self._tracker = tracker
         try:
-            self.kickoff(inputs={"sector": sector, "today": today})
+            self.kickoff(inputs={"sector": sector, "today": today, "risk_profile": risk_profile})
         finally:
             tracker.finish()
 

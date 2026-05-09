@@ -83,12 +83,12 @@ class TaskFactory:
             },
         }
 
-    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "") -> Task:
+    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "", risk_profile: str = "conservative") -> Task:
         """Build a single Task for `phase`. prior_context is appended to the description."""
         if phase not in self._phase_config:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
         pc = self._phase_config[phase]
-        cfg = TaskConfigLoader().render(phase, sector=sector, today=today)
+        cfg = TaskConfigLoader().render(phase, sector=sector, today=today, risk_profile=risk_profile)
         description = cfg["description"]
         if prior_context:
             description = description + "\n\n" + prior_context
@@ -151,8 +151,10 @@ class ProspectAICrew(TaskFactory):
 
         loader = TaskConfigLoader()
 
+        risk_profile = market_criteria.get("risk_profile", "conservative")
+
         def cfg(key: str) -> Dict[str, str]:
-            return loader.render(key, sector=sector, today=today)
+            return loader.render(key, sector=sector, today=today, risk_profile=risk_profile)
 
         # ── Task 1: Market Sentiment Analysis ────────────────────────────────
         market_cfg = cfg("market_analysis")
