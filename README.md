@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.7.0**
+**Current release: v1.7.1**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.7.1 — Maintenance release
+- Maintenance and stability improvements
+
 ### v1.7.0 — add risk_profile selector (conservative / aggressive)
 - add risk_profile parameter (conservative / aggressive) flowing through the entire pipeline with per-profile allocation caps, stop-loss multipliers, and R/R ratios
 - PortfolioAllocatorTool applies hardcoded bounds per profile; Draft Strategist, Critic, and Final Strategist receive qualitative profile guidance
@@ -331,10 +334,6 @@ twine upload dist/*
 - update valuation literals in FundamentalRating to improve clarity and precision
 - add architectural review report for ProspectAI with findings and improvement plan
 - update CLAUDE.md to enhance testing instructions and clarify agent pipeline structure
-
-### v1.6.14 — fix test mock propagation causing TypeError in validate_portfolio
-- Fix `MagicMock.tasks_output` auto-attribute bypassing `_parse_result` raw-text path
-- Add `tasks_output = None` to all mock crew result objects in test suite
 
 ## Roadmap
 

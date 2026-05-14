@@ -110,17 +110,23 @@ class TestEmitProgress:
     def test_fires_callback_with_correct_fields(self, flow):
         events = []
         flow._progress_callback = events.append
-        flow._emit_progress(0, "test output")
+        mock_result = MagicMock()
+        mock_result.raw = "test output"
+        mock_result.tasks_output = []
+        flow._emit_progress(0, mock_result)
         assert len(events) == 1
         evt = events[0]
         assert evt["event"] == "task_complete"
         assert evt["task_index"] == 0
         assert evt["agent"] == "MarketAnalyst"
-        assert evt["output_snippet"] == "test output"
+        assert evt["preview"] == "test output"
 
     def test_noop_without_callback(self, flow):
         flow._progress_callback = None
-        flow._emit_progress(0, "output")  # must not raise
+        mock_result = MagicMock()
+        mock_result.raw = "output"
+        mock_result.tasks_output = []
+        flow._emit_progress(0, mock_result)  # must not raise
 
 
 # ─── _parse_crew_result ────────────────────────────────────────────────────────
