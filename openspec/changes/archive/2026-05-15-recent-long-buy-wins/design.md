@@ -31,11 +31,11 @@ The frontend is vanilla JS (no framework), served as static files on Cloudflare 
 
 **Rationale:** yfinance is free, already in the image, and a single batch `download()` call for ≤ 10 tickers returns in < 2 s. Acceptable for a non-critical widget.
 
-### D2: Show up to 5 winning picks, last 30 days, sorted by ROI
+### D2: Show up to 3 winning picks, last 30 days, sorted by ROI
 
-**Choice:** Filter to `recommended_at` within 30 days, compute ROI = (current − entry_zone_mid) / entry_zone_mid, keep only ROI > 0, sort descending, cap at 5.
+**Choice:** Filter to `recommended_at` within 30 days, compute ROI = (current − entry_zone_mid) / entry_zone_mid, keep only ROI > 0, sort descending, cap at 3.
 
-**Rationale:** 5 cards fit a single row on desktop and scroll naturally on mobile. 30-day window keeps results fresh without requiring a large history.
+**Rationale:** 3 cards give a tight, confident presentation that looks "full" even with a small history. Easy to increase later as the dataset grows.
 
 ### D3: UI placement — below header, above sector selector
 

@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Spec: long-buy-wins-api
+
+## Purpose
+
+Expose a read endpoint that surfaces recent LONG-BUY recommendations with positive ROI so that the frontend can display a "Recent Wins" section.
+
+## Requirements
 
 ### Requirement: Endpoint returns positive-ROI LONG-BUY recommendations
 The backend SHALL expose `GET /api/long-buy-wins` which reads all records from the `long-buy-history` Modal Dict, filters to recommendations made within the last 30 days that have positive ROI, and returns them sorted by ROI descending, capped at 5 results.
@@ -7,9 +13,9 @@ The backend SHALL expose `GET /api/long-buy-wins` which reads all records from t
 - **WHEN** the `long-buy-history` dict contains 4 recommendations from the last 30 days with positive ROI and 2 with negative ROI
 - **THEN** the endpoint returns exactly 4 items, each with fields `ticker`, `sector`, `recommended_at`, `entry_zone_low`, `entry_zone_high`, `current_price`, `roi_pct`, sorted by `roi_pct` descending
 
-#### Scenario: More than 5 winning picks
+#### Scenario: More than 3 winning picks
 - **WHEN** the dict contains 8 positive-ROI recommendations from the last 30 days
-- **THEN** the endpoint returns exactly 5 items (the top 5 by ROI)
+- **THEN** the endpoint returns exactly 3 items (the top 3 by ROI)
 
 #### Scenario: No positive-ROI picks exist
 - **WHEN** all recommendations in the dict have negative ROI or are older than 30 days
