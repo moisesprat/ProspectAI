@@ -25,12 +25,20 @@ The backend SHALL expose `GET /api/long-buy-wins` which reads all records from t
 - **WHEN** the `long-buy-history` Modal Dict is empty or the read fails
 - **THEN** the endpoint returns an empty array `[]` with HTTP 200 (never errors)
 
-### Requirement: ROI computation uses entry zone midpoint
-The endpoint SHALL compute ROI as `(current_price - entry_zone_mid) / entry_zone_mid * 100` where `entry_zone_mid` is `(entry_zone_low + entry_zone_high) / 2`. If a `trigger_price` field exists on the record, it SHALL be included in the response but NOT used for ROI computation (ROI is always relative to entry zone midpoint).
+### Requirement: ROI computation uses trigger price
+The endpoint SHALL compute ROI as `(current_price - trigger_price) / trigger_price * 100`, where `trigger_price` is the suggested entry price stored on the record by `PortfolioAllocatorTool`. Records that have no `trigger_price` (null or missing) SHALL be filtered out before ROI computation and SHALL NOT appear in the response, regardless of where their `current_price` sits relative to the entry zone. The `entry_zone_low` and `entry_zone_high` fields remain in the response payload for context but do not participate in ROI computation.
 
-#### Scenario: ROI calculation
-- **WHEN** a record has `entry_zone_low=100`, `entry_zone_high=110`, and the current price is `115`
-- **THEN** `roi_pct` SHALL be `((115 - 105) / 105) * 100 ≈ 9.52`
+#### Scenario: ROI calculation against trigger
+- **WHEN** a record has `trigger_price=100` and the current price is `115`
+- **THEN** `roi_pct` SHALL be `((115 - 100) / 100) * 100 = 15.0`
+
+#### Scenario: Record without trigger_price is excluded
+- **WHEN** a record has `trigger_price: null` (or the field is absent) and its `current_price` is above the entry zone midpoint
+- **THEN** the record SHALL NOT appear in the response, even though it would have shown positive ROI under the prior midpoint formula
+
+#### Scenario: Mixed records — some with trigger, some without
+- **WHEN** the dict contains 6 records from the last 30 days, of which 4 have a `trigger_price` (3 with positive trigger-based ROI, 1 negative) and 2 have `trigger_price: null` (both with positive midpoint-based ROI)
+- **THEN** the endpoint returns exactly 3 items — the 3 positive-trigger-ROI records — sorted by `roi_pct` descending
 
 ### Requirement: Current price fetched via yfinance
 The endpoint SHALL fetch the latest available price for each ticker using yfinance. If yfinance fails for a specific ticker, that ticker SHALL be excluded from the response rather than returning stale or zero data.
@@ -40,8 +48,12 @@ The endpoint SHALL fetch the latest available price for each ticker using yfinan
 - **THEN** the response includes only MSFT and META (JNJ is excluded)
 
 ### Requirement: Response schema
-The endpoint SHALL return JSON with shape `{ "wins": [...] }` where each item contains: `ticker` (string), `sector` (string), `recommended_at` (ISO 8601 string), `entry_zone_low` (float), `entry_zone_high` (float), `current_price` (float), `roi_pct` (float, rounded to 2 decimal places), and optionally `trigger_price` (float | null).
+The endpoint SHALL return JSON with shape `{ "wins": [...] }` where each item contains: `ticker` (string), `sector` (string), `recommended_at` (ISO 8601 string), `entry_zone_low` (float), `entry_zone_high` (float), `current_price` (float), `roi_pct` (float, rounded to 2 decimal places), `recommended_action` (string, always `"LONG-BUY"`), and optionally `trigger_price` (float | null).
 
-#### Scenario: Response structure
+#### Scenario: Response structure includes recommended_action
 - **WHEN** a valid request is made to `GET /api/long-buy-wins`
-- **THEN** the response body matches `{ "wins": [{ "ticker": "...", "sector": "...", "recommended_at": "...", "entry_zone_low": ..., "entry_zone_high": ..., "current_price": ..., "roi_pct": ..., "trigger_price": ... }] }`
+- **THEN** the response body matches `{ "wins": [{ "ticker": "...", "sector": "...", "recommended_at": "...", "entry_zone_low": ..., "entry_zone_high": ..., "current_price": ..., "roi_pct": ..., "recommended_action": "LONG-BUY", "trigger_price": ... }] }`
+
+#### Scenario: recommended_action is always LONG-BUY
+- **WHEN** the endpoint returns any win item
+- **THEN** the `recommended_action` field is always the string `"LONG-BUY"` (the endpoint only stores and returns LONG-BUY records)
