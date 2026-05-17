@@ -2,7 +2,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from crewai import Agent, LLM
-from agents.caching_llm import CachingLLM
+from agents.caching_llm import make_caching_llm
 from config.config import Config
 from config.agent_config_loader import AgentConfigLoader
 
@@ -53,7 +53,7 @@ class BaseAgent(ABC):
             )
 
         api_key = self.llm_api_key if self.llm_api_key else self.config.ANTHROPIC_API_KEY
-        return CachingLLM(
+        return make_caching_llm(
             model=f"anthropic/{model}",
             api_key=api_key,
             temperature=self.temperature,
