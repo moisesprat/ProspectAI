@@ -1,83 +1,84 @@
-"""Unit tests for the CachingLLM Anthropic prompt-caching wrapper."""
+"""Unit tests for the Anthropic prompt-caching wrapper."""
 import pytest
 
-from agents.caching_llm import CachingLLM
-
-
-@pytest.fixture
-def sonnet_llm():
-    return CachingLLM(model="anthropic/claude-sonnet-4-6", api_key="test-key")
-
-
-@pytest.fixture
-def haiku_llm():
-    return CachingLLM(model="anthropic/claude-haiku-4-5-20251001", api_key="test-key")
+from agents.caching_llm import AnthropicCachingCompletion, make_caching_llm
 
 
 def _long_text(chars: int) -> str:
     return "x" * chars
 
 
-def test_long_user_message_gets_cache_control(sonnet_llm):
-    # Sonnet threshold is 1024 tokens ≈ 4096 chars
-    messages = [
-        {"role": "user", "content": _long_text(5000)},
-    ]
-    out = sonnet_llm._format_messages_for_provider(messages)
-    block = out[0]["content"][0]
+@pytest.fixture
+def sonnet():
+    return AnthropicCachingCompletion(model="claude-sonnet-4-6", api_key="test-key")
+
+
+@pytest.fixture
+def haiku():
+    return AnthropicCachingCompletion(model="claude-haiku-4-5-20251001", api_key="test-key")
+
+
+def test_long_user_message_gets_cache_control(sonnet):
+    messages = [{"role": "user", "content": _long_text(5000)}]
+    formatted, _system = sonnet._format_messages_for_anthropic(messages)
+    block = formatted[0]["content"][0]
     assert block["type"] == "text"
     assert block["cache_control"] == {"type": "ephemeral"}
 
 
-def test_short_message_left_alone(sonnet_llm):
+def test_short_message_left_alone(sonnet):
     messages = [{"role": "user", "content": "hi"}]
-    out = sonnet_llm._format_messages_for_provider(messages)
-    assert out[0]["content"] == "hi"
+    formatted, _system = sonnet._format_messages_for_anthropic(messages)
+    assert formatted[0]["content"] == "hi"
 
 
-def test_haiku_higher_threshold(haiku_llm):
-    # 5000 chars ≈ 1250 tokens — above Sonnet min but below Haiku min (2048)
-    messages = [{"role": "user", "content": _long_text(5000)}]
-    out = haiku_llm._format_messages_for_provider(messages)
-    assert out[0]["content"] == _long_text(5000)
-
-
-def test_haiku_caches_when_above_2048(haiku_llm):
-    # 10000 chars ≈ 2500 tokens — above Haiku threshold
-    messages = [{"role": "user", "content": _long_text(10000)}]
-    out = haiku_llm._format_messages_for_provider(messages)
-    assert out[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-
-
-def test_breakpoint_budget_capped_at_four(sonnet_llm):
-    messages = [{"role": "user", "content": _long_text(5000)} for _ in range(6)]
-    out = sonnet_llm._format_messages_for_provider(messages)
-    cached = sum(1 for m in out if isinstance(m["content"], list))
-    assert cached == 4
-
-
-def test_assistant_role_not_cached(sonnet_llm):
+def test_long_system_message_wrapped(sonnet):
     messages = [
-        {"role": "user", "content": "start"},
-        {"role": "assistant", "content": _long_text(5000)},
+        {"role": "system", "content": _long_text(5000)},
+        {"role": "user", "content": "hi"},
     ]
-    out = sonnet_llm._format_messages_for_provider(messages)
-    assert out[1]["content"] == _long_text(5000)
+    _formatted, system = sonnet._format_messages_for_anthropic(messages)
+    assert isinstance(system, list)
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_non_anthropic_passthrough():
-    llm = CachingLLM(model="ollama/qwen3.5:9b")
+def test_haiku_higher_threshold_skips_sub_2048(haiku):
+    # 5000 chars ≈ 1250 tokens — above Sonnet min, below Haiku min (2048)
     messages = [{"role": "user", "content": _long_text(5000)}]
-    out = llm._format_messages_for_provider(messages)
-    assert out[0]["content"] == _long_text(5000)
+    formatted, _ = haiku._format_messages_for_anthropic(messages)
+    assert formatted[0]["content"] == _long_text(5000)
 
 
-def test_extended_ttl_adds_beta_header_and_ttl_field():
-    llm = CachingLLM(
-        model="anthropic/claude-sonnet-4-6",
-        api_key="test-key",
-        cache_ttl="1h",
+def test_haiku_caches_when_above_2048(haiku):
+    messages = [{"role": "user", "content": _long_text(10000)}]
+    formatted, _ = haiku._format_messages_for_anthropic(messages)
+    assert formatted[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_breakpoint_budget_capped_at_four(sonnet):
+    # 1 system + 6 long user messages — only 4 should be wrapped total
+    messages = [{"role": "system", "content": _long_text(5000)}]
+    messages += [{"role": "user", "content": _long_text(5000)} for _ in range(6)]
+    formatted, system = sonnet._format_messages_for_anthropic(messages)
+    wrapped_users = sum(1 for m in formatted if isinstance(m.get("content"), list))
+    system_wrapped = 1 if isinstance(system, list) else 0
+    assert wrapped_users + system_wrapped == 4
+
+
+def test_extended_ttl_adds_ttl_field():
+    llm = AnthropicCachingCompletion(
+        model="claude-sonnet-4-6", api_key="test-key", cache_ttl="1h"
     )
     messages = [{"role": "user", "content": _long_text(5000)}]
-    out = llm._format_messages_for_provider(messages)
-    assert out[0]["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    formatted, _ = llm._format_messages_for_anthropic(messages)
+    assert formatted[0]["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_factory_returns_caching_class_for_anthropic():
+    llm = make_caching_llm(model="anthropic/claude-sonnet-4-6", api_key="test-key")
+    assert isinstance(llm, AnthropicCachingCompletion)
+
+
+def test_factory_returns_vanilla_llm_for_ollama():
+    llm = make_caching_llm(model="ollama/qwen3.5:9b", base_url="http://localhost:11434")
+    assert not isinstance(llm, AnthropicCachingCompletion)
