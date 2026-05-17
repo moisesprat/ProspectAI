@@ -11,7 +11,9 @@ class PhaseMetrics:
     end_time: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
-    cached_tokens: int = 0
+    cached_tokens: int = 0           # cache READS (cache_read_input_tokens)
+    cache_creation_tokens: int = 0   # cache WRITES (cache_creation_input_tokens)
+    cache_creation_snapshot: int = 0  # snapshot of LLM cumulative writes at phase start
     model_token_map: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     @property
@@ -77,16 +79,46 @@ class ExecutionTracker:
 
     # ── Phase hooks ────────────────────────────────────────────────────────────
 
-    def start_phase(self, name: str) -> None:
-        self._phases[name] = PhaseMetrics(name=name, start_time=time.perf_counter())
+    @staticmethod
+    def _llm_cache_creation(llm: Any) -> int:
+        """Read cumulative cache_creation_tokens counter from an LLM instance.
 
-    def finish_phase(self, name: str, token_usage: Any, model_id: str = "unknown") -> None:
+        AnthropicCachingCompletion stores it in `_token_usage["cache_creation_tokens"]`.
+        Returns 0 for vanilla LLMs (Ollama, non-caching Anthropic) which lack the field.
+        """
+        if llm is None:
+            return 0
+        usage = getattr(llm, "_token_usage", None)
+        if not isinstance(usage, dict):
+            return 0
+        return usage.get("cache_creation_tokens", 0) or 0
+
+    def start_phase(self, name: str, llm: Any = None) -> None:
+        """Start timing a phase. Pass the agent's LLM to snapshot its cumulative
+        cache_creation counter so finish_phase can compute the per-phase delta.
+        """
+        self._phases[name] = PhaseMetrics(
+            name=name,
+            start_time=time.perf_counter(),
+            cache_creation_snapshot=self._llm_cache_creation(llm),
+        )
+
+    def finish_phase(
+        self,
+        name: str,
+        token_usage: Any,
+        model_id: str = "unknown",
+        llm: Any = None,
+    ) -> None:
         """Record end time and token counts for a completed phase.
 
         Args:
             name: Phase name matching one of _PHASE_ORDER.
             token_usage: CrewOutput.token_usage (UsageMetrics) from akickoff().
             model_id: Model identifier string (e.g. "anthropic/claude-sonnet-4-6").
+            llm: Same LLM instance passed to start_phase; used to read the
+                cumulative cache_creation_tokens counter and derive the delta
+                for this phase. Optional — falls back to 0 if absent.
         """
         pm = self._phases.get(name)
         if pm is None:
@@ -94,7 +126,16 @@ class ExecutionTracker:
             self._phases[name] = pm
         pm.end_time = time.perf_counter()
 
+        # Cache-write delta — computed from per-LLM cumulative counter because
+        # CrewOutput.token_usage does not surface cache_creation_input_tokens.
+        cache_write_tok = max(
+            0, self._llm_cache_creation(llm) - pm.cache_creation_snapshot
+        )
+        pm.cache_creation_tokens += cache_write_tok
+
         if token_usage is None:
+            if cache_write_tok:
+                self._add_to_buckets(pm, model_id, 0, 0, 0, cache_write_tok)
             return
 
         input_tok = getattr(token_usage, "prompt_tokens", 0) or 0
@@ -108,21 +149,39 @@ class ExecutionTracker:
         pm.output_tokens += output_tok
         pm.cached_tokens += cached_tok
 
-        bucket = pm.model_token_map.setdefault(
-            model_id, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
-        )
+        self._add_to_buckets(pm, model_id, input_tok, output_tok, cached_tok, cache_write_tok)
+
+    def _add_to_buckets(
+        self,
+        pm: PhaseMetrics,
+        model_id: str,
+        input_tok: int,
+        output_tok: int,
+        cached_tok: int,
+        cache_write_tok: int,
+    ) -> None:
+        def _empty() -> Dict[str, int]:
+            return {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+
+        bucket = pm.model_token_map.setdefault(model_id, _empty())
         bucket["input_tokens"] += input_tok
         bucket["output_tokens"] += output_tok
         bucket["total_tokens"] += input_tok + output_tok
         bucket["cached_tokens"] += cached_tok
+        bucket["cache_creation_tokens"] += cache_write_tok
 
-        global_bucket = self._model_totals.setdefault(
-            model_id, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
-        )
+        global_bucket = self._model_totals.setdefault(model_id, _empty())
         global_bucket["input_tokens"] += input_tok
         global_bucket["output_tokens"] += output_tok
         global_bucket["total_tokens"] += input_tok + output_tok
         global_bucket["cached_tokens"] += cached_tok
+        global_bucket["cache_creation_tokens"] += cache_write_tok
 
     # ── Output ─────────────────────────────────────────────────────────────────
 
@@ -141,12 +200,14 @@ class ExecutionTracker:
                 "input_tokens": pm.input_tokens,
                 "output_tokens": pm.output_tokens,
                 "cached_tokens": pm.cached_tokens,
+                "cache_creation_tokens": pm.cache_creation_tokens,
                 "total_tokens": pm.total_tokens,
             })
         totals = {
             "input_tokens": sum(p["input_tokens"] for p in phases),
             "output_tokens": sum(p["output_tokens"] for p in phases),
             "cached_tokens": sum(p["cached_tokens"] for p in phases),
+            "cache_creation_tokens": sum(p["cache_creation_tokens"] for p in phases),
             "total_tokens": sum(p["total_tokens"] for p in phases),
         }
         return {

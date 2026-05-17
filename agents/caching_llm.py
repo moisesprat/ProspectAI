@@ -34,11 +34,33 @@ _EXTENDED_TTL_BETA_HEADER = "extended-cache-ttl-2025-04-11"
 
 
 class AnthropicCachingCompletion(AnthropicCompletion):
-    """`AnthropicCompletion` with prompt-caching markers injected automatically."""
+    """`AnthropicCompletion` with prompt-caching markers injected automatically.
+
+    Also tracks `cache_creation_input_tokens` per LLM instance — CrewAI's
+    upstream `_extract_anthropic_token_usage` discards this field, so it would
+    otherwise be invisible. Exposed via `self._token_usage["cache_creation_tokens"]`
+    for `ExecutionTracker` to snapshot/delta around each phase.
+    """
 
     def __init__(self, *args: Any, cache_ttl: str = "5m", **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._cache_ttl = cache_ttl
+        self._token_usage["cache_creation_tokens"] = 0
+
+    @staticmethod
+    def _extract_anthropic_token_usage(response: Any) -> dict[str, Any]:
+        usage_dict = AnthropicCompletion._extract_anthropic_token_usage(response)
+        if hasattr(response, "usage") and response.usage:
+            usage_dict["cache_creation_input_tokens"] = (
+                getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            )
+        return usage_dict
+
+    def _track_token_usage_internal(self, usage_data: dict[str, Any]) -> None:
+        super()._track_token_usage_internal(usage_data)
+        self._token_usage["cache_creation_tokens"] += (
+            usage_data.get("cache_creation_input_tokens", 0) or 0
+        )
 
     def _min_cache_tokens(self) -> int:
         return _HAIKU_MIN_TOKENS if "haiku" in self.model.lower() else _SONNET_OPUS_MIN_TOKENS

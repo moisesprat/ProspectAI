@@ -173,6 +173,13 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         except Exception:
             return "unknown"
 
+    @staticmethod
+    def _task_llm(task) -> Any:
+        try:
+            return task.agent.llm
+        except Exception:
+            return None
+
     def _fmt_ctx(self, label: str, content: str) -> str:
         return f"=== {label} ===\n{content}"
 
@@ -411,10 +418,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._emit_start(0)
         task = self._factory.build_task("market_analysis", self.state.sector, self.state.today)
         if self._tracker:
-            self._tracker.start_phase("market_analysis")
+            self._tracker.start_phase("market_analysis", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 0).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
         self._emit_progress(0, result)
         return result.raw or ""
@@ -426,10 +433,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
         task = self._factory.build_task("technical_analysis", self.state.sector, self.state.today, ctx)
         if self._tracker:
-            self._tracker.start_phase("technical_analysis")
+            self._tracker.start_phase("technical_analysis", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 1).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.technical_output = self._extract_pydantic(result, TechnicalAnalysisOutput, "technical_analysis")
         self._emit_progress(1, result)
         return result.raw or ""
@@ -441,10 +448,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
         task = self._factory.build_task("fundamental_analysis", self.state.sector, self.state.today, ctx)
         if self._tracker:
-            self._tracker.start_phase("fundamental_analysis")
+            self._tracker.start_phase("fundamental_analysis", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 2).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.fundamental_output = self._extract_pydantic(result, FundamentalAnalysisOutput, "fundamental_analysis")
         self._emit_progress(2, result)
         return result.raw or ""
@@ -460,10 +467,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ])
         task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
-            self._tracker.start_phase("draft_strategy")
+            self._tracker.start_phase("draft_strategy", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 3).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.draft_output = self._extract_pydantic(result, InvestorStrategicOutput, "draft_strategy")
         self._emit_progress(3, result)
         return result.raw or ""
@@ -478,10 +485,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ])
         task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
-            self._tracker.start_phase("critique_review")
+            self._tracker.start_phase("critique_review", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 4).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.critique_output = self._extract_pydantic(result, CriticOutput, "critique_review")
         self._emit_progress(4, result)
         return result.raw or ""
@@ -496,10 +503,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ])
         task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
-            self._tracker.start_phase("final_strategy")
+            self._tracker.start_phase("final_strategy", llm=self._task_llm(task))
         result = cast(CrewOutput, await self._make_crew(task, 5).akickoff())
         if self._tracker:
-            self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task))
+            self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self._final_crew_result = result
         self._emit_progress(5, result)
         return result.raw or ""
