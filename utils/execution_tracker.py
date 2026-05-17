@@ -12,8 +12,6 @@ class PhaseMetrics:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
-    cache_creation_tokens: int = 0
-    cache_read_tokens: int = 0
     model_token_map: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     @property
@@ -101,51 +99,30 @@ class ExecutionTracker:
 
         input_tok = getattr(token_usage, "prompt_tokens", 0) or 0
         output_tok = getattr(token_usage, "completion_tokens", 0) or 0
+        # On Anthropic models this is sourced from `cache_read_input_tokens` —
+        # i.e. tokens served from Anthropic's prompt cache. See
+        # crewai/llms/providers/anthropic/completion.py::_extract_anthropic_token_usage.
         cached_tok = getattr(token_usage, "cached_prompt_tokens", 0) or 0
-        cache_creation_tok = getattr(token_usage, "cache_creation_input_tokens", 0) or 0
-        cache_read_tok = getattr(token_usage, "cache_read_input_tokens", 0) or 0
 
         pm.input_tokens += input_tok
         pm.output_tokens += output_tok
         pm.cached_tokens += cached_tok
-        pm.cache_creation_tokens += cache_creation_tok
-        pm.cache_read_tokens += cache_read_tok
 
         bucket = pm.model_token_map.setdefault(
-            model_id,
-            {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "cache_creation_tokens": 0,
-                "cache_read_tokens": 0,
-            },
+            model_id, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
         )
         bucket["input_tokens"] += input_tok
         bucket["output_tokens"] += output_tok
         bucket["total_tokens"] += input_tok + output_tok
         bucket["cached_tokens"] += cached_tok
-        bucket["cache_creation_tokens"] += cache_creation_tok
-        bucket["cache_read_tokens"] += cache_read_tok
 
         global_bucket = self._model_totals.setdefault(
-            model_id,
-            {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "cache_creation_tokens": 0,
-                "cache_read_tokens": 0,
-            },
+            model_id, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
         )
         global_bucket["input_tokens"] += input_tok
         global_bucket["output_tokens"] += output_tok
         global_bucket["total_tokens"] += input_tok + output_tok
         global_bucket["cached_tokens"] += cached_tok
-        global_bucket["cache_creation_tokens"] += cache_creation_tok
-        global_bucket["cache_read_tokens"] += cache_read_tok
 
     # ── Output ─────────────────────────────────────────────────────────────────
 
@@ -164,16 +141,12 @@ class ExecutionTracker:
                 "input_tokens": pm.input_tokens,
                 "output_tokens": pm.output_tokens,
                 "cached_tokens": pm.cached_tokens,
-                "cache_creation_tokens": pm.cache_creation_tokens,
-                "cache_read_tokens": pm.cache_read_tokens,
                 "total_tokens": pm.total_tokens,
             })
         totals = {
             "input_tokens": sum(p["input_tokens"] for p in phases),
             "output_tokens": sum(p["output_tokens"] for p in phases),
             "cached_tokens": sum(p["cached_tokens"] for p in phases),
-            "cache_creation_tokens": sum(p["cache_creation_tokens"] for p in phases),
-            "cache_read_tokens": sum(p["cache_read_tokens"] for p in phases),
             "total_tokens": sum(p["total_tokens"] for p in phases),
         }
         return {
