@@ -3,40 +3,50 @@
 ## Purpose
 TBD - created by archiving change portfolio-allocator-tests. Update Purpose after archive.
 ## Requirements
-### Requirement: Allocation is proportional to composite score, capped per action type
+### Requirement: Allocation is proportional to composite score, capped per risk profile
 
 The allocator SHALL distribute capital proportionally to each stock's `composite_score`
-among deployed positions (LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY), subject to per-action
-caps: LONG-BUY ≤ 40%, SCALED-ENTRY ≤ 20%, WAIT-FOR-ENTRY ≤ 15%. MONITOR and AVOID
-positions SHALL receive 0% allocation.
+among deployed positions (LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY), subject to a
+per-position cap determined by `risk_profile`:
 
-#### Scenario: Single LONG-BUY gets full proportional share up to cap
+| Profile | Max allocation per position |
+|---|---|
+| `conservative` | 15% |
+| `aggressive` | 30% |
 
-- **WHEN** one stock with action LONG-BUY and composite_score 75 is submitted
-- **THEN** allocation_pct is 100.0 (sole position, uncapped at 40% cap)
+MONITOR and AVOID positions SHALL receive 0% allocation regardless of profile.
 
-#### Scenario: Two equal-score LONG-BUY positions split evenly
+The `risk_profile` value SHALL be read from the top-level `risk_profile` key in the JSON
+payload passed to `PortfolioAllocatorTool`. If absent or invalid it SHALL default to
+`"conservative"` and log a warning.
 
-- **WHEN** two stocks with action LONG-BUY and equal composite_scores are submitted
-- **THEN** each receives allocation_pct of 50.0
+#### Scenario: Single LONG-BUY under conservative gets full share up to 15% cap
 
-#### Scenario: LONG-BUY allocation is capped at 40%
+- **WHEN** one stock with action LONG-BUY and composite_score 75 is submitted with `risk_profile="conservative"`
+- **THEN** allocation_pct is 15.0 (sole position, capped at conservative limit)
 
-- **WHEN** one LONG-BUY stock has a much higher composite_score than other deployed positions
-- **THEN** its allocation_pct does not exceed 40.0
+#### Scenario: Single LONG-BUY under aggressive gets full share up to 30% cap
 
-#### Scenario: SCALED-ENTRY allocation is capped at 20%
+- **WHEN** one stock with action LONG-BUY and composite_score 75 is submitted with `risk_profile="aggressive"`
+- **THEN** allocation_pct is 30.0 (sole position, capped at aggressive limit)
 
-- **WHEN** a SCALED-ENTRY stock would otherwise exceed 20% proportionally
-- **THEN** its allocation_pct does not exceed 20.0
+#### Scenario: Conservative profile caps all positions at 15%
 
-#### Scenario: WAIT-FOR-ENTRY allocation is capped at 15%
-
-- **WHEN** a WAIT-FOR-ENTRY stock would otherwise exceed 15% proportionally
+- **WHEN** one stock has a much higher composite_score than all others under `risk_profile="conservative"`
 - **THEN** its allocation_pct does not exceed 15.0
 
-#### Scenario: MONITOR and AVOID receive zero allocation
+#### Scenario: Aggressive profile caps all positions at 30%
+
+- **WHEN** one stock has a much higher composite_score than all others under `risk_profile="aggressive"`
+- **THEN** its allocation_pct does not exceed 30.0
+
+#### Scenario: Two equal-score LONG-BUY positions split evenly under both profiles
+
+- **WHEN** two stocks with action LONG-BUY and equal composite_scores are submitted
+- **THEN** each receives an equal allocation_pct regardless of profile
+
+#### Scenario: MONITOR and AVOID receive zero allocation under both profiles
 
 - **WHEN** stocks with action MONITOR or AVOID are submitted alongside deployed positions
-- **THEN** their allocation_pct is 0.0
+- **THEN** their allocation_pct is 0.0 regardless of risk_profile
 
