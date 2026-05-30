@@ -43,46 +43,41 @@ for both profiles.
 - **WHEN** any LONG-BUY or WAIT-FOR-ENTRY trade setup is computed
 - **THEN** stop_loss < entry_zone_low and take_profit > entry_zone_high
 
-### Requirement: Current-price-anchored R/R setup for SCALED-ENTRY immediate tranche
+### Requirement: Above-zone LONG-BUY uses current-price-anchored stop and take-profit
+When the LLM assigns `LONG-BUY` to a stock with `current_price > entry_zone_high`
+(i.e., the stock is above its entry zone), the allocator SHALL detect this condition
+and compute stop and take-profit anchored to `current_price` rather than `entry_zone_low`,
+using the same profile `stop_multiplier` and `rr_ratio`.
 
-For SCALED-ENTRY the allocator SHALL produce two setups in `scaled_entry_setups` using
-profile-specific constants:
+Formulas:
+- `stop_loss = current_price × stop_multiplier`
+- `take_profit = current_price + (current_price − stop_loss) × rr_ratio`
 
-1. Immediate tranche: `stop_loss = current_price × stop_multiplier`, `take_profit = current_price + (current_price − stop_loss) × rr_ratio`
-2. Pullback tranche: zone-anchored formula (same as LONG-BUY), using the same profile constants.
+The `entry_zone_low` and `entry_zone_high` fields in the returned `trade_setup` SHALL
+reflect the zone values from the technical tool (context for the user), but stop and
+take-profit SHALL be anchored to `current_price` to ensure the R/R is valid at the
+actual entry price.
 
-`trade_setup` SHALL be null for SCALED-ENTRY.
+The full allocation counts as `deployed_pct` (no split into reserved).
 
-| Constant | Conservative | Aggressive |
-|---|---|---|
-| `stop_multiplier` | 0.97 | 0.95 |
-| `rr_ratio` | 2.5 | 1.5 |
+#### Scenario: Above-zone LONG-BUY aggressive uses current-price stop/TP
+- **WHEN** a LONG-BUY stock has `current_price=220`, `entry_zone_low=207`, `entry_zone_high=213`, and `risk_profile=aggressive`
+- **THEN** `stop_loss` equals 209.0 (220 × 0.95)
+- **AND** `take_profit` equals 236.5 (220 + (220 − 209) × 1.5)
+- **AND** full `allocation_pct` is counted in `deployed_pct`
 
-#### Scenario: SCALED-ENTRY conservative immediate tranche uses 3% stop and R/R 2.5
+#### Scenario: In-zone LONG-BUY continues to use zone-anchored stop/TP
+- **WHEN** a LONG-BUY stock has `current_price=210`, `entry_zone_low=207`, `entry_zone_high=213`, and `risk_profile=aggressive`
+- **THEN** `stop_loss` equals 196.65 (207 × 0.95)
+- **AND** `take_profit` equals 221.45 (213 + (207 − 196.65) × 1.5)
 
-- **WHEN** a SCALED-ENTRY stock with current_price=150 is submitted with `risk_profile="conservative"`
-- **THEN** immediate tranche stop_loss equals 145.5 (150 × 0.97)
-- **AND** immediate tranche take_profit equals 156.0 (150 + (150 − 145.5) × 2.5)
+#### Scenario: Above-zone LONG-BUY conservative uses current-price stop/TP
+- **WHEN** a LONG-BUY stock has `current_price=220`, `entry_zone_low=207`, `entry_zone_high=213`, and `risk_profile=conservative`
+- **THEN** `stop_loss` equals 213.4 (220 × 0.97)
+- **AND** `take_profit` equals 230.4 (220 + (220 − 213.4) × 2.5)
 
-#### Scenario: SCALED-ENTRY aggressive immediate tranche uses 5% stop and R/R 1.5
-
-- **WHEN** a SCALED-ENTRY stock with current_price=150 is submitted with `risk_profile="aggressive"`
-- **THEN** immediate tranche stop_loss equals 142.5 (150 × 0.95)
-- **AND** immediate tranche take_profit equals 161.25 (150 + (150 − 142.5) × 1.5)
-
-#### Scenario: SCALED-ENTRY pullback tranche uses profile zone-anchored formula
-
-- **WHEN** a SCALED-ENTRY stock with entry_zone_low=140 and entry_zone_high=145 is submitted with `risk_profile="conservative"`
-- **THEN** pullback tranche stop_loss equals 135.8 (140 × 0.97)
-- **AND** pullback tranche take_profit equals 159.5 (145 + (140 − 135.8) × 2.5)
-
-#### Scenario: SCALED-ENTRY trade_setup field is null
-
-- **WHEN** a SCALED-ENTRY stock is submitted
-- **THEN** trade_setup is null and scaled_entry_setups has exactly 2 entries
-
-#### Scenario: MONITOR and AVOID have null trade_setup and null scaled_entry_setups
+#### Scenario: MONITOR and AVOID have null trade_setup
 
 - **WHEN** stocks with action MONITOR or AVOID are submitted
-- **THEN** both trade_setup and scaled_entry_setups are null
+- **THEN** trade_setup is null
 

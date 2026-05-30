@@ -43,5 +43,5 @@
 ## 7. Validation
 
 - [x] 7.1 Run `pytest tests/ -v` and confirm all tests pass (216 pass; 4 failures + 24 errors in test_crew.py are pre-existing chromadb import issues unrelated to this change)
-- [ ] 7.2 Run a full pipeline (`python3 main.py --sector Technology`) with `--risk-profile aggressive` and verify that PULLBACK_ENTRY stocks with BULLISH signals receive LONG-BUY actions (not WAIT-FOR-ENTRY)
-- [ ] 7.3 Verify the `/api/long-buy-wins` endpoint still functions after allocator change (no SCALED-ENTRY records expected)
+- [x] 7.2 Run a full pipeline (`python3 main.py --sector Technology`) with `--risk-profile aggressive` and verify that PULLBACK_ENTRY stocks with BULLISH signals receive LONG-BUY actions (not WAIT-FOR-ENTRY)
+- [x] 7.3 Verify the `/api/long-buy-wins` endpoint still functions after allocator change (no SCALED-ENTRY records expected)
