@@ -320,7 +320,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     def _slim_draft(self) -> str:
         """Draft positions for Critic/Final — truncates per-position rationale to 150 chars
         and overall_strategy to 200 chars.  All structural fields (action, composite_score,
-        allocation_pct, trade_setup, scaled_entry_setups, triggers) are kept in full.
+        allocation_pct, trade_setup, triggers) are kept in full.
         """
         do = self.state.draft_output
         if do is None:
@@ -334,10 +334,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "allocation_pct": p.allocation_pct,
                 "current_price": p.current_price,
                 "trade_setup": p.trade_setup.model_dump() if p.trade_setup else None,
-                "scaled_entry_setups": (
-                    [s.model_dump() for s in p.scaled_entry_setups]
-                    if p.scaled_entry_setups else None
-                ),
                 "monitoring_triggers": p.monitoring_triggers,
                 "review_frequency": p.review_frequency,
                 "rationale": (p.rationale or "")[:150],
