@@ -272,25 +272,23 @@ class InvestorStrategicOutput(BaseModel):
 
     @model_validator(mode="after")
     def validate_capital_buckets(self) -> "InvestorStrategicOutput":
-        # total_allocated_pct is purely derived from position allocations.
-        # Auto-correct it so a LLM copy-paste discrepancy doesn't fail the run.
-        computed_total = round(sum(p.allocation_pct for p in self.positions), 1)
-        if abs(computed_total - self.total_allocated_pct) > 0.5:
-            self.total_allocated_pct = computed_total
-
+        # Fix the three deployed/reserved/cash buckets first so they sum to 100.
+        # LLM may miscount cash (e.g. double-count or zero it out).
         bucket_sum = round(self.deployed_pct + self.reserved_pct + self.cash_reserve_pct, 1)
         if abs(bucket_sum - 100.0) > 0.5:
-            # LLM arithmetic errors (e.g. double-counting cash) are corrected automatically.
-            # Prefer deriving cash from the other two; if deployed+reserved already exceed 100,
-            # normalize all three proportionally.
             dr_sum = self.deployed_pct + self.reserved_pct
             if dr_sum <= 100.0:
                 self.cash_reserve_pct = round(100.0 - dr_sum, 2)
             elif bucket_sum > 0:
                 scale = 100.0 / bucket_sum
-                self.deployed_pct = round(self.deployed_pct * scale, 2)
-                self.reserved_pct = round(self.reserved_pct * scale, 2)
+                self.deployed_pct     = round(self.deployed_pct * scale, 2)
+                self.reserved_pct     = round(self.reserved_pct * scale, 2)
                 self.cash_reserve_pct = round(100.0 - self.deployed_pct - self.reserved_pct, 2)
+
+        # total_allocated_pct = deployed + reserved (the PortfolioAllocatorTool definition).
+        # Derive it from the corrected buckets so LLM errors (e.g. counting only LONG-BUY
+        # allocations and ignoring WAIT-FOR-ENTRY earmarked capital) are auto-corrected.
+        self.total_allocated_pct = round(self.deployed_pct + self.reserved_pct, 1)
         return self
 
 

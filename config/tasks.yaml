@@ -305,6 +305,9 @@ tasks:
         monitoring_triggers: 2-3 specific, measurable thresholds directionally
           consistent with your action. LONG-BUY triggers must fire on bearish
           reversal patterns, not normal uptrend levels.
+          For LONG-BUY: use RSI > 75 (overbought exit) or price below stop_loss as
+          review triggers. Do NOT set RSI < 50 as a trigger — that level is normal
+          during bull runs and will fire during healthy upward momentum.
           For WAIT-FOR-ENTRY: current_price is ABOVE entry_zone_high — you are waiting
           for price to move DOWN into the zone. At least one trigger must describe price
           falling to the zone (e.g. "Price falls/retraces to entry_zone_high of $$X.XX").
@@ -489,6 +492,8 @@ tasks:
           what changed and why. If rejected, cite the specific number that supports
           the original decision.
         monitoring_triggers: directionally consistent with the action.
+          For LONG-BUY: use RSI > 75 (overbought exit) or price below stop_loss as
+          review triggers. Do NOT use RSI < 50 — that level is normal in bull runs.
         review_frequency: DAILY / WEEKLY / MONTHLY.
         overall_strategy: 2-3 paragraphs summarising the final portfolio.
 

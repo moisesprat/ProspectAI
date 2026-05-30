@@ -22,10 +22,11 @@ class ValidationIssue:
 def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
     """Validate a single position dict from InvestorStrategicOutput.positions."""
     issues: List[ValidationIssue] = []
-    ticker  = position.get("ticker", "UNKNOWN")
-    action  = (position.get("action") or "").upper()
-    setup   = position.get("trade_setup") or {}
-    triggers = position.get("monitoring_triggers") or []
+    ticker        = position.get("ticker", "UNKNOWN")
+    action        = (position.get("action") or "").upper()
+    setup         = position.get("trade_setup") or {}
+    triggers      = position.get("monitoring_triggers") or []
+    current_price = position.get("current_price")
 
     entry_low   = setup.get("entry_zone_low")
     entry_high  = setup.get("entry_zone_high")
@@ -57,6 +58,20 @@ def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
                 ),
             ))
 
+    # ── Degenerate entry zone ─────────────────────────────────────────────────
+    if entry_low and entry_high and entry_high - entry_low < entry_low * 0.003:
+        width = round(entry_high - entry_low, 4)
+        issues.append(ValidationIssue(
+            severity="critical",
+            ticker=ticker,
+            field="trade_setup",
+            message=(
+                f"Entry zone width ({width}) is degenerate — "
+                f"low ({entry_low}) and high ({entry_high}) are nearly identical. "
+                "Trade setup cannot be meaningfully monitored."
+            ),
+        ))
+
     # ── Risk / Reward ratio ───────────────────────────────────────────────────
     if entry_low and take_profit and stop_loss and entry_low > stop_loss:
         upside   = take_profit - entry_low
@@ -72,6 +87,42 @@ def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
                     f"(upside {upside:.2f} vs downside {downside:.2f})."
                 ),
             ))
+
+    # ── LONG-BUY above entry zone ────────────────────────────────────────────
+    if action == "LONG-BUY" and current_price and entry_high and current_price > entry_high:
+        gap_pct = (current_price - entry_high) / entry_high * 100
+        issues.append(ValidationIssue(
+            severity="warning",
+            ticker=ticker,
+            field="action",
+            message=(
+                f"LONG-BUY but current_price ({current_price}) is "
+                f"{gap_pct:.1f}% above entry_zone_high ({entry_high}). "
+                "Rationale may overstate zone alignment."
+            ),
+        ))
+
+    # ── Actual R/R from current_price for LONG-BUY ───────────────────────────
+    if (
+        action == "LONG-BUY"
+        and current_price and stop_loss and take_profit
+        and current_price > stop_loss
+    ):
+        actual_upside   = take_profit - current_price
+        actual_downside = current_price - stop_loss
+        if actual_downside > 0:
+            actual_rr = actual_upside / actual_downside
+            if actual_rr < 1.0:
+                issues.append(ValidationIssue(
+                    severity="critical",
+                    ticker=ticker,
+                    field="trade_setup",
+                    message=(
+                        f"Actual R/R from current_price ({current_price}) is "
+                        f"{actual_rr:.2f}:1 (< 1.0) — stop_loss ({stop_loss}) "
+                        f"is closer than take_profit ({take_profit})."
+                    ),
+                ))
 
     # ── RSI trigger contradiction ─────────────────────────────────────────────
     # If action is LONG-BUY and a trigger fires at RSI=70, it will fire during
@@ -150,17 +201,51 @@ def validate_portfolio(portfolio: Dict[str, Any]) -> List[ValidationIssue]:
                 ),
             ))
 
-    # ── Total allocation sanity ───────────────────────────────────────────────
-    total = portfolio.get("total_allocated_pct", 0)
-    cash  = portfolio.get("cash_reserve_pct", 0)
-    if abs(total + cash - 100.0) > 1.0:
+    # ── Three-bucket sanity: deployed + reserved + cash = 100 ────────────────
+    deployed = portfolio.get("deployed_pct", 0)
+    reserved = portfolio.get("reserved_pct", 0)
+    cash     = portfolio.get("cash_reserve_pct", 0)
+    bucket_sum = deployed + reserved + cash
+    if abs(bucket_sum - 100.0) > 1.0:
         issues.append(ValidationIssue(
             severity="critical",
             ticker="PORTFOLIO",
-            field="total_allocated_pct",
+            field="deployed_pct/reserved_pct/cash_reserve_pct",
             message=(
-                f"total_allocated_pct ({total}) + cash_reserve_pct ({cash}) "
-                f"= {total + cash:.1f}, expected ~100."
+                f"deployed ({deployed}) + reserved ({reserved}) + "
+                f"cash ({cash}) = {bucket_sum:.1f}, expected ~100."
+            ),
+        ))
+
+    # ── Position allocations must match bucket totals ─────────────────────────
+    long_buy_sum = round(sum(
+        p.get("allocation_pct", 0) for p in positions
+        if (p.get("action") or "").upper() == "LONG-BUY"
+    ), 1)
+    wfe_sum = round(sum(
+        p.get("allocation_pct", 0) for p in positions
+        if (p.get("action") or "").upper() == "WAIT-FOR-ENTRY"
+    ), 1)
+    if abs(long_buy_sum - deployed) > 2.0:
+        issues.append(ValidationIssue(
+            severity="warning",
+            ticker="PORTFOLIO",
+            field="deployed_pct",
+            message=(
+                f"Sum of LONG-BUY position allocations ({long_buy_sum}%) "
+                f"does not match deployed_pct ({deployed}%). "
+                "WAIT-FOR-ENTRY earmarked allocations may be missing."
+            ),
+        ))
+    if abs(wfe_sum - reserved) > 2.0:
+        issues.append(ValidationIssue(
+            severity="warning",
+            ticker="PORTFOLIO",
+            field="reserved_pct",
+            message=(
+                f"Sum of WAIT-FOR-ENTRY position allocations ({wfe_sum}%) "
+                f"does not match reserved_pct ({reserved}%). "
+                "Earmarked capital is not reflected in position-level allocation_pct."
             ),
         ))
 

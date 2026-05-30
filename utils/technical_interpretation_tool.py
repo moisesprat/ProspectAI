@@ -211,6 +211,12 @@ class TechnicalInterpretationTool(BaseTool):
             if entry_zone_low >= entry_zone_high:
                 entry_zone_low = round(entry_zone_high * 0.985, 2)
 
+            # 4. Minimum zone width: at least 0.5% of entry_zone_high.
+            #    Prevents near-zero-width zones when ATR is tiny or SMA20 ≈ mid.
+            min_width = round(entry_zone_high * 0.005, 2)
+            if entry_zone_high - entry_zone_low < min_width:
+                entry_zone_low = round(entry_zone_high - min_width, 2)
+
             entry_zone_high = round(entry_zone_high, 2)
             entry_zone_low  = round(entry_zone_low,  2)
 
