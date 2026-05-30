@@ -65,17 +65,18 @@ def _trade_setup(entry_zone_low: float, entry_zone_high: float, stop_multiplier:
     }
 
 
-def _trade_setup_price_anchored(current_price: float, entry_zone_low: float, entry_zone_high: float,
-                                stop_multiplier: float, rr_ratio: float) -> dict:
-    """Above-zone LONG-BUY: stop/TP anchored to current_price (valid R/R at actual entry).
-    Zone values are preserved for user context but do not drive the math.
+def _trade_setup_price_anchored(current_price: float, stop_multiplier: float, rr_ratio: float) -> dict:
+    """Above-zone LONG-BUY: stop/TP anchored to current_price.
+    entry_zone_low/high are set to current_price so the TradeSetup invariant
+    (stop < zone_low <= zone_high < tp) always holds regardless of how far above
+    the technical zone the stock has moved.
     """
     stop_loss   = round(current_price * stop_multiplier, 2)
     take_profit = round(current_price + (current_price - stop_loss) * rr_ratio, 2)
     return {
         "direction":       "LONG-BUY",
-        "entry_zone_low":  round(entry_zone_low,  2),
-        "entry_zone_high": round(entry_zone_high, 2),
+        "entry_zone_low":  round(current_price, 2),
+        "entry_zone_high": round(current_price, 2),
         "stop_loss":       stop_loss,
         "take_profit":     take_profit,
     }
@@ -222,8 +223,7 @@ class PortfolioAllocatorTool(BaseTool):
                     # Above-zone LONG-BUY: anchor stop/TP to current_price for valid R/R
                     if r["current_price"] > r["entry_zone_high"] > 0:
                         setup = _trade_setup_price_anchored(
-                            r["current_price"], r["entry_zone_low"], r["entry_zone_high"],
-                            stop_multiplier, rr_ratio,
+                            r["current_price"], stop_multiplier, rr_ratio,
                         )
                     else:
                         setup = _trade_setup(r["entry_zone_low"], r["entry_zone_high"], stop_multiplier, rr_ratio)

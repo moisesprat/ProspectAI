@@ -194,6 +194,33 @@ class PositionRecommendation(BaseModel):
     def _upper(cls, v: object) -> object:
         return v.upper().replace(" ", "") if isinstance(v, str) else v
 
+    @model_validator(mode="before")
+    @classmethod
+    def fix_above_zone_trade_setup(cls, data: object) -> object:
+        # When the LLM anchors stop_loss to current_price but keeps the technical
+        # entry zone, stop_loss can exceed entry_zone_low. Correct by pinning both
+        # zone fields to current_price so the TradeSetup invariant always holds.
+        # Fallback when current_price is absent: use midpoint(stop_loss, take_profit),
+        # which always satisfies stop < zone <= take_profit.
+        if not isinstance(data, dict):
+            return data
+        ts = data.get("trade_setup")
+        if not isinstance(ts, dict):
+            return data
+        stop = ts.get("stop_loss", 0)
+        zone_low = ts.get("entry_zone_low", 0)
+        if not (isinstance(stop, (int, float)) and isinstance(zone_low, (int, float)) and stop >= zone_low):
+            return data
+        price = data.get("current_price")
+        if isinstance(price, (int, float)) and price > 0:
+            anchor = round(price, 2)
+        else:
+            tp = ts.get("take_profit", 0)
+            anchor = round((stop + tp) / 2, 2) if isinstance(tp, (int, float)) and tp > stop else round(stop * 1.05, 2)
+        data = dict(data)
+        data["trade_setup"] = {**ts, "entry_zone_low": anchor, "entry_zone_high": anchor}
+        return data
+
     @model_validator(mode="after")
     def validate_setup_fields_by_action(self) -> "PositionRecommendation":
         if self.action in ("LONG-BUY", "WAIT-FOR-ENTRY"):
