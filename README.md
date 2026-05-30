@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.8.0**
+**Current release: v1.8.1**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.8.1 — catch LONG-BUY outside entry zone, degenerate zones, and buc
+- catch LONG-BUY outside entry zone, degenerate zones, and bucket accounting errors
+- add risk aversion profile selector to portfolio allocation
+- implement continuous scrolling marquee for recent-wins strip with hover pause and seamless looping
+- enhance token tracking in ExecutionTracker and AnthropicCachingCompletion for improved cache metrics
+
 ### v1.8.0 — update tests to use AnthropicCachingCompletion and improve s
 - update tests to use AnthropicCachingCompletion and improve structure
 - replace CachingLLM with make_caching_llm factory for improved prompt caching
@@ -333,10 +339,6 @@ twine upload dist/*
 - enhance CLAUDE.md with additional test instructions and related repositories section
 - add comprehensive tests for PortfolioAllocatorTool covering allocation logic, trade setups, and edge cases
 - add tests for yfinance_cache module to ensure cache deduplication and clear functionality
-
-### v1.6.16 — auto-correct capital bucket percentages; refactor agent init
-- auto-correct InvestorStrategicOutput capital bucket percentages instead of hard-failing the pipeline
-- refactor agent initialization to use instance variables for verbosity and delegation; update ProspectAICrew to TaskFactory and improve scoring constants management
 
 ## Roadmap
 
