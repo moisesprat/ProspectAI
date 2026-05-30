@@ -33,6 +33,17 @@ pytest tests/test_flow_phases.py -v      # per-phase unit tests (mocked LLM)
 # Technology, Semiconductors, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
 ```
 
+## Slash Commands (`.claude/commands/`)
+
+Custom Claude Code commands available in this project:
+
+| Command | Purpose |
+|---|---|
+| `/deploy <version>` | Full release pipeline — bumps version in `pyproject.toml` and `serve.py`, builds wheel, uploads to PyPI, deploys Modal backend |
+| `/test [file] [-k pattern]` | Runs pytest suite; accepts an optional target file or `-k` filter |
+| `/prospectai-analytics` | Fetches live usage stats from Modal (`/api/analytics`): runs by sector, risk profile, and action-type breakdown |
+| `/prospectai-longbuy-analysis` | Fetches all LONG-BUY entries from the Modal Dict, computes ROI vs live yfinance prices, and saves a colour-coded Excel workbook to the repo root |
+
 ## Required API Keys (in `.env`)
 
 | Variable | Required | Purpose |
