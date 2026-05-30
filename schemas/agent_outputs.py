@@ -180,12 +180,11 @@ class TradeSetup(BaseModel):
 
 class PositionRecommendation(BaseModel):
     ticker: str
-    action: Literal["LONG-BUY", "SCALED-ENTRY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+    action: Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
     composite_score: float = Field(..., ge=0.0, le=100.0)
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
-    scaled_entry_setups: Optional[List[TradeSetup]] = None
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
     review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
@@ -210,43 +209,6 @@ class PositionRecommendation(BaseModel):
                         stop_loss=stop,
                         take_profit=tp,
                     )
-        if self.action == "SCALED-ENTRY":
-            setups = self.scaled_entry_setups or []
-            if len(setups) != 2:
-                price = self.current_price
-                if price:
-                    stop_imm = round(price * 0.97, 2)
-                    tp_imm   = round(price + (price - stop_imm) * 2, 2)
-                    immediate = TradeSetup(
-                        direction="LONG-BUY",
-                        entry_zone_low=price,
-                        entry_zone_high=price,
-                        stop_loss=stop_imm,
-                        take_profit=tp_imm,
-                    )
-                    # Use zone from existing setup if present, else fall back to current_price
-                    zone_low  = setups[0].entry_zone_low  if setups else price
-                    zone_high = setups[0].entry_zone_high if setups else price
-                    stop_pb = round(zone_low * 0.97, 2)
-                    tp_pb   = round(zone_high + (zone_low - stop_pb) * 2, 2)
-                    pullback = TradeSetup(
-                        direction="LONG-BUY",
-                        entry_zone_low=zone_low,
-                        entry_zone_high=zone_high,
-                        stop_loss=stop_pb,
-                        take_profit=tp_pb,
-                    )
-                    self.scaled_entry_setups = [immediate, pullback]
-                else:
-                    raise ValueError(
-                        "SCALED-ENTRY requires exactly 2 scaled_entry_setups; "
-                        "current_price not available to auto-construct them"
-                    )
-            if self.trade_setup is not None:
-                raise ValueError(
-                    "SCALED-ENTRY must have trade_setup=null; "
-                    "execution details go in scaled_entry_setups"
-                )
         return self
 
 

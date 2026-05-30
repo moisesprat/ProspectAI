@@ -45,7 +45,6 @@ def _position(**kwargs) -> PositionRecommendation:
         allocation_pct=15.0,
         current_price=183.0,
         trade_setup=_trade_setup(),
-        scaled_entry_setups=None,
         rationale=(
             "AAPL RSI=64, momentum_score=7.2, ADEQUATE health, MODERATE growth. "
             "Composite 75.0 supports LONG-BUY within entry zone 180-186."
@@ -228,7 +227,6 @@ def test_position_long_buy_valid():
     assert p.action == "LONG-BUY"
     assert p.composite_score == 75.0
     assert p.trade_setup is not None
-    assert p.scaled_entry_setups is None
 
 
 def test_position_composite_score_required():
@@ -236,7 +234,7 @@ def test_position_composite_score_required():
         PositionRecommendation(
             ticker="AAPL", action="LONG-BUY",
             allocation_pct=15.0, current_price=183.0,
-            trade_setup=_trade_setup(), scaled_entry_setups=None,
+            trade_setup=_trade_setup(),
             rationale="x" * 60,
             monitoring_triggers=["RSI above 76"],
             review_frequency="WEEKLY",
@@ -288,61 +286,10 @@ def test_position_avoid_valid():
     assert p.action == "AVOID"
 
 
-def test_position_scaled_entry_auto_constructs_setups_from_price():
-    # Validator auto-constructs 2 setups from current_price when none provided
-    p = _position(
-        action="SCALED-ENTRY",
-        composite_score=78.0,
-        current_price=183.0,
-        trade_setup=None,
-        scaled_entry_setups=None,
-    )
-    assert p.scaled_entry_setups is not None
-    assert len(p.scaled_entry_setups) == 2
-
-
-def test_position_scaled_entry_requires_two_setups_without_price():
-    # No current_price and no setups — validator cannot auto-construct, must raise
-    with pytest.raises(ValidationError) as exc:
-        _position(
-            action="SCALED-ENTRY",
-            composite_score=78.0,
-            current_price=None,
-            trade_setup=None,
-            scaled_entry_setups=None,
-        )
-    assert "2 scaled_entry_setups" in str(exc.value)
-
-
-def test_position_scaled_entry_trade_setup_must_be_null():
-    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
-                       stop_loss=118.34, take_profit=129.32)
-    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
-                       stop_loss=106.7, take_profit=121.9)
-    with pytest.raises(ValidationError) as exc:
-        _position(
-            action="SCALED-ENTRY",
-            composite_score=78.0,
-            trade_setup=imm,               # must be null for SCALED-ENTRY
-            scaled_entry_setups=[imm, plb],
-        )
-    assert "trade_setup=null" in str(exc.value)
-
-
-def test_position_scaled_entry_valid_with_two_setups():
-    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
-                       stop_loss=118.34, take_profit=129.32)
-    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
-                       stop_loss=106.7, take_profit=121.9)
-    p = _position(
-        action="SCALED-ENTRY",
-        composite_score=78.0,
-        allocation_pct=18.5,
-        current_price=122.0,
-        trade_setup=None,
-        scaled_entry_setups=[imm, plb],
-    )
-    assert len(p.scaled_entry_setups) == 2
+def test_position_scaled_entry_is_rejected():
+    # SCALED-ENTRY is no longer a valid action — schema must reject it
+    with pytest.raises(ValidationError):
+        _position(action="SCALED-ENTRY", composite_score=78.0, trade_setup=None)
 
 
 def test_position_wait_for_entry_valid():
@@ -351,7 +298,6 @@ def test_position_wait_for_entry_valid():
         composite_score=68.0,
         allocation_pct=12.0,
         trade_setup=_trade_setup(),
-        scaled_entry_setups=None,
     )
     assert p.action == "WAIT-FOR-ENTRY"
     assert p.allocation_pct == 12.0
@@ -386,31 +332,6 @@ def test_position_allocation_sum_auto_corrects_total_allocated():
         cash_reserve_pct=80.0,
     )
     assert output.total_allocated_pct == 20.0
-
-
-def test_investor_strategic_with_scaled_entry_position():
-    imm = _trade_setup(entry_zone_low=122.0, entry_zone_high=122.0,
-                       stop_loss=118.34, take_profit=129.32)
-    plb = _trade_setup(entry_zone_low=110.0, entry_zone_high=115.0,
-                       stop_loss=106.7, take_profit=121.9)
-    scaled_pos = _position(
-        ticker="XOM",
-        action="SCALED-ENTRY",
-        composite_score=73.5,
-        allocation_pct=20.0,
-        current_price=122.0,
-        trade_setup=None,
-        scaled_entry_setups=[imm, plb],
-    )
-    output = _portfolio(
-        positions=[scaled_pos],
-        deployed_pct=10.0,   # half of 20% SCALED-ENTRY
-        reserved_pct=10.0,
-        total_allocated_pct=20.0,
-        cash_reserve_pct=80.0,
-    )
-    assert output.positions[0].action == "SCALED-ENTRY"
-    assert len(output.positions[0].scaled_entry_setups) == 2
 
 
 # ── CriticOutput ─────────────────────────────────────────────────────────────

@@ -63,9 +63,6 @@ def test_conservative_single_long_buy_capped_at_15(tool):
     assert _find(result, "AAPL")["allocation_pct"] == pytest.approx(15.0, abs=0.1)
 
 
-def test_conservative_single_scaled_entry_capped_at_15(tool):
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", score=80, price=150.0)], "conservative")
-    assert _find(result, "TSLA")["allocation_pct"] == pytest.approx(15.0, abs=0.1)
 
 
 def test_conservative_single_wait_for_entry_capped_at_15(tool):
@@ -78,11 +75,6 @@ def test_conservative_single_wait_for_entry_capped_at_15(tool):
 def test_aggressive_single_long_buy_capped_at_30(tool):
     result = _run(tool, [_stock("AAPL", "LONG-BUY", score=75)], "aggressive")
     assert _find(result, "AAPL")["allocation_pct"] == pytest.approx(30.0, abs=0.1)
-
-
-def test_aggressive_single_scaled_entry_capped_at_30(tool):
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", score=80, price=150.0)], "aggressive")
-    assert _find(result, "TSLA")["allocation_pct"] == pytest.approx(30.0, abs=0.1)
 
 
 def test_aggressive_dominant_long_buy_capped_at_30(tool):
@@ -135,22 +127,6 @@ def test_conservative_wait_for_entry_stop_and_tp(tool):
     assert setup["take_profit"] == pytest.approx(225.0, abs=0.01)
 
 
-def test_conservative_scaled_entry_immediate_tranche(tool):
-    # stop = 150 × 0.97 = 145.5, tp = 150 + (150 - 145.5) × 2.5 = 161.25
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", low=140.0, high=145.0, price=150.0)], "conservative")
-    immediate = _find(result, "TSLA")["scaled_entry_setups"][0]
-    assert immediate["stop_loss"]   == pytest.approx(145.5,  abs=0.01)
-    assert immediate["take_profit"] == pytest.approx(161.25, abs=0.01)
-
-
-def test_conservative_scaled_entry_pullback_tranche(tool):
-    # stop = 140 × 0.97 = 135.8, tp = 145 + (140 - 135.8) × 2.5 = 155.5
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", low=140.0, high=145.0, price=150.0)], "conservative")
-    pullback = _find(result, "TSLA")["scaled_entry_setups"][1]
-    assert pullback["stop_loss"]   == pytest.approx(135.8, abs=0.01)
-    assert pullback["take_profit"] == pytest.approx(155.5, abs=0.01)
-
-
 # ── Trade setup formula tests — aggressive ────────────────────────────────────
 
 def test_aggressive_long_buy_stop_and_tp(tool):
@@ -161,12 +137,39 @@ def test_aggressive_long_buy_stop_and_tp(tool):
     assert setup["take_profit"] == pytest.approx(112.5, abs=0.01)
 
 
-def test_aggressive_scaled_entry_immediate_tranche(tool):
-    # stop = 150 × 0.95 = 142.5, tp = 150 + (150 - 142.5) × 1.5 = 161.25
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", low=140.0, high=145.0, price=150.0)], "aggressive")
-    immediate = _find(result, "TSLA")["scaled_entry_setups"][0]
-    assert immediate["stop_loss"]   == pytest.approx(142.5,  abs=0.01)
-    assert immediate["take_profit"] == pytest.approx(161.25, abs=0.01)
+# ── Above-zone LONG-BUY: current-price-anchored stop/TP ──────────────────────
+
+def test_above_zone_long_buy_aggressive_uses_price_anchored_stop_tp(tool):
+    # current_price=220 > entry_zone_high=213; aggressive: stop = 220 × 0.95 = 209.0
+    # tp = 220 + (220 - 209) × 1.5 = 236.5
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=207.0, high=213.0, price=220.0)], "aggressive")
+    setup = _find(result, "NVDA")["trade_setup"]
+    assert setup["stop_loss"]   == pytest.approx(209.0, abs=0.01)
+    assert setup["take_profit"] == pytest.approx(236.5, abs=0.01)
+
+
+def test_above_zone_long_buy_conservative_uses_price_anchored_stop_tp(tool):
+    # current_price=220 > entry_zone_high=213; conservative: stop = 220 × 0.97 = 213.4
+    # tp = 220 + (220 - 213.4) × 2.5 = 236.5
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=207.0, high=213.0, price=220.0)], "conservative")
+    setup = _find(result, "NVDA")["trade_setup"]
+    assert setup["stop_loss"]   == pytest.approx(213.4, abs=0.01)
+    assert setup["take_profit"] == pytest.approx(236.5, abs=0.01)
+
+
+def test_above_zone_long_buy_full_allocation_in_deployed(tool):
+    # above-zone LONG-BUY: full allocation in deployed, nothing in reserved
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=207.0, high=213.0, price=220.0)], "aggressive")
+    assert result["deployed_pct"] == pytest.approx(30.0, abs=0.1)
+    assert result["reserved_pct"] == pytest.approx(0.0,  abs=0.1)
+
+
+def test_in_zone_long_buy_still_uses_zone_anchored_stop_tp(tool):
+    # current_price=102 inside zone 100-105; conservative: stop = 100 × 0.97 = 97.0
+    result = _run(tool, [_stock("AAPL", "LONG-BUY", low=100.0, high=105.0, price=102.0)], "conservative")
+    setup = _find(result, "AAPL")["trade_setup"]
+    assert setup["stop_loss"]   == pytest.approx(97.0,  abs=0.01)
+    assert setup["take_profit"] == pytest.approx(112.5, abs=0.01)
 
 
 # ── Trade setup invariants ─────────────────────────────────────────────────────
@@ -180,20 +183,11 @@ def test_trade_setup_invariant_holds_for_both_profiles(tool):
         assert setup["take_profit"] > setup["entry_zone_high"]
 
 
-def test_scaled_entry_trade_setup_is_null_and_has_two_setups(tool):
-    for profile in ("conservative", "aggressive"):
-        result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", low=140.0, high=145.0, price=150.0)], profile)
-        stock = _find(result, "TSLA")
-        assert stock["trade_setup"] is None
-        assert len(stock["scaled_entry_setups"]) == 2
-
-
-def test_monitor_avoid_trade_setup_and_scaled_are_null(tool):
+def test_monitor_avoid_trade_setup_is_null(tool):
     result = _run(tool, [_stock("IBM", "MONITOR"), _stock("GE", "AVOID")])
     for ticker in ("IBM", "GE"):
         s = _find(result, ticker)
         assert s["trade_setup"] is None
-        assert s["scaled_entry_setups"] is None
 
 
 # ── Capital bucket tests ───────────────────────────────────────────────────────
@@ -206,14 +200,6 @@ def test_conservative_long_buy_bucket_breakdown(tool):
     assert result["cash_reserve_pct"] == pytest.approx(85.0, abs=0.1)
 
 
-def test_conservative_scaled_entry_splits_evenly(tool):
-    # single SCALED-ENTRY capped at 15%: deployed=7.5, reserved=7.5, cash=85
-    result = _run(tool, [_stock("TSLA", "SCALED-ENTRY", score=80, price=150.0)], "conservative")
-    assert result["deployed_pct"]     == pytest.approx(7.5,  abs=0.1)
-    assert result["reserved_pct"]     == pytest.approx(7.5,  abs=0.1)
-    assert result["cash_reserve_pct"] == pytest.approx(85.0, abs=0.1)
-
-
 def test_wait_for_entry_contributes_fully_to_reserved(tool):
     result = _run(tool, [_stock("AMZN", "WAIT-FOR-ENTRY", score=70)], "conservative")
     assert result["deployed_pct"]     == pytest.approx(0.0,  abs=0.1)
@@ -222,24 +208,22 @@ def test_wait_for_entry_contributes_fully_to_reserved(tool):
 
 
 def test_conservative_mixed_actions_correct_buckets(tool):
-    # All three hit 15% cap:
-    # deployed = 15 + 15/2 = 22.5, reserved = 15 + 15/2 = 22.5, cash = 55
+    # LONG-BUY capped at 15% (deployed), WAIT-FOR-ENTRY capped at 15% (reserved), cash=70
     result = _run(tool, [
         _stock("AAPL", "LONG-BUY",       score=60, low=100.0, high=105.0, price=102.0),
-        _stock("TSLA", "SCALED-ENTRY",   score=40, low=140.0, high=145.0, price=150.0),
         _stock("AMZN", "WAIT-FOR-ENTRY", score=30, low=200.0, high=210.0, price=205.0),
     ], "conservative")
-    assert result["deployed_pct"]     == pytest.approx(22.5, abs=0.2)
-    assert result["reserved_pct"]     == pytest.approx(22.5, abs=0.2)
-    assert result["cash_reserve_pct"] == pytest.approx(55.0, abs=0.2)
+    assert result["deployed_pct"]     == pytest.approx(15.0, abs=0.2)
+    assert result["reserved_pct"]     == pytest.approx(15.0, abs=0.2)
+    assert result["cash_reserve_pct"] == pytest.approx(70.0, abs=0.2)
 
 
 def test_buckets_always_sum_to_100(tool):
     for profile in ("conservative", "aggressive"):
         result = _run(tool, [
-            _stock("AAPL", "LONG-BUY",     score=60, low=100.0, high=105.0, price=102.0),
-            _stock("TSLA", "SCALED-ENTRY", score=40, low=140.0, high=145.0, price=150.0),
-            _stock("IBM",  "MONITOR",      score=30),
+            _stock("AAPL", "LONG-BUY",       score=60, low=100.0, high=105.0, price=102.0),
+            _stock("AMZN", "WAIT-FOR-ENTRY", score=40, low=200.0, high=210.0, price=205.0),
+            _stock("IBM",  "MONITOR",        score=30),
         ], profile)
         total = result["deployed_pct"] + result["reserved_pct"] + result["cash_reserve_pct"]
         assert total == pytest.approx(100.0, abs=0.1)

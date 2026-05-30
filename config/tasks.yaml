@@ -212,7 +212,8 @@ tasks:
           is inside the zone with strong technicals and solid fundamentals. Spread allocations
           across positions. Emphasize downside protection, stop rationale, and risk acknowledgment
           in every rationale. Avoid concentrating more than 10% of commentary on upside alone.
-        aggressive — Prefer LONG-BUY; use WAIT-FOR-ENTRY only when RSI > 70 or Stochastic > 80.
+        aggressive — Prefer LONG-BUY; buy PULLBACK_ENTRY stocks when overall_signal is
+          BULLISH or MIXED and momentum is not clearly weak (momentum_score ≥ 5).
           Concentrate allocations in highest composite_score positions. Lead rationales with
           upside catalysts, momentum signals, and price targets. Fewer, larger positions are
           preferred over spreading thinly.
@@ -256,22 +257,39 @@ tasks:
         For tickers with fundamental_unknown=true the tool returns fundamental_component=null —
         copy it as null, do NOT substitute a number.
 
-      STEP 3 — Decide one action per stock (check rules in order):
-        price_data_error set (current_price=null) → MONITOR or AVOID only.
-        fundamental_unknown=true → MONITOR or WAIT-FOR-ENTRY only.
-        price WITHIN zone (entry_zone_low ≤ price ≤ entry_zone_high):
-          default → LONG-BUY; use SCALED-ENTRY if VERY_EXPENSIVE or WEAK health.
-          WAIT-FOR-ENTRY is invalid when price is already inside the zone.
-        price ABOVE zone:
-          RSI > 70 or Stochastic > 80 → WAIT-FOR-ENTRY
-          gap ≥ 5% above entry_zone_high → WAIT-FOR-ENTRY
-          gap < 5% + regime=TRENDING + composite ≥ 75 + Stochastic < 88 → SCALED-ENTRY
-          otherwise → LONG-BUY (allocator uses zone-anchored setup)
-        financial_health = WEAK → MONITOR or AVOID
-        composite < 55 + no clear catalyst → MONITOR
-        poor fundamentals + negative sentiment → AVOID
-        Valid actions only: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
-        HOLD and SHORT-SELL are invalid — they cause schema rejection.
+      STEP 3 — Decide one action per stock. Use the qualitative signals already
+        computed by the technical and fundamental tools as your reasoning inputs —
+        do NOT recalculate RSI thresholds, price-to-zone gaps, or numeric conditions.
+        Check these rules in order:
+
+        HARD STOPS (both profiles — not overridable):
+          price_data_error set (current_price=null) → MONITOR or AVOID only.
+          fundamental_unknown=true → MONITOR or WAIT-FOR-ENTRY only.
+          financial_health=WEAK → MONITOR or AVOID.
+          composite_score < 55 with no cited catalyst → MONITOR.
+          poor fundamentals + negative sentiment → AVOID.
+
+        entry_zone_status=CURRENT_ENTRY (price is in the actionable zone):
+          Both profiles → LONG-BUY is the default.
+          Override to MONITOR/AVOID only if financial_health=WEAK or
+            (overall_signal=BEARISH and no specific catalyst).
+          WAIT-FOR-ENTRY is never valid when entry_zone_status=CURRENT_ENTRY.
+
+        entry_zone_status=PULLBACK_ENTRY (stock has run above its zone):
+          conservative — default to WAIT-FOR-ENTRY.
+            Exception: LONG-BUY is valid when overall_signal=BULLISH AND
+            momentum_score ≥ 7 AND regime=TRENDING AND financial_health=STRONG.
+          aggressive — default to LONG-BUY when overall_signal=BULLISH or MIXED
+            AND momentum_score ≥ 5 AND financial_health is not WEAK.
+            Use WAIT-FOR-ENTRY when overall_signal=BEARISH, OR when
+            stochastic_status=Overbought AND momentum_score < 5.
+
+        entry_zone_status=BELOW_ZONE (price below the actionable range):
+          Both profiles → MONITOR (fundamentals intact) or AVOID (financial_health=WEAK
+            or overall_signal=BEARISH). Do not buy into potential breakdown.
+
+        Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID.
+        HOLD, SHORT-SELL, and SCALED-ENTRY are invalid — they cause schema rejection.
         MONITOR ≠ AVOID: MONITOR signals interest but conditions not met yet.
 
       STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
@@ -291,11 +309,10 @@ tasks:
         Also copy composite_score verbatim from Step 2 into each position —
         do NOT paraphrase or cite a different value in the rationale text.
         Allocation cap: max $risk_profile per-position limit enforced by the tool (do not compute).
+        LONG-BUY above-zone: the tool automatically detects current_price > entry_zone_high
+          and anchors stop/TP to current_price for a valid R/R at actual entry.
         WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
-        SCALED-ENTRY: receives scaled_entry_setups (list of 2 setups) and trade_setup=null.
-          scaled_entry_setups[0] = immediate tranche (profile R/R from current_price)
-          scaled_entry_setups[1] = pullback tranche (zone-anchored, profile R/R)
-        MONITOR / AVOID: allocation_pct=0, trade_setup=null, scaled_entry_setups=null.
+        MONITOR / AVOID: allocation_pct=0, trade_setup=null.
         The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three separate
         fields. Copy all three into your output.
 
@@ -314,8 +331,6 @@ tasks:
           Never write a trigger that describes price moving up toward zone_high — that
           is the wrong direction. Also include an RSI or MACD condition that confirms
           the pullback is a healthy retracement, not a breakdown.
-          For SCALED-ENTRY: at least one trigger must reference the pullback zone
-          (e.g. "Price retraces to pullback zone low of $$X.XX").
           For MONITOR: triggers must describe conditions that would upgrade to WAIT-FOR-ENTRY
           or LONG-BUY (e.g. "RSI drops below 55", "Earnings beat clears valuation concern").
         review_frequency: DAILY / WEEKLY / MONTHLY.
@@ -326,7 +341,7 @@ tasks:
         sector: str
         risk_profile: str — "$risk_profile" (echo back verbatim)
         positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
-          current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
+          current_price(float|null) trade_setup(obj|null)
           rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
         deployed_pct: float
         reserved_pct: float
@@ -336,7 +351,7 @@ tasks:
         risk_level: str — Low/Medium/High/Very High
     expected_output: >
       JSON dict with sector='$sector', risk_profile='$risk_profile', positions
-      (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
+      (ticker/action/allocation_pct/current_price/trade_setup/
       rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
       total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
       This is a DRAFT pending Critic review.
@@ -356,10 +371,10 @@ tasks:
       RISK PROFILE: $risk_profile
       Apply profile-relative validation. Bounds for the ACTIVE profile only:
 
-      | Profile      | Max stop from entry_zone_low | Min R/R | Max per-position |
-      |---|---|---|---|
-      | conservative | 3% (stop_loss >= entry_zone_low × 0.97) | 2.5 | 15% |
-      | aggressive   | 5% (stop_loss >= entry_zone_low × 0.95) | 1.5 | 30% |
+      | Profile      | Max stop from entry_zone_low | Min R/R | Max per-position | PULLBACK_ENTRY LONG-BUY default |
+      |---|---|---|---|---|
+      | conservative | 3% (stop_loss >= entry_zone_low × 0.97) | 2.5 | 15% | WAIT-FOR-ENTRY (LONG-BUY only if BULLISH+momentum≥7+TRENDING+STRONG) |
+      | aggressive   | 5% (stop_loss >= entry_zone_low × 0.95) | 1.5 | 30% | LONG-BUY when BULLISH/MIXED+momentum≥5+health not WEAK |
 
       Flag as CRITICAL when a trade_setup violates the ACTIVE profile bounds above.
       Do NOT flag as a violation when bounds are valid for the active profile even if
@@ -377,9 +392,12 @@ tasks:
         You MUST find at least one issue per position.
         Flag every violation using these issue types:
 
-        PRICE_IN_ZONE_WAIT      — WAIT-FOR-ENTRY when entry_zone_low ≤ current_price ≤ entry_zone_high (CRITICAL)
-        OVERBOUGHT_IGNORED      — RSI > 70 or Stochastic > 80 with LONG-BUY, no overbought acknowledgment (MAJOR)
-        ENTRY_ZONE_VIOLATED     — LONG-BUY with PULLBACK_ENTRY status and gap ≥ 5% (MAJOR)
+        PRICE_IN_ZONE_WAIT      — WAIT-FOR-ENTRY when entry_zone_status=CURRENT_ENTRY (CRITICAL)
+        WAIT_IN_ZONE            — same as PRICE_IN_ZONE_WAIT; flag when entry_zone_status=CURRENT_ENTRY with WAIT-FOR-ENTRY (CRITICAL)
+        ACTION_PROFILE_MISMATCH — LONG-BUY on entry_zone_status=PULLBACK_ENTRY with overall_signal=BEARISH
+                                  and no compelling fundamental override cited in rationale (MAJOR)
+        UNCONVINCING_OVERRIDE   — aggressive LONG-BUY on PULLBACK_ENTRY with momentum_score < 4
+                                  AND financial_health=WEAK AND no specific catalyst cited (MAJOR)
         FABRICATED_SIGNAL       — "strong momentum" with momentum_score < 6, or "bullish" with Bearish/Mixed MACD (MAJOR)
         ALLOCATION_MISMATCH     — allocation rank does not match composite_score rank (MAJOR)
         SENTIMENT_CONTRADICTION — average_sentiment < 0.0 with LONG-BUY, no negative caveat (MAJOR)
@@ -389,12 +407,10 @@ tasks:
         WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
         MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
         VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
-        MISSING_SCALED_SETUPS   — SCALED-ENTRY with scaled_entry_setups=null or fewer than 2 setups (CRITICAL)
         WAIT_ENTRY_ZERO_ALLOC   — WAIT-FOR-ENTRY with allocation_pct=0 (CRITICAL)
-        MONITOR_WITH_SETUP      — MONITOR with trade_setup or scaled_entry_setups populated (CRITICAL)
-        AVOID_WITH_SETUP        — AVOID with trade_setup or scaled_entry_setups populated (CRITICAL)
-        INVALID_ACTION          — action not in {LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID} (CRITICAL)
-        IMMEDIATE_RR_BELOW_1_5  — SCALED-ENTRY immediate tranche R/R < 1.5 from current_price (CRITICAL)
+        MONITOR_WITH_SETUP      — MONITOR with trade_setup populated (CRITICAL)
+        AVOID_WITH_SETUP        — AVOID with trade_setup populated (CRITICAL)
+        INVALID_ACTION          — action not in {LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID} (CRITICAL)
         BUCKET_SUM_ERROR        — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100 (±0.5%) (CRITICAL)
         COMPOSITE_SCORE_MISMATCH— |position.composite_score − tool_value| > 1.0 (CRITICAL)
 
@@ -479,7 +495,7 @@ tasks:
         CASE B — One or more actions changed:
           Call allocate_portfolio ONCE with all positions using revised actions
           (pass ticker, action, composite_score, entry zones, current_price — all verbatim from draft).
-          Copy allocation_pct, trade_setup, scaled_entry_setups from tool result.
+          Copy allocation_pct, trade_setup from tool result.
           Copy deployed_pct, reserved_pct, cash_reserve_pct, total_allocated_pct from tool result.
           composite_score and current_price: always from draft, never from tool.
 
@@ -501,7 +517,7 @@ tasks:
         sector: str
         risk_profile: str — "$risk_profile" (echo back verbatim)
         positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
-          current_price(float|null) trade_setup(obj|null) scaled_entry_setups(list|null)
+          current_price(float|null) trade_setup(obj|null)
           rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
         deployed_pct: float
         reserved_pct: float
@@ -515,8 +531,8 @@ tasks:
       - All CRITICAL critique issues must be addressed (changed or defended).
       - All numeric fields (composite_score, allocation_pct, entry zones, stops) must
         be copied verbatim from the draft — never recalculated or invented.
-      - Valid actions: LONG-BUY, SCALED-ENTRY, WAIT-FOR-ENTRY, MONITOR, AVOID.
-        HOLD and SHORT-SELL are not valid actions.
+      - Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID.
+        HOLD, SHORT-SELL, and SCALED-ENTRY are not valid actions.
       - risk_level: Low / Medium / High / Very High.
       - review_frequency: DAILY / WEEKLY / MONTHLY.
       - Maximum single-position size: 15% (conservative) or 30% (aggressive) per $risk_profile.
