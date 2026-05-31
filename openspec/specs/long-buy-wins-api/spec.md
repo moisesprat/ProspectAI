@@ -93,8 +93,12 @@ The backend SHALL expose `GET /api/long-buy-history` which reads **all** records
 - **THEN** the response item has `roi_pct: null` and the record still appears in the response
 
 ### Requirement: Response schema for long-buy-history
-The endpoint SHALL return JSON with shape `{ "history": [...] }` where each item contains: `ticker` (string), `sector` (string), `recommended_at` (ISO 8601 string), `trigger_price` (float | null), `current_price` (float | null), `roi_pct` (float | null), `risk_profile` (string).
+The endpoint SHALL return JSON with shape `{ "history": [...] }` where each item contains: `ticker` (string), `sector` (string), `recommended_at` (ISO 8601 string), `trigger_price` (float | null), `current_price` (float | null), `roi_pct` (float | null), `risk_profile` (string), and `prospectai_version` (string | null).
 
 #### Scenario: Response structure
 - **WHEN** a valid request is made to `GET /api/long-buy-history`
-- **THEN** the response body matches `{ "history": [{ "ticker": "...", "sector": "...", "recommended_at": "...", "trigger_price": ..., "current_price": ..., "roi_pct": ..., "risk_profile": "..." }] }`
+- **THEN** the response body matches `{ "history": [{ "ticker": "...", "sector": "...", "recommended_at": "...", "trigger_price": ..., "current_price": ..., "roi_pct": ..., "risk_profile": "...", "prospectai_version": "..." }] }`
+
+#### Scenario: prospectai_version included in response
+- **WHEN** a valid request is made to `GET /api/long-buy-history`
+- **THEN** each item in the `history` array includes a `prospectai_version` field whose value is the version string stored on the record (e.g. `"1.9.0"`) or `null` if the field was not present on the stored record
