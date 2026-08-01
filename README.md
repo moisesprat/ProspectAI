@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.9.0**
+**Current release: v1.9.1**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,21 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.9.1 — Archive deterministic-enforcement-v1-9-1 and critic-evidence
+- Archive deterministic-enforcement-v1-9-1 and critic-evidence-grounded-review
+- Enforce deterministic bounds/policy on portfolio output and fix Critic's inverted CURRENT_ENTRY rule
+- Add sector filter dropdown to Performance tab for enhanced data analysis
+- Add loading skeletons and update donut chart legends for improved UX
+- single filtered donut chart with a sector dropdown. - Improve Performance table by excluding recent entries, deduplicating rows, adding a version column, and including a stop-loss disclaimer. - Update specs and tasks to reflect new requirements and ensure proper implementation.
+- Implement sortable headers for Return and Signal Date in Performance table
+- Add sortable headers for Return and Signal Date in Performance table
+- Implement Stats Page with Enhanced UX and Backend Integration
+- Add Stats page with LONG-BUY track record and usage metrics
+- Add section for custom slash commands in CLAUDE.md
+- Add action totals summary section to analytics output
+- Add action breakdown by sector to analytics API and update command output
+- Implement reasoning-based action selection in Draft Strategist
+
 ### v1.9.0 — enhance LONG-BUY trade setup logic to ensure stop_loss and
 - enhance LONG-BUY trade setup logic to ensure stop_loss and entry zones are anchored to current_price
 - harden PositionRecommendation schema: auto-correct above-zone trade_setup invariant violations before Pydantic validation
@@ -330,13 +345,6 @@ twine upload dist/*
 
 ### v1.7.1 — Maintenance release
 - Maintenance and stability improvements
-
-### v1.7.0 — add risk_profile selector (conservative / aggressive)
-- add risk_profile parameter (conservative / aggressive) flowing through the entire pipeline with per-profile allocation caps, stop-loss multipliers, and R/R ratios
-- PortfolioAllocatorTool applies hardcoded bounds per profile; Draft Strategist, Critic, and Final Strategist receive qualitative profile guidance
-- InvestorStrategicOutput and CriticOutput schemas carry risk_profile field
-- Backend /api/analyze exposes risk_profile query param; analytics tracks usage by profile
-- Web UI adds Conservative / Aggressive toggle before pipeline trigger
 
 ## Roadmap
 
