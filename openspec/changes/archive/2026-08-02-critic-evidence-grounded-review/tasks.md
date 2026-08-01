@@ -49,14 +49,26 @@
 - [x] 3.5 Confirm no changes made to `config/agents.yaml`'s critic backstory (per
       `reduce-prompt-verbosity`, checklist content must not move back there).
 
-## 4. Verification (deferred — requires live API spend)
+## 4. Verification
 
-- [ ] 4.1 When API budget allows: re-run `python3 main.py --sector Energy
-      --risk-profile aggressive` and `python3 main.py --sector Technology
-      --risk-profile aggressive` (the two sectors that reproduced the bug),
-      foreground, logged to `logs/critic-evidence-grounded-review/`.
-- [ ] 4.2 Confirm LONG-BUY survives for positions at `entry_zone_status=CURRENT_ENTRY`
-      in both re-runs (i.e. the Critic no longer inverts the rule).
-- [ ] 4.3 If inversion still occurs after the prompt fix, do not attempt a further
-      prompt patch reactively — escalate to the stronger structural option noted in
-      design.md's Open Questions (a Critic self-check step) as a separate follow-up.
+- [x] 4.1 Re-ran live: 6 parallel runs, 3 sectors x 2 risk profiles (Energy,
+      Technology, Healthcare — the two that reproduced the bug plus one control),
+      foreground, logged to `logs/critic-evidence-grounded-review/run{1-6}_*.log`.
+      All 6 completed successfully, no exceptions, no `BoundsViolationError`.
+- [x] 4.2 Confirmed LONG-BUY survives for positions at `entry_zone_status=CURRENT_ENTRY`
+      in all 6 runs. Aggressive now produces more LONG-BUY than conservative in
+      every sector (Energy 3 vs 1, Technology 3 vs 2, Healthcare 5 vs 3) —
+      previously 0 LONG-BUY in every aggressive run. Grepped all 6 logs for the
+      original inverted phrasing ("CURRENT_ENTRY requires/mandates WAIT-FOR-ENTRY"):
+      zero matches. Where `ActionPolicyGate` still rejected a critique, manual
+      inspection of the raw text confirmed these are legitimate conditional
+      critiques (rationale-quality issue with an "or downgrade" fallback clause),
+      not the original hallucination — the gate's binary keep/drop behavior on
+      such conditional instructions is a known minor side effect (see Open
+      Questions), not a recurrence of the bug.
+- [x] 4.3 Inversion did not recur after the prompt fix — the escalation path
+      (Critic self-check step) is not needed. Noted instead, as a smaller
+      follow-up: `filter_critiques()`/`filter_directives()` could be refined to
+      strip only the disallowed branch of a conditional "or change action to Y"
+      instruction rather than dropping the whole item, to stop discarding valid
+      rationale-quality feedback as a side effect. Not required for this change.
