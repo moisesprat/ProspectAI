@@ -1,5 +1,36 @@
 # ProspectAI Version History
 
+## v1.9.1 - Deterministic Enforcement
+
+- `ProspectAIFlow` re-invokes `allocate_portfolio` itself after the Final Strategist
+  phase and overwrites every numeric allocation/trade-setup field — the LLM no longer
+  decides whether the allocator runs.
+- New `PortfolioBoundsValidator` (`utils/portfolio_bounds_validator.py`) validates the
+  final output against per-profile allocation, stop-distance, R/R, bucket-sum, and
+  entry-zone invariants before publication; raises `BoundsViolationError` (fail-closed,
+  one repair re-invocation) rather than publishing a non-compliant result.
+- New `ActionPolicyGate` (`utils/action_policy_gate.py`) deterministically drops Critic
+  `revision_directives` that order an action outside the entry_zone_status/risk_profile
+  policy table before they reach the Final Strategist.
+- `MarketAnalysisOutput.sentiment_available` sentinel: `average_sentiment` is `null`
+  (never a fabricated `0.0`) when both Reddit and the Serper fallback fail;
+  `CompositeScoreTool` renormalizes technical + fundamental weights to a 100 ceiling
+  when sentiment is unavailable.
+- `utils/patient_serper_tool.py::PatientSerperDevTool` wraps `SerperDevTool` with retry
+  classification: 4xx fails fast (response body logged), only 429/5xx retry (max 2,
+  backoff).
+- `PortfolioAllocatorTool` emits `reserved_allocations: [{ticker, pct}]` for explicit
+  per-ticker attribution of `reserved_pct`; Critic's `WAIT_ENTRY_ZERO_ALLOC` check
+  reworded to match.
+- Sector-benchmark ETFs (e.g. XLE) and broad-market ETFs (SPY, QQQ, ...) are excluded
+  from the candidate universe on both the Reddit and Serper-fallback paths
+  (`utils/candidate_universe_filter.py`).
+- **BREAKING**: `run_analysis()` can now raise `BoundsViolationError` instead of
+  returning a result, when the final output cannot be made bounds-compliant even after
+  one allocator re-invocation.
+
+---
+
 ## v1.7.0 - Risk Aversion Profile Selector
 
 - Add `risk_profile` parameter (`conservative` / `aggressive`) to `run_analysis()` and `main.py --risk-profile`

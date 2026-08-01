@@ -24,40 +24,68 @@ tasks:
       STEP 2 — Handle fallback if needed:
         If fallback_required is True, use 'search_internet' (SerperDevTool) with query:
           "$sector sector stocks investors discussing $today"
-        Extract up to 5 stock tickers from the search snippets. For each ticker, set:
-          mention_count = 0, relevance_score = 0.5
-          average_sentiment: assign a float in [-1.0, +1.0] based on the actual tone
-            of the snippets for that ticker. Use the full range — do NOT default to 0.65.
-            Examples: strongly bullish coverage → 0.75-0.85, mildly positive → 0.40-0.55,
-            neutral/mixed → 0.10-0.30, mildly negative → -0.10 to -0.30,
-            bearish/risk-focused → -0.40 to -0.70.
-            Each ticker must get a DIFFERENT score reflecting its specific news tone.
-        Set data_source to "serper_fallback".
+
+        If that search ALSO fails or returns no usable snippets (both sentiment
+        sources unavailable):
+          Set sentiment_available to false.
+          Set average_sentiment to null for every candidate — NEVER 0.0. A missing
+          value is not the same as a measured neutral score; do not substitute one
+          for the other.
+          Still select up to 5 tickers if any are identifiable from context (e.g.
+          sector leaders), or fall back to well-known large-cap names for the
+          sector; set mention_count = 0, relevance_score = 0.5 for these.
+          Set data_source to "unavailable".
+
+        Otherwise (Serper fallback succeeded):
+          Set sentiment_available to true.
+          Extract up to 5 stock tickers from the search snippets. For each ticker, set:
+            mention_count = 0, relevance_score = 0.5
+            average_sentiment: assign a float in [-1.0, +1.0] based on the actual tone
+              of the snippets for that ticker. Use the full range — do NOT default to 0.65.
+              Examples: strongly bullish coverage → 0.75-0.85, mildly positive → 0.40-0.55,
+              neutral/mixed → 0.10-0.30, mildly negative → -0.10 to -0.30,
+              bearish/risk-focused → -0.40 to -0.70.
+              Each ticker must get a DIFFERENT score reflecting its specific news tone.
+          Set data_source to "serper_fallback".
+
+        If fallback_required was False (Reddit succeeded): set sentiment_available
+        to true and use the tool's measured average_sentiment values as-is.
 
       STEP 3 — Write a rationale (80-120 words) for each stock covering:
         a) Key themes retail investors are discussing and the sentiment tone
+           (or, when sentiment_available is false, the fundamental/technical
+           context available instead — do not describe a sentiment that wasn't measured)
         b) Specific catalysts, concerns, or red flags visible in the data
         c) Relevant macro/geopolitical context influencing sentiment as of $today
         Base rationale on 'sample_posts' from the tool output (or search snippets for fallback).
 
       STEP 4 — Output a pure Python dict (no markdown wrapper) using actual tickers from STEP 1/2:
         sector: str — "$sector"
-        data_source: str — "reddit" or "serper_fallback"
+        data_source: str — "reddit", "serper_fallback", or "unavailable"
+        sentiment_available: bool — false only when both Reddit and Serper failed
         analysis_timestamp: str — current UTC datetime in ISO 8601 format
-        candidate_stocks[]: ticker(str) mention_count(int) average_sentiment(float)
+        candidate_stocks[]: ticker(str) mention_count(int)
+                            average_sentiment(float|null — null only when sentiment_available=false)
                             relevance_score(float) rationale(str 80-120 words)
         summary: str — 2-3 paragraph overview of sector sentiment, min 150 words
+                       (state "sentiment data unavailable this run" when sentiment_available=false)
 
       RULES:
       - Output exactly 5 stocks (fewer only if truly fewer were found).
       - Do NOT invent tickers. Use only tickers returned by the tool or found in search results.
-      - All numeric values must be numbers, not strings.
+      - Do NOT include sector ETFs (e.g. XLE, XLK, XLF) or broad-market ETFs
+        (e.g. SPY, QQQ) as candidates, even if they appear prominently in search
+        snippets — candidates must be individual companies, never the sector's own
+        benchmark fund.
+      - All numeric values must be numbers, not strings, except average_sentiment which
+        is null when sentiment_available=false.
       - The 'summary' must be at least 150 words.
       - 'analysis_timestamp' must be a string in ISO 8601 format — never omit it.
     expected_output: >
-      Python dict with sector='$sector', data_source, analysis_timestamp (ISO 8601 string),
-      candidate_stocks (list of 5 dicts: ticker, mention_count,
-      average_sentiment, relevance_score, rationale), and summary string.
+      Python dict with sector='$sector', data_source, sentiment_available (bool),
+      analysis_timestamp (ISO 8601 string), candidate_stocks (list of 5 dicts: ticker,
+      mention_count, average_sentiment [float or null], relevance_score, rationale),
+      and summary string.
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 2: Technical Analysis
@@ -231,6 +259,10 @@ tasks:
 
         CRITICAL: average_sentiment is a float between -1.0 and 1.0. Extract the EXACT
         value — do NOT use 0.65 or any default.
+        CRITICAL: When sentiment_available=false (or a stock's average_sentiment is null),
+        pass average_sentiment=null to compute_composite_scores for that stock — do NOT
+        substitute 0.0 or any other number. In the rationale, write "sentiment: no data"
+        for that stock instead of describing a sentiment tone that was never measured.
         CRITICAL: momentum_score is a float between 0 and 10. Extract the EXACT
         value — do NOT default to 8.0 or any other fixed number.
         CRITICAL: Every stock must have a DISTINCT composite_score.
@@ -380,6 +412,12 @@ tasks:
       Do NOT flag as a violation when bounds are valid for the active profile even if
       they would be invalid for the other profile.
 
+      SENTIMENT AVAILABILITY: When a ticker's reference-table entry shows
+      sentiment_available=false (or average_sentiment=null), do NOT raise any
+      finding whose basis is that ticker's sentiment score or sentiment trend —
+      there is no measured sentiment to critique. Evaluate that position on its
+      technical and fundamental merits only.
+
       STEP 1 — For EACH ticker in the draft, build your data picture:
         From the reference_table: locate the row where "ticker" matches. Available fields:
           rsi, stochastic_status, macd_status, entry_zone_status, momentum_score,
@@ -388,12 +426,23 @@ tasks:
           rationale, monitoring_triggers,
           trade_setup (entry_zone_low, entry_zone_high, stop_loss, take_profit).
 
-      STEP 2 — Apply the adversarial checklist to EACH ticker.
-        You MUST find at least one issue per position.
-        Flag every violation using these issue types:
+      STEP 2 — Apply the adversarial checklist to EACH ticker, using only the
+        reference_table and Draft data. Flag every violation you can ground in
+        that data — do not invent a rule that isn't stated in this checklist.
+        A ticker with zero grounded violations belongs in approved_positions,
+        not in per_ticker_critiques; that is a complete, correct finding, not
+        a gap in your review.
 
-        PRICE_IN_ZONE_WAIT      — WAIT-FOR-ENTRY when entry_zone_status=CURRENT_ENTRY (CRITICAL)
-        WAIT_IN_ZONE            — same as PRICE_IN_ZONE_WAIT; flag when entry_zone_status=CURRENT_ENTRY with WAIT-FOR-ENTRY (CRITICAL)
+        PRICE_IN_ZONE_WAIT      — draft action=WAIT-FOR-ENTRY while entry_zone_status=CURRENT_ENTRY; required fix is always → LONG-BUY, never the reverse (CRITICAL)
+        WAIT_IN_ZONE            — identical check to PRICE_IN_ZONE_WAIT, alternate name (CRITICAL)
+
+        COMMON INVERSION TO AVOID: entry_zone_status=CURRENT_ENTRY means LONG-BUY
+        is already the correct, mandatory default action for both risk profiles.
+        PRICE_IN_ZONE_WAIT/WAIT_IN_ZONE fire ONLY when the draft's action is
+        WAIT-FOR-ENTRY at CURRENT_ENTRY. Never flag a LONG-BUY at CURRENT_ENTRY as
+        a violation, and never instruct changing an action FROM LONG-BUY TO
+        WAIT-FOR-ENTRY by citing CURRENT_ENTRY as the reason — that direction is
+        always wrong.
         ACTION_PROFILE_MISMATCH — LONG-BUY on entry_zone_status=PULLBACK_ENTRY with overall_signal=BEARISH
                                   and no compelling fundamental override cited in rationale (MAJOR)
         UNCONVINCING_OVERRIDE   — aggressive LONG-BUY on PULLBACK_ENTRY with momentum_score < 4
@@ -407,7 +456,11 @@ tasks:
         WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
         MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
         VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
-        WAIT_ENTRY_ZERO_ALLOC   — WAIT-FOR-ENTRY with allocation_pct=0 (CRITICAL)
+        WAIT_ENTRY_ZERO_ALLOC   — WAIT-FOR-ENTRY with no corresponding entry in
+                                  reserved_allocations, or an entry with pct=0. A
+                                  positive portfolio-level reserved_pct does NOT prove
+                                  this position was funded — check reserved_allocations
+                                  for this specific ticker, not the aggregate. (CRITICAL)
         MONITOR_WITH_SETUP      — MONITOR with trade_setup populated (CRITICAL)
         AVOID_WITH_SETUP        — AVOID with trade_setup populated (CRITICAL)
         INVALID_ACTION          — action not in {LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID} (CRITICAL)
@@ -437,7 +490,9 @@ tasks:
       STEP 5 — Output a pure Python dict (no markdown):
         sector: str
         risk_profile: str — "$risk_profile" (echo back verbatim)
-        draft_assessment: str — one paragraph summarizing key weaknesses (no praise)
+        draft_assessment: str — one paragraph summarizing key weaknesses found, grounded
+                                 in the reference_table (no praise; if the draft has no
+                                 grounded weaknesses, say so plainly instead of inventing one)
         per_ticker_critiques[]: ticker(str) severity(str) issue_type(str) finding(str) instruction(str)
         portfolio_level_issues: str[] — bucket math, cap violations, score duplicates
         revision_directives: str[] — "[TICKER]: [change] because [exact data]"
@@ -461,7 +516,10 @@ tasks:
   # Task 6: Final Strategy
   # Agent:   Investor Strategic (revision pass)
   # Context: draft_strategy + critique_review
-  # Tools:   allocate_portfolio (used only when actions change)
+  # Tools:   none — the Flow re-invokes allocate_portfolio itself after this task
+  #          and overwrites every numeric allocation/trade-setup field on the
+  #          output (see deterministic-enforcement-v1-9-1). This task decides
+  #          actions and rationale only.
   # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
@@ -470,13 +528,13 @@ tasks:
       Produce the revised final portfolio by applying the Critic's directives.
 
       RISK PROFILE: $risk_profile
-      You MUST stay within $risk_profile bounds throughout your revision:
+      You MUST stay within $risk_profile bounds when deciding whether to accept or
+      reject a directive:
         conservative: max stop 3% from entry_zone_low, min R/R 2.5, max per-position 15%
         aggressive:   max stop 5% from entry_zone_low, min R/R 1.5, max per-position 30%
       Do NOT drift toward the other profile when resolving Critic directives. If the Critic
       flags a trade setup as a violation but it is within the active profile bounds, defend
-      the original with a citation of the profile bounds. If you call allocate_portfolio,
-      include "risk_profile": "$risk_profile" in the JSON payload.
+      the original with a citation of the profile bounds.
 
       STEP 1 — Read the Critic's revision_directives carefully.
         For EACH directive:
@@ -486,22 +544,14 @@ tasks:
         You MUST address every CRITICAL and MAJOR critique.
         MINOR critiques may be accepted or defended with evidence.
 
-      STEP 2 — Determine whether any action changed from the draft.
-
-        CASE A — No action changed:
-          Copy all position and portfolio numeric fields verbatim from the draft.
-          Do NOT recalculate any numeric field.
-
-        CASE B — One or more actions changed:
-          Call allocate_portfolio ONCE with all positions using revised actions
-          (pass ticker, action, composite_score, entry zones, current_price — all verbatim from draft).
-          Copy allocation_pct, trade_setup from tool result.
-          Copy deployed_pct, reserved_pct, cash_reserve_pct, total_allocated_pct from tool result.
-          composite_score and current_price: always from draft, never from tool.
-
-        In both cases: total_allocated_pct MUST equal the sum of all positions'
-          allocation_pct. NEVER compute deployed_pct, reserved_pct, or
-          cash_reserve_pct by hand — they must come from the draft or the tool.
+      STEP 2 — Decide the final action per position (LONG-BUY, WAIT-FOR-ENTRY,
+        MONITOR, AVOID) by applying the directives you accepted in STEP 1. Do NOT
+        call allocate_portfolio and do NOT compute allocation_pct, trade_setup,
+        deployed_pct, reserved_pct, cash_reserve_pct, or total_allocated_pct
+        yourself — the Flow recomputes every one of those fields deterministically
+        after this task runs, from your decided actions, and discards whatever you
+        write here. Copy the draft's numeric fields verbatim as placeholders so the
+        output schema validates; do not invent or recalculate them.
 
       STEP 3 — Write revised qualitative content.
         rationale: 100-150 words per position. If a critique was addressed, state

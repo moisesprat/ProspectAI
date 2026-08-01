@@ -169,11 +169,14 @@ class TechnicalInterpretationTool(BaseTool):
                 # TRENDING regime: anchor to current price, not SMA20.
                 # Price may stay above SMA20 for weeks in a bull run — using SMA20
                 # as the ceiling produces 100% cash portfolios in bull markets.
+                # entry_zone_high must clear the entry_zone_status PULLBACK_ENTRY
+                # threshold below (entry_zone_high × 1.01) so a trending stock is
+                # actually classified CURRENT_ENTRY instead of always PULLBACK_ENTRY.
                 if atr > 0:
-                    entry_zone_high = round(current_price * 0.990, 2)   # 1% below price
+                    entry_zone_high = round(current_price * 0.995, 2)   # 0.5% below price
                     entry_zone_low  = round(current_price - atr * 1.5, 2)
                 else:
-                    entry_zone_high = round(current_price * 0.990, 2)
+                    entry_zone_high = round(current_price * 0.995, 2)
                     entry_zone_low  = round(current_price * 0.975, 2)
                 # Clamp: zone cannot drop below SMA50
                 if sma_50_f is not None:

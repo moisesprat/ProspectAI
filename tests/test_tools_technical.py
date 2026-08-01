@@ -318,3 +318,47 @@ class TestCompositeScoreFormula:
     def test_invalid_json_returns_error(self):
         result = json.loads(CompositeScoreTool()._run("not json"))
         assert "error" in result
+
+
+class TestCompositeScoreSentimentUnavailable:
+    """average_sentiment=null (sentiment_available=false upstream) -- change
+    deterministic-enforcement-v1-9-1."""
+
+    def test_null_sentiment_marks_sentiment_unavailable_and_drops_component(self):
+        scores = _compute({"ticker": "A", "average_sentiment": None,
+                           "momentum_score": 8, "financial_health": "STRONG",
+                           "growth_outlook": "HIGH"})
+        assert scores[0]["sentiment_unavailable"] is True
+        assert scores[0]["sentiment_component"] is None
+
+    def test_zero_sentiment_is_not_treated_as_unavailable(self):
+        # 0.0 is a real measured neutral score, never a stand-in for "unavailable".
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0,
+                           "momentum_score": 8, "financial_health": "STRONG",
+                           "growth_outlook": "HIGH"})
+        assert scores[0]["sentiment_unavailable"] is False
+        assert scores[0]["sentiment_component"] == 15.0
+
+    def test_null_sentiment_renormalizes_to_100_ceiling(self):
+        # Max technical (40) + max fundamental (30) = 70, renormalized to 100.
+        scores = _compute({"ticker": "A", "average_sentiment": None,
+                           "momentum_score": 10, "financial_health": "STRONG",
+                           "growth_outlook": "HIGH"})
+        assert scores[0]["composite_score"] == pytest.approx(100.0)
+
+    def test_null_sentiment_renormalization_preserves_relative_ranking(self):
+        scores = _compute(
+            {"ticker": "A", "average_sentiment": None, "momentum_score": 9,
+             "financial_health": "STRONG", "growth_outlook": "HIGH"},
+            {"ticker": "B", "average_sentiment": None, "momentum_score": 3,
+             "financial_health": "WEAK", "growth_outlook": "DECLINING"},
+        )
+        assert scores[0]["composite_score"] > scores[1]["composite_score"]
+
+    def test_null_sentiment_and_unknown_fundamentals_renormalizes_over_technical_only(self):
+        scores = _compute({"ticker": "A", "average_sentiment": None,
+                           "momentum_score": 10, "financial_health": "UNKNOWN",
+                           "growth_outlook": "UNKNOWN"})
+        assert scores[0]["sentiment_unavailable"] is True
+        assert scores[0]["fundamental_unknown"] is True
+        assert scores[0]["composite_score"] == pytest.approx(100.0)

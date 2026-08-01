@@ -113,10 +113,14 @@ class PortfolioAllocatorTool(BaseTool):
 
     Returns JSON with:
         stocks: list of {ticker, action, allocation_pct, trade_setup}
-        deployed_pct:        LONG-BUY allocations (active capital)
-        reserved_pct:        WAIT-FOR-ENTRY allocations (earmarked)
-        cash_reserve_pct:    100 - deployed - reserved (free unallocated buffer)
-        total_allocated_pct: deployed + reserved
+        deployed_pct:         LONG-BUY allocations (active capital)
+        reserved_pct:         WAIT-FOR-ENTRY allocations (earmarked)
+        cash_reserve_pct:     100 - deployed - reserved (free unallocated buffer)
+        total_allocated_pct:  deployed + reserved
+        reserved_allocations: [{ticker, pct}] -- explicit per-ticker attribution of
+                               reserved_pct; every WAIT-FOR-ENTRY position appears
+                               here with its allocation_pct, so reserved_pct is
+                               never an unattributed aggregate.
 
     trade_setup:
         LONG-BUY in-zone:    zone-anchored stop/TP (stop = entry_zone_low × stop_multiplier)
@@ -244,23 +248,26 @@ class PortfolioAllocatorTool(BaseTool):
             # ── Three-bucket capital breakdown ───────────────────────────────
             deployed_total = 0.0
             reserved_total = 0.0
+            reserved_allocations = []
             for o in output:
                 act = next(r["action"] for r in results if r["ticker"] == o["ticker"])
                 if act == "LONG-BUY":
                     deployed_total += o["allocation_pct"]
                 elif act == "WAIT-FOR-ENTRY":
                     reserved_total += o["allocation_pct"]
+                    reserved_allocations.append({"ticker": o["ticker"], "pct": o["allocation_pct"]})
 
             deployed_total = round(deployed_total, 1)
             reserved_total = round(reserved_total, 1)
             cash_reserve   = round(100.0 - deployed_total - reserved_total, 1)
 
             return json.dumps({
-                "stocks":              output,
-                "deployed_pct":        deployed_total,
-                "reserved_pct":        reserved_total,
-                "cash_reserve_pct":    cash_reserve,
-                "total_allocated_pct": round(deployed_total + reserved_total, 1),
+                "stocks":               output,
+                "deployed_pct":         deployed_total,
+                "reserved_pct":         reserved_total,
+                "cash_reserve_pct":     cash_reserve,
+                "total_allocated_pct":  round(deployed_total + reserved_total, 1),
+                "reserved_allocations": reserved_allocations,
             })
 
         except Exception as e:

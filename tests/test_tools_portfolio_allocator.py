@@ -229,6 +229,25 @@ def test_buckets_always_sum_to_100(tool):
         assert total == pytest.approx(100.0, abs=0.1)
 
 
+def test_reserved_allocations_sums_to_reserved_pct(tool):
+    result = _run(tool, [
+        _stock("AMZN", "WAIT-FOR-ENTRY", score=40, low=200.0, high=210.0, price=205.0),
+        _stock("META", "WAIT-FOR-ENTRY", score=20, low=300.0, high=310.0, price=305.0),
+    ], "conservative")
+    total_attributed = round(sum(r["pct"] for r in result["reserved_allocations"]), 1)
+    assert total_attributed == pytest.approx(result["reserved_pct"], abs=0.1)
+
+
+def test_every_wait_for_entry_position_has_a_reserved_allocation_entry(tool):
+    result = _run(tool, [
+        _stock("AMZN", "WAIT-FOR-ENTRY", score=40, low=200.0, high=210.0, price=205.0),
+        _stock("AAPL", "LONG-BUY",       score=60, low=100.0, high=105.0, price=102.0),
+    ], "conservative")
+    tickers_with_reserved = {r["ticker"] for r in result["reserved_allocations"] if r["pct"] > 0}
+    assert "AMZN" in tickers_with_reserved
+    assert "AAPL" not in tickers_with_reserved
+
+
 # ── Error / validation tests ───────────────────────────────────────────────────
 
 def test_invalid_json_returns_error(tool):

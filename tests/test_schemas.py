@@ -123,6 +123,45 @@ def test_market_analysis_output_timestamp_optional():
     assert output.analysis_timestamp is None
 
 
+def test_market_analysis_output_sentiment_available_defaults_true():
+    output = MarketAnalysisOutput(
+        sector="Technology",
+        candidate_stocks=[CandidateStock(
+            ticker="AAPL", mention_count=120, average_sentiment=0.65, relevance_score=0.9,
+            rationale="Apple dominates consumer tech with strong brand loyalty and consistent earnings growth.",
+        )],
+        summary="S" * 150,
+    )
+    assert output.sentiment_available is True
+
+
+def test_market_analysis_output_accepts_null_sentiment_when_unavailable():
+    output = MarketAnalysisOutput(
+        sector="Technology",
+        sentiment_available=False,
+        candidate_stocks=[CandidateStock(
+            ticker="AAPL", mention_count=0, average_sentiment=None, relevance_score=0.5,
+            rationale="Sentiment data unavailable this run; falling back to a well-known sector leader.",
+        )],
+        summary="S" * 150,
+    )
+    assert output.sentiment_available is False
+    assert output.candidate_stocks[0].average_sentiment is None
+
+
+def test_market_analysis_output_rejects_null_sentiment_when_available():
+    with pytest.raises(ValidationError):
+        MarketAnalysisOutput(
+            sector="Technology",
+            sentiment_available=True,
+            candidate_stocks=[CandidateStock(
+                ticker="AAPL", mention_count=120, average_sentiment=None, relevance_score=0.9,
+                rationale="Apple dominates consumer tech with strong brand loyalty and consistent earnings growth.",
+            )],
+            summary="S" * 150,
+        )
+
+
 # ── TechnicalAnalysisOutput ───────────────────────────────────────────────────
 
 def test_technical_analysis_output_valid():

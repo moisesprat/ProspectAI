@@ -169,6 +169,7 @@ class TestMarketAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_market_output(self, flow):
         pydantic_out = MagicMock(spec=MarketAnalysisOutput)
+        pydantic_out.candidate_stocks = []
         crew_result = _make_crew_result(pydantic_out=pydantic_out)
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:

@@ -19,6 +19,10 @@ from schemas.agent_outputs import (
 )
 from utils.execution_tracker import ExecutionTracker
 from utils.recommendation_validator import validate_portfolio
+from utils.portfolio_allocator_tool import PortfolioAllocatorTool
+from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
+from utils.action_policy_gate import filter_directives, filter_critiques
+from utils.candidate_universe_filter import filter_candidates
 from utils import yfinance_cache
 from prospect_ai_crew import TaskFactory
 
@@ -223,6 +227,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             return ""
         return json.dumps({
             "sector": mo.sector,
+            "sentiment_available": mo.sentiment_available,
             "candidate_stocks": [
                 {
                     "ticker": s.ticker,
@@ -240,6 +245,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             return ""
         return json.dumps({
             "sector": mo.sector,
+            "sentiment_available": mo.sentiment_available,
             "candidate_stocks": [
                 {
                     "ticker": s.ticker,
@@ -349,27 +355,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             "risk_level": do.risk_level,
         })
 
-    def _slim_critique(self) -> str:
-        """Directives + per-ticker critiques — strips approved_positions (not actionable)."""
-        co = self.state.critique_output
-        if co is None:
-            return ""
-        return json.dumps({
-            "sector": co.sector,
-            "draft_assessment": co.draft_assessment,
-            "per_ticker_critiques": [
-                {
-                    "ticker": c.ticker,
-                    "severity": c.severity,
-                    "issue_type": c.issue_type,
-                    "finding": c.finding,
-                    "instruction": c.instruction,
-                }
-                for c in co.per_ticker_critiques
-            ],
-            "revision_directives": co.revision_directives,
-        })
-
     def _critic_reference_table(self) -> str:
         """Compact per-ticker lookup for the Critic — only the fields its checklist references."""
         mo = self.state.market_output
@@ -405,6 +390,63 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             })
         return json.dumps({"reference_table": rows})
 
+    def _gate_position_context(self) -> Dict[str, Dict[str, Optional[str]]]:
+        """ticker -> {entry_zone_status, risk_profile} for ActionPolicyGate."""
+        to = self.state.technical_output
+        if to is None:
+            return {}
+        return {
+            t.ticker.upper(): {
+                "entry_zone_status": t.momentum_analysis.entry_zone_status,
+                "risk_profile": self.state.risk_profile,
+            }
+            for t in to.technical_analysis
+        }
+
+    def _gated_slim_critique(self) -> str:
+        """Same shape as _slim_critique(), but with revision_directives that
+        order an action outside the entry_zone_status/risk_profile policy
+        table dropped and logged before the Final Strategist ever sees them.
+        """
+        co = self.state.critique_output
+        if co is None:
+            return ""
+
+        position_context = self._gate_position_context()
+
+        kept_directives, rejected_directives = filter_directives(
+            co.revision_directives, position_context,
+        )
+        for r in rejected_directives:
+            logger.warning(
+                "ActionPolicyGate dropped directive for %s (requested %s): %s",
+                r.ticker, r.rejected_action, r.reason,
+            )
+
+        raw_critiques = [
+            {
+                "ticker": c.ticker,
+                "severity": c.severity,
+                "issue_type": c.issue_type,
+                "finding": c.finding,
+                "instruction": c.instruction,
+            }
+            for c in co.per_ticker_critiques
+        ]
+        kept_critiques, rejected_critiques = filter_critiques(raw_critiques, position_context)
+        for r in rejected_critiques:
+            logger.warning(
+                "ActionPolicyGate dropped per_ticker_critique for %s (requested %s): %s",
+                r.ticker, r.rejected_action, r.reason,
+            )
+
+        return json.dumps({
+            "sector": co.sector,
+            "draft_assessment": co.draft_assessment,
+            "per_ticker_critiques": kept_critiques,
+            "revision_directives": kept_directives,
+        })
+
     # ─────────────────────────────────────────────────────────────────────────
     # Flow methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -419,6 +461,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         if self._tracker:
             self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
         self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
+        kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, self.state.sector)
+        if dropped:
+            logger.warning("Excluded sector-benchmark/broad-market ETF candidates: %s", dropped)
+            self.state.market_output.candidate_stocks = kept
         self._emit_progress(0, result)
         return result.raw or ""
 
@@ -495,7 +541,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._emit_start(5)
         ctx = "\n\n".join([
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
-            self._fmt_ctx("Critic Review Output", self._slim_critique()),
+            self._fmt_ctx("Critic Review Output", self._gated_slim_critique()),
         ])
         task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
         if self._tracker:
@@ -508,6 +554,99 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         return result.raw or ""
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Flow-authoritative allocation (deterministic-enforcement-v1-9-1)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _reprice_final_output(self, structured: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
+        """Re-invoke allocate_portfolio against the Final Strategist's decided
+        actions and overwrite all numeric allocation/trade-setup fields on the
+        final output. Entry zones and current prices are read from the
+        deterministic Phase-2 technical output, never from the LLM's own
+        (possibly fabricated) trade_setup — only `action` and `composite_score`
+        are trusted from the Final Strategist output. Runs unconditionally,
+        even when no action changed relative to the draft.
+        """
+        technical_by_ticker: Dict[str, Any] = {}
+        if self.state.technical_output:
+            for t in self.state.technical_output.technical_analysis:
+                technical_by_ticker[t.ticker.upper()] = t
+
+        positions = structured.get("positions", [])
+        stocks_payload = []
+        for pos in positions:
+            ticker = str(pos.get("ticker", "")).upper()
+            technical = technical_by_ticker.get(ticker)
+            if technical is not None:
+                entry_zone_low = technical.momentum_analysis.entry_zone_low or 0.0
+                entry_zone_high = technical.momentum_analysis.entry_zone_high or 0.0
+                current_price = technical.current_price or pos.get("current_price") or 0.0
+            else:
+                # Ticker not found in the deterministic technical output (should
+                # not normally happen) -- fall back to the LLM's own fields.
+                setup = pos.get("trade_setup") or {}
+                entry_zone_low = setup.get("entry_zone_low", 0.0)
+                entry_zone_high = setup.get("entry_zone_high", 0.0)
+                current_price = pos.get("current_price", 0.0)
+
+            stocks_payload.append({
+                "ticker":          ticker,
+                "action":          pos.get("action", "MONITOR"),
+                "composite_score": pos.get("composite_score", 0.0),
+                "entry_zone_low":  entry_zone_low,
+                "entry_zone_high": entry_zone_high,
+                "current_price":   current_price,
+            })
+
+        payload = {"risk_profile": risk_profile, "stocks": stocks_payload}
+        result = json.loads(PortfolioAllocatorTool()._run(json.dumps(payload)))
+        if "error" in result:
+            raise BoundsViolationError([{
+                "ticker": None, "rule": "allocator_invocation_error",
+                "expected": "successful allocate_portfolio result", "actual": result["error"],
+            }])
+
+        by_ticker_result = {o["ticker"]: o for o in result["stocks"]}
+        repriced_positions = []
+        for pos in positions:
+            ticker = str(pos.get("ticker", "")).upper()
+            o = by_ticker_result.get(ticker)
+            new_pos = dict(pos)
+            if o is not None:
+                new_pos["allocation_pct"] = o["allocation_pct"]
+                new_pos["trade_setup"] = o["trade_setup"]
+            repriced_positions.append(new_pos)
+
+        repriced = dict(structured)
+        repriced["positions"]           = repriced_positions
+        repriced["deployed_pct"]        = result["deployed_pct"]
+        repriced["reserved_pct"]        = result["reserved_pct"]
+        repriced["cash_reserve_pct"]    = result["cash_reserve_pct"]
+        repriced["total_allocated_pct"] = result["total_allocated_pct"]
+        if "reserved_allocations" in result:
+            repriced["reserved_allocations"] = result["reserved_allocations"]
+        return repriced
+
+    def _finalize_and_validate_portfolio(self, structured: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
+        """Flow-authoritative repricing + fail-closed bounds validation.
+
+        Always re-invokes allocate_portfolio (Decision 1: the LLM never decides
+        whether the tool runs). If the result fails PortfolioBoundsValidator,
+        re-invokes once more; if it still fails, raises BoundsViolationError
+        and the caller (run_analysis) does not return a result.
+        """
+        repriced = self._reprice_final_output(structured, risk_profile)
+        violations = validate_bounds(repriced, risk_profile)
+        if violations:
+            logger.warning(
+                "Final output failed PortfolioBoundsValidator on first pass (%s); re-invoking allocator",
+                violations,
+            )
+            repriced = self._reprice_final_output(structured, risk_profile)
+            violations = validate_bounds(repriced, risk_profile)
+            if violations:
+                raise BoundsViolationError(violations)
+        return repriced
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Public entry point
     # ─────────────────────────────────────────────────────────────────────────
     def run_analysis(
@@ -515,7 +654,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         market_criteria: Dict[str, Any],
         progress_callback: Optional[Callable[[Dict], None]] = None,
     ) -> Dict[str, Any]:
-        """Run the full pipeline and return the same result shape as ProspectAICrew.run_analysis()."""
+        """Run the full pipeline and return the structured result described in the module docstring."""
         yfinance_cache.clear()
         if progress_callback:
             self._progress_callback = progress_callback
@@ -539,6 +678,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             tracker.finish()
 
         structured = _parse_crew_result(self._final_crew_result)
+        structured = self._finalize_and_validate_portfolio(structured, risk_profile)
 
         validation_issues = validate_portfolio(structured)
         if validation_issues:

@@ -83,8 +83,8 @@ InvestorStrategicAgent (final revision)
 2. **TechnicalAnalystAgent** — calls `TechnicalAnalysisTool` (batch, all tickers at once); 13+ indicators (RSI, MACD, BB, ATR, etc.) via `yfinance` + `ta`.
 3. **FundamentalAnalystAgent** — calls `FundamentalDataTool` then `FundamentalGraderTool` (both batch). Phases 2 and 3 run in parallel after Phase 1.
 4. **InvestorStrategicAgent (draft)** — calls `CompositeScoreTool` then `PortfolioAllocatorTool`; decides action + allocation per ticker.
-5. **CriticAgent** — adversarial review of the draft; outputs `revision_directives` and `per_ticker_critiques`.
-6. **InvestorStrategicAgent (final)** — applies critic directives (or defends with data); optionally re-calls `PortfolioAllocatorTool` if actions change.
+5. **CriticAgent** — adversarial review of the draft; outputs `revision_directives` and `per_ticker_critiques`. `ActionPolicyGate` (`utils/action_policy_gate.py`) deterministically drops any directive that orders an action outside the entry_zone_status/risk_profile policy table before it reaches Phase 6.
+6. **InvestorStrategicAgent (final)** — applies critic directives (or defends with data); decides actions/rationale only. `ProspectAIFlow` — not the LLM — always re-invokes `PortfolioAllocatorTool` afterward and overwrites every numeric allocation/trade-setup field, then validates the result with `PortfolioBoundsValidator` (fail-closed: one repair re-invocation, then raises `BoundsViolationError` rather than publishing a non-compliant result).
 
 ### Key Files
 
@@ -92,7 +92,7 @@ InvestorStrategicAgent (final revision)
 |---|---|
 | `main.py` | CLI entry point; validates `.env`, sets `MODEL_PROVIDER`, calls `ProspectAIFlow.run_analysis()` |
 | `prospect_ai_flow.py` | **Current orchestrator** — `ProspectAIFlow(Flow[ProspectAIFlowState])`: 6-phase CrewAI Flow, state model, context slimming helpers, `_extract_pydantic()` for schema validation |
-| `prospect_ai_crew.py` | Legacy single-Crew orchestrator (no longer called by main) |
+| `prospect_ai_crew.py` | `TaskFactory` — agent/task factory used by `ProspectAIFlow` (per-phase agent + tools + schema config, `build_task()`) |
 | `agents/base_agent.py` | `BaseAgent` ABC; loads YAML config, `_get_llm()` returns `crewai.LLM` based on `MODEL_PROVIDER` |
 | `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
 | `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, temperature, model, max_tokens |
@@ -106,7 +106,11 @@ InvestorStrategicAgent (final revision)
 | `utils/fundamental_data_tool.py` | `FundamentalDataTool` — batch yfinance fetch (P/E, margins, FCF, growth, etc.) |
 | `utils/fundamental_grader_tool.py` | `FundamentalGraderTool` — deterministic financial health grader; takes FundamentalDataTool output |
 | `utils/composite_score_tool.py` | `CompositeScoreTool` — sentiment + momentum + fundamental → composite score 0-100 |
-| `utils/portfolio_allocator_tool.py` | `PortfolioAllocatorTool` — allocation % and trade setups (entry zone, stop, take-profit) |
+| `utils/portfolio_allocator_tool.py` | `PortfolioAllocatorTool` — allocation % and trade setups (entry zone, stop, take-profit); also emits `reserved_allocations[]` (explicit per-ticker attribution of `reserved_pct`) |
+| `utils/portfolio_bounds_validator.py` | `PortfolioBoundsValidator` / `BoundsViolationError` — Flow-level, fail-closed check of the final output against per-profile allocation/stop/R-R/bucket-sum/entry-zone invariants before publication |
+| `utils/action_policy_gate.py` | `ActionPolicyGate` — deterministic `entry_zone_status × risk_profile → allowed actions` table; filters Critic `revision_directives` before they reach the Final Strategist |
+| `utils/candidate_universe_filter.py` | Excludes sector-benchmark ETFs (e.g. XLE) and broad-market ETFs (SPY, QQQ, ...) from `MarketAnalysisOutput.candidate_stocks`, applied uniformly to the Reddit and Serper-fallback paths |
+| `utils/patient_serper_tool.py` | `PatientSerperDevTool` — wraps `crewai_tools.SerperDevTool` with retry classification: 4xx fails fast (response body logged), only 429/5xx retry (max 2, backoff) |
 | `utils/recommendation_validator.py` | Post-pipeline validation: stop/TP invariants, R/R checks, allocation sanity |
 | `utils/execution_tracker.py` | Per-phase wall-clock timing + LLM token tracking |
 | `utils/yfinance_cache.py` | In-memory cache (scoped per `run_analysis()` call) to avoid duplicate yfinance calls |
@@ -117,12 +121,12 @@ InvestorStrategicAgent (final revision)
 
 | Phase | Agent | Tools | Runs after |
 |---|---|---|---|
-| 1 Market Analysis | MarketAnalyst | `RedditSentimentTool`, `SerperDevTool` (fallback) | — |
+| 1 Market Analysis | MarketAnalyst | `RedditSentimentTool`, `PatientSerperDevTool` (fallback) | — |
 | 2 Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool` | Phase 1 |
 | 3 Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool` → `FundamentalGraderTool` | Phase 1 (parallel with 2) |
 | 4 Draft Strategy | InvestorStrategic | `CompositeScoreTool` → `PortfolioAllocatorTool` | Phases 2 + 3 |
-| 5 Critique Review | Critic | none (reasoning only) | Phase 4 |
-| 6 Final Strategy | InvestorStrategic | `PortfolioAllocatorTool` (if actions change) | Phase 5 |
+| 5 Critique Review | Critic | none (reasoning only); `ActionPolicyGate` filters output before Phase 6 | Phase 4 |
+| 6 Final Strategy | InvestorStrategic | none — LLM decides actions/rationale only; the Flow deterministically re-invokes `PortfolioAllocatorTool` and validates with `PortfolioBoundsValidator` afterward | Phase 5 |
 
 ### Pydantic Output Schemas (`schemas/agent_outputs.py`)
 
@@ -130,7 +134,7 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
 
 | Schema | Key fields |
 |---|---|
-| `MarketAnalysisOutput` | `candidate_stocks[]` — ticker, mention_count, average_sentiment [-1,1], relevance_score [0,1], rationale |
+| `MarketAnalysisOutput` | `sentiment_available` (bool), `candidate_stocks[]` — ticker, mention_count, average_sentiment [-1,1] or `null` when `sentiment_available=false` (never a fabricated `0.0`), relevance_score [0,1], rationale |
 | `TechnicalAnalysisOutput` | `technical_analysis[]` — ticker, raw_indicators, momentum_analysis (momentum_score 0-10, risk_level, regime, entry_zone) |
 | `FundamentalAnalysisOutput` | `fundamental_analysis[]` — ticker, valuation_metrics, fundamental_rating, key_strengths/risks |
 | `InvestorStrategicOutput` | `positions[]` — ticker, action, composite_score, allocation_pct, trade_setup or scaled_entry_setups, rationale |
@@ -160,6 +164,7 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
         ],
         "deployed_pct": float,
         "reserved_pct": float,
+        "reserved_allocations": [{"ticker": str, "pct": float}],  # explicit per-ticker attribution of reserved_pct
         "cash_reserve_pct": float,
         "overall_strategy": str,
         "risk_level": "Low" | "Medium" | "High" | "Very High"
@@ -176,12 +181,18 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
 }
 ```
 
+**BREAKING (v1.9.1)**: `run_analysis()` can raise `utils.portfolio_bounds_validator.BoundsViolationError`
+instead of returning the dict above, when the Flow's own `PortfolioAllocatorTool` re-invocation
+still fails `PortfolioBoundsValidator` after one repair attempt. Callers (`main.py`, and the
+`prospectai-backend` service once it's updated to depend on this version) should catch this
+alongside other run failures rather than assume `run_analysis()` always returns a result.
+
 ### LLM Configuration
 
 - **Global**: `MODEL_PROVIDER` env var (`anthropic` or `ollama`) — set by `--ollama` CLI flag.
 - **Per-agent env overrides**: `AGENT_MARKET_ANALYST_MODEL`, `AGENT_TECHNICAL_ANALYST_MODEL`, `AGENT_FUNDAMENTAL_ANALYST_MODEL`, `AGENT_INVESTOR_STRATEGIC_MODEL`, `AGENT_CRITIC_MODEL`.
 - **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): Haiku for data-gathering agents (1–3), Sonnet for reasoning agents (4–6).
-- All LLM calls go through `crewai.LLM` backed by LiteLLM — no direct langchain dependencies.
+- All LLM calls go through `crewai.LLM` (see `agents/base_agent.py::_get_llm()` and `agents/caching_llm.py`) — no direct langchain dependencies. `crewai.LLM(...)` is a factory: for providers in crewai's `SUPPORTED_NATIVE_PROVIDERS` list (includes both `anthropic` and `ollama`), it dispatches to a native completion class (e.g. `AnthropicCompletion`) instead of LiteLLM. Since `litellm` is not a pinned dependency here (only `crewai`/`crewai-tools` are) and isn't installed in `.venv`, **both the default Anthropic path and the `--ollama` path run through crewai's native clients, not LiteLLM** — LiteLLM is only crewai's fallback for providers outside that native list.
 
 ### Related Repositories
 

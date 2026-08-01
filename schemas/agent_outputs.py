@@ -17,7 +17,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class CandidateStock(BaseModel):
     ticker: str = Field(..., description="Stock ticker symbol, e.g. AAPL")
     mention_count: int = Field(..., ge=0)
-    average_sentiment: float = Field(..., ge=-1.0, le=1.0)
+    # None means sentiment could not be measured (all sources failed) -- see
+    # sentiment_available on MarketAnalysisOutput. Never a fabricated 0.0.
+    average_sentiment: Optional[float] = Field(None, ge=-1.0, le=1.0)
     relevance_score: float = Field(..., ge=0.0, le=1.0)
     rationale: str = Field(..., min_length=50)
 
@@ -27,6 +29,21 @@ class MarketAnalysisOutput(BaseModel):
     candidate_stocks: List[CandidateStock] = Field(..., min_length=1, max_length=10)
     summary: str = Field(..., min_length=100)
     analysis_timestamp: Optional[datetime] = None
+    # False when both RedditSentimentTool and the Serper fallback failed to
+    # produce sentiment data for this sector -- candidates then carry
+    # average_sentiment=None rather than a fabricated neutral 0.0.
+    sentiment_available: bool = True
+
+    @model_validator(mode="after")
+    def null_sentiment_only_when_unavailable(self) -> "MarketAnalysisOutput":
+        if self.sentiment_available:
+            missing = [c.ticker for c in self.candidate_stocks if c.average_sentiment is None]
+            if missing:
+                raise ValueError(
+                    f"sentiment_available=True but average_sentiment is null for: {missing}. "
+                    "Set sentiment_available=False when sentiment could not be measured."
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------
