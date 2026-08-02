@@ -31,11 +31,23 @@ def clear() -> None:
     _cashflow_cache.clear()
 
 
+def _yf_symbol(ticker: str) -> str:
+    """Normalize a display ticker to the symbol yfinance/Yahoo Finance expects.
+
+    Share-class tickers are commonly written with a dot (BRK.B, BF.B) in
+    prose and search results, but Yahoo Finance's own symbol uses a dash
+    (BRK-B, BF-B). Passing the dotted form doesn't raise -- it silently
+    returns empty data, which previously surfaced several steps downstream
+    as a null TechnicalAnalysisOutput entry failing schema validation.
+    """
+    return ticker.strip().upper().replace(".", "-")
+
+
 def get_history(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
     """Return OHLCV history DataFrame, fetching from yfinance on first access."""
     key = (ticker.upper(), period, interval)
     if key not in _history_cache:
-        _history_cache[key] = yf.Ticker(ticker).history(period=period, interval=interval)
+        _history_cache[key] = yf.Ticker(_yf_symbol(ticker)).history(period=period, interval=interval)
     return _history_cache[key]
 
 
@@ -43,7 +55,7 @@ def get_info(ticker: str) -> Dict[str, Any]:
     """Return the ticker info dict, fetching from yfinance on first access."""
     key = ticker.upper()
     if key not in _info_cache:
-        _info_cache[key] = yf.Ticker(ticker).info
+        _info_cache[key] = yf.Ticker(_yf_symbol(ticker)).info
     return _info_cache[key]
 
 
@@ -51,7 +63,7 @@ def get_financials(ticker: str) -> Any:
     """Return the income-statement DataFrame, fetching from yfinance on first access."""
     key = ticker.upper()
     if key not in _financials_cache:
-        _financials_cache[key] = yf.Ticker(ticker).financials
+        _financials_cache[key] = yf.Ticker(_yf_symbol(ticker)).financials
     return _financials_cache[key]
 
 
@@ -59,5 +71,5 @@ def get_cashflow(ticker: str) -> Any:
     """Return the cash-flow DataFrame, fetching from yfinance on first access."""
     key = ticker.upper()
     if key not in _cashflow_cache:
-        _cashflow_cache[key] = yf.Ticker(ticker).cashflow
+        _cashflow_cache[key] = yf.Ticker(_yf_symbol(ticker)).cashflow
     return _cashflow_cache[key]

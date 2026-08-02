@@ -20,12 +20,18 @@ only revision_directives leaves the identical bad instruction reaching the
 Final Strategist via per_ticker_critiques. `filter_directives()` covers the
 first channel, `filter_critiques()` covers the second.
 
-This gate is intentionally coarse: entry_zone_status x risk_profile only. The
-finer-grained exceptions inside PULLBACK_ENTRY (momentum_score, regime,
-overall_signal, financial_health) are left to the Critic/Final Strategist's
-own reasoning -- the gate only rejects actions that are NEVER valid for a
-given (entry_zone_status, risk_profile) pair, not actions that are merely
-situational.
+This gate is intentionally narrow: it encodes only the ONE genuine semantic
+invariant in the pipeline (CURRENT_ENTRY excludes WAIT-FOR-ENTRY -- "wait for
+entry" is a contradiction in terms when price is already in the actionable
+zone, not a risk-policy preference). Every other combination the gate used to
+restrict (e.g. LONG-BUY at BELOW_ZONE) was a defensible-but-debatable risk
+stance, not a logical necessity, and has been opened up to the Strategist's
+own reasoning as of change reasoning-depth-action-selection -- see that
+change's design.md for the full "which restrictions are real invariants vs.
+risk judgment in disguise" analysis. Loosening the gate does not loosen the
+*valid action set*: PositionRecommendation.action stays a closed
+Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"] in
+schemas/agent_outputs.py regardless of what this table allows.
 """
 
 import re
@@ -34,22 +40,24 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 VALID_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID")
 
 # entry_zone_status x risk_profile -> allowed actions.
-# Derived from config/tasks.yaml's draft_strategy STEP 3 guidance:
-#   CURRENT_ENTRY:  LONG-BUY is the mandatory default for both profiles;
-#                   WAIT-FOR-ENTRY is never valid here.
-#   PULLBACK_ENTRY: WAIT-FOR-ENTRY is the default, but LONG-BUY is valid under
-#                   profile-specific conditions the gate does not evaluate
-#                   (momentum_score, regime, overall_signal, financial_health)
-#                   -- so both remain allowed here for both profiles.
-#   BELOW_ZONE:     Neither LONG-BUY nor WAIT-FOR-ENTRY is ever valid -- do not
-#                   buy into a potential breakdown.
+#   CURRENT_ENTRY:  WAIT-FOR-ENTRY is never valid here -- price is already in
+#                   the actionable zone, so "waiting for entry" is a semantic
+#                   contradiction, not a risk-policy preference. This is the
+#                   one true invariant the gate enforces.
+#   PULLBACK_ENTRY: no restriction -- always was fully open (all 4 actions),
+#                   left entirely to the Strategist/Critic's own reasoning.
+#   BELOW_ZONE:     no restriction -- previously excluded LONG-BUY ("don't buy
+#                   into a potential breakdown"), but that is a risk stance a
+#                   real analyst could reasonably override, not a logical
+#                   necessity, so it is now open to the Strategist's judgment
+#                   like PULLBACK_ENTRY already was.
 ACTION_POLICY_TABLE: Dict[Tuple[Optional[str], str], frozenset] = {
     ("CURRENT_ENTRY", "conservative"):  frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
     ("CURRENT_ENTRY", "aggressive"):    frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
     ("PULLBACK_ENTRY", "conservative"): frozenset({"WAIT-FOR-ENTRY", "LONG-BUY", "MONITOR", "AVOID"}),
     ("PULLBACK_ENTRY", "aggressive"):   frozenset({"LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"}),
-    ("BELOW_ZONE", "conservative"):     frozenset({"MONITOR", "AVOID"}),
-    ("BELOW_ZONE", "aggressive"):       frozenset({"MONITOR", "AVOID"}),
+    ("BELOW_ZONE", "conservative"):     frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
+    ("BELOW_ZONE", "aggressive"):       frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
 }
 
 

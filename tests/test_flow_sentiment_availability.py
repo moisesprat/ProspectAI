@@ -66,10 +66,15 @@ def test_critic_task_description_scopes_out_sentiment_when_unavailable():
     assert "do NOT raise any" in critique_section or "do NOT raise any\n" in critique_section
 
 
-def test_critic_task_description_checks_wait_entry_alloc_against_reserved_allocations():
+def test_critic_task_description_no_longer_checks_deterministically_enforced_items():
+    # As of reasoning-depth-action-selection, the Critic checklist drops items
+    # already enforced deterministically downstream (PortfolioBoundsValidator,
+    # schema validation) -- WAIT_ENTRY_ZERO_ALLOC, CONCENTRATION_BREACH, and
+    # BUCKET_SUM_ERROR among them -- since the Final Strategist has no authority
+    # to fix a numeric field regardless of what the Critic finds.
     tasks_yaml = Path(__file__).parent.parent / "config" / "tasks.yaml"
     text = tasks_yaml.read_text()
     critique_section = text.split("critique_review:")[1].split("final_strategy:")[0]
-    assert "WAIT_ENTRY_ZERO_ALLOC" in critique_section
-    assert "reserved_allocations" in critique_section
-    assert "aggregate" in critique_section
+    for removed_item in ("WAIT_ENTRY_ZERO_ALLOC", "CONCENTRATION_BREACH", "BUCKET_SUM_ERROR",
+                          "COMPOSITE_SCORE_MISMATCH", "INVALID_ACTION", "ALLOCATION_MISMATCH"):
+        assert removed_item not in critique_section

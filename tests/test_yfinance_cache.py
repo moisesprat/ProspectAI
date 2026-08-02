@@ -74,6 +74,46 @@ def test_get_info_case_insensitive():
     mock_cls.assert_called_once()
 
 
+# ── Dotted share-class ticker normalization ─────────────────────────────────────
+
+def test_get_info_normalizes_dotted_ticker_for_yfinance_call():
+    mock = _mock_ticker(info_dict={"symbol": "BRK-B"})
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_info("BRK.B")
+    mock_cls.assert_called_once_with("BRK-B")
+
+
+def test_get_history_normalizes_dotted_ticker_for_yfinance_call():
+    mock = _mock_ticker()
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_history("brk.b", "1mo")
+    mock_cls.assert_called_once_with("BRK-B")
+
+
+def test_get_financials_normalizes_dotted_ticker_for_yfinance_call():
+    mock = _mock_ticker()
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_financials("BF.B")
+    mock_cls.assert_called_once_with("BF-B")
+
+
+def test_get_cashflow_normalizes_dotted_ticker_for_yfinance_call():
+    mock = _mock_ticker()
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_cashflow("BF.B")
+    mock_cls.assert_called_once_with("BF-B")
+
+
+def test_dotted_and_dashed_forms_still_share_one_cache_entry_when_identical_input():
+    # Cache key remains the display ticker as passed in (unnormalized) --
+    # this only fixes the argument sent to yfinance, not cache identity.
+    mock = _mock_ticker(info_dict={"symbol": "BRK-B"})
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_info("BRK.B")
+        cache.get_info("BRK.B")
+    mock_cls.assert_called_once_with("BRK-B")
+
+
 # ── clear() ────────────────────────────────────────────────────────────────────
 
 def test_clear_forces_refetch():

@@ -625,6 +625,18 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             repriced["reserved_allocations"] = result["reserved_allocations"]
         return repriced
 
+    def _entry_zone_status_by_ticker(self) -> Dict[str, str]:
+        """ticker -> entry_zone_status from the deterministic Phase-2 technical
+        output, for PortfolioBoundsValidator's CURRENT_ENTRY/WAIT-FOR-ENTRY check.
+        """
+        result: Dict[str, str] = {}
+        if self.state.technical_output:
+            for t in self.state.technical_output.technical_analysis:
+                status = t.momentum_analysis.entry_zone_status if t.momentum_analysis else None
+                if status:
+                    result[t.ticker.upper()] = status
+        return result
+
     def _finalize_and_validate_portfolio(self, structured: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
         """Flow-authoritative repricing + fail-closed bounds validation.
 
@@ -632,16 +644,23 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         whether the tool runs). If the result fails PortfolioBoundsValidator,
         re-invokes once more; if it still fails, raises BoundsViolationError
         and the caller (run_analysis) does not return a result.
+
+        The CURRENT_ENTRY/WAIT-FOR-ENTRY invariant check is included here even
+        though the retry cannot fix it (repricing never changes `action`) --
+        the point is that a Final Strategist decision violating this invariant
+        must never publish silently, matching the fail-closed intent of every
+        other check in this validator.
         """
+        zone_status = self._entry_zone_status_by_ticker()
         repriced = self._reprice_final_output(structured, risk_profile)
-        violations = validate_bounds(repriced, risk_profile)
+        violations = validate_bounds(repriced, risk_profile, zone_status)
         if violations:
             logger.warning(
                 "Final output failed PortfolioBoundsValidator on first pass (%s); re-invoking allocator",
                 violations,
             )
             repriced = self._reprice_final_output(structured, risk_profile)
-            violations = validate_bounds(repriced, risk_profile)
+            violations = validate_bounds(repriced, risk_profile, zone_status)
             if violations:
                 raise BoundsViolationError(violations)
         return repriced

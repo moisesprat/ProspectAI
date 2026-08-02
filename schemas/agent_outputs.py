@@ -319,7 +319,11 @@ class CriticOutput(BaseModel):
     sector: str
     risk_profile: Literal["conservative", "aggressive"] = "conservative"
     draft_assessment: str = Field(..., min_length=50)
-    per_ticker_critiques: List[CritiqueItem] = Field(..., min_length=1)
+    # min_length=0: with the trimmed reasoning-coherence-only checklist (see
+    # reasoning-depth-action-selection), a genuinely clean draft can legitimately
+    # produce zero findings -- forcing >=1 would contradict the "Critic does not
+    # fabricate findings on a fully compliant position" requirement.
+    per_ticker_critiques: List[CritiqueItem] = Field(default_factory=list)
     portfolio_level_issues: List[str]
-    revision_directives: List[str] = Field(..., min_length=1)
+    revision_directives: List[str] = Field(default_factory=list)
     approved_positions: List[str]

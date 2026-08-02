@@ -27,10 +27,15 @@ def test_current_entry_excludes_wait_for_entry_for_both_profiles():
     assert "LONG-BUY" in resolve_allowed_actions("CURRENT_ENTRY", "aggressive")
 
 
-def test_below_zone_excludes_long_buy_and_wait_for_entry_for_both_profiles():
+def test_below_zone_permits_long_buy_but_excludes_wait_for_entry_for_both_profiles():
+    # BELOW_ZONE excluding LONG-BUY was a risk-policy stance, not a logical
+    # necessity (change reasoning-depth-action-selection) -- opened up to the
+    # Strategist's own judgment. WAIT-FOR-ENTRY stays excluded: its semantics
+    # ("wait for price to fall into the zone from above") don't apply below
+    # the zone.
     for profile in ("conservative", "aggressive"):
         allowed = resolve_allowed_actions("BELOW_ZONE", profile)
-        assert "LONG-BUY" not in allowed
+        assert "LONG-BUY" in allowed
         assert "WAIT-FOR-ENTRY" not in allowed
 
 

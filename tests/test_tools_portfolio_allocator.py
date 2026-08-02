@@ -172,6 +172,39 @@ def test_in_zone_long_buy_still_uses_zone_anchored_stop_tp(tool):
     assert setup["take_profit"] == pytest.approx(112.5, abs=0.01)
 
 
+# ── Below-zone LONG-BUY: current-price-anchored stop/TP (reasoning-depth-action-selection) ──
+# LONG-BUY at entry_zone_status=BELOW_ZONE is no longer gated out (ActionPolicyGate
+# opened it up to the Strategist's own judgment). The allocator must anchor stop/TP
+# to current_price here too, symmetric to the above-zone case, or the entry
+# zone/stop would sit above the current price while asserting an immediate buy.
+
+def test_below_zone_long_buy_aggressive_uses_price_anchored_stop_tp(tool):
+    # current_price=90 < entry_zone_low=100; aggressive: stop = 90 × 0.95 = 85.5
+    # tp = 90 + (90 - 85.5) × 1.5 = 96.75
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=100.0, high=105.0, price=90.0)], "aggressive")
+    setup = _find(result, "NVDA")["trade_setup"]
+    assert setup["stop_loss"]   == pytest.approx(85.5,  abs=0.01)
+    assert setup["take_profit"] == pytest.approx(96.75, abs=0.01)
+
+
+def test_below_zone_long_buy_conservative_uses_price_anchored_stop_tp(tool):
+    # current_price=90 < entry_zone_low=100; conservative: stop = 90 × 0.97 = 87.3
+    # tp = 90 + (90 - 87.3) × 2.5 = 96.75
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=100.0, high=105.0, price=90.0)], "conservative")
+    setup = _find(result, "NVDA")["trade_setup"]
+    assert setup["stop_loss"]   == pytest.approx(87.3,  abs=0.01)
+    assert setup["take_profit"] == pytest.approx(96.75, abs=0.01)
+
+
+def test_below_zone_long_buy_trade_setup_invariant_holds(tool):
+    result = _run(tool, [_stock("NVDA", "LONG-BUY", low=100.0, high=105.0, price=90.0)], "aggressive")
+    setup = _find(result, "NVDA")["trade_setup"]
+    assert setup["stop_loss"] < setup["entry_zone_low"] <= setup["entry_zone_high"] < setup["take_profit"]
+    # Price-anchored: entry zone collapses to current_price, not the (now
+    # irrelevant, since price hasn't reached it) original technical zone.
+    assert setup["entry_zone_low"] == setup["entry_zone_high"] == pytest.approx(90.0, abs=0.01)
+
+
 # ── Trade setup invariants ─────────────────────────────────────────────────────
 
 def test_trade_setup_invariant_holds_for_both_profiles(tool):

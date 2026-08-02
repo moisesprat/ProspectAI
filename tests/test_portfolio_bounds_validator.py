@@ -121,6 +121,56 @@ def test_wait_for_entry_without_reserved_allocation_entry_is_flagged():
     assert any(v["rule"] == "wait_entry_unattributed" and v["ticker"] == "AMZN" for v in violations)
 
 
+# ── CURRENT_ENTRY / WAIT-FOR-ENTRY invariant ─────────────────────────────────
+# Regression for a real published bug: the Final Strategist independently
+# assigned WAIT-FOR-ENTRY to positions at entry_zone_status=CURRENT_ENTRY.
+# ActionPolicyGate only filters Critic directives on their way to the Final
+# Strategist -- it never checked the Final Strategist's own decision, so this
+# reached publication uncaught until this check was added.
+
+def test_wait_for_entry_at_current_entry_is_flagged_when_zone_status_provided():
+    pos = _position(ticker="ABBV", action="WAIT-FOR-ENTRY", alloc=15.0)
+    out = _output([pos], deployed=0.0, reserved=15.0, cash=85.0,
+                   reserved_allocations=[{"ticker": "ABBV", "pct": 15.0}])
+    violations = validate(out, "conservative", {"ABBV": "CURRENT_ENTRY"})
+    assert any(v["rule"] == "wait_for_entry_at_current_entry" and v["ticker"] == "ABBV" for v in violations)
+
+
+def test_wait_for_entry_at_pullback_entry_is_not_flagged():
+    pos = _position(ticker="MRK", action="WAIT-FOR-ENTRY", alloc=15.0)
+    out = _output([pos], deployed=0.0, reserved=15.0, cash=85.0,
+                   reserved_allocations=[{"ticker": "MRK", "pct": 15.0}])
+    violations = validate(out, "conservative", {"MRK": "PULLBACK_ENTRY"})
+    assert not any(v["rule"] == "wait_for_entry_at_current_entry" for v in violations)
+
+
+def test_long_buy_at_current_entry_is_not_flagged():
+    pos = _position(ticker="LLY", action="LONG-BUY", alloc=15.0)
+    out = _output([pos])
+    violations = validate(out, "conservative", {"LLY": "CURRENT_ENTRY"})
+    assert not any(v["rule"] == "wait_for_entry_at_current_entry" for v in violations)
+
+
+def test_wait_for_entry_at_current_entry_not_flagged_when_zone_status_omitted():
+    # Callers that don't pass entry_zone_status_by_ticker (e.g. legacy direct
+    # validate() calls) get the old behavior -- no false positives, but also
+    # no protection. Flow callers always pass it (see prospect_ai_flow.py).
+    pos = _position(ticker="ABBV", action="WAIT-FOR-ENTRY", alloc=15.0)
+    out = _output([pos], deployed=0.0, reserved=15.0, cash=85.0,
+                   reserved_allocations=[{"ticker": "ABBV", "pct": 15.0}])
+    violations = validate(out, "conservative")
+    assert not any(v["rule"] == "wait_for_entry_at_current_entry" for v in violations)
+
+
+def test_wait_for_entry_at_current_entry_raises_via_validate_or_raise():
+    pos = _position(ticker="JNJ", action="WAIT-FOR-ENTRY", alloc=15.0)
+    out = _output([pos], deployed=0.0, reserved=15.0, cash=85.0,
+                   reserved_allocations=[{"ticker": "JNJ", "pct": 15.0}])
+    with pytest.raises(BoundsViolationError) as exc_info:
+        validate_or_raise(out, "conservative", {"JNJ": "CURRENT_ENTRY"})
+    assert any(v["rule"] == "wait_for_entry_at_current_entry" for v in exc_info.value.violations)
+
+
 # ── Regression: replay the published Energy-sector output ───────────────────
 
 def test_published_energy_output_raises_bounds_violation_error():

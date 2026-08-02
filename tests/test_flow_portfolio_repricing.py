@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from prospect_ai_flow import ProspectAIFlow
+from utils.portfolio_bounds_validator import BoundsViolationError
 from schemas.agent_outputs import (
     MomentumAnalysis,
     RawIndicators,
@@ -150,3 +151,68 @@ class TestZeroWidthEntryZoneCaught:
 
         repriced = flow._finalize_and_validate_portfolio(structured, "conservative")
         assert validate(repriced, "conservative") == []
+
+
+# ── Regression: Final Strategist assigns WAIT-FOR-ENTRY at CURRENT_ENTRY ────
+# Real bug found via live validation (reasoning-depth-action-selection): the
+# Final Strategist independently chose WAIT-FOR-ENTRY for a position the
+# deterministic technical output classified as entry_zone_status=CURRENT_ENTRY.
+# ActionPolicyGate only filters Critic directives on their way to the Final
+# Strategist -- it never checks what the Final Strategist itself decides --
+# so this reached publication uncaught until PortfolioBoundsValidator gained
+# this check.
+
+class TestWaitForEntryAtCurrentEntryCaught:
+    def test_flow_raises_bounds_violation_for_wait_for_entry_at_current_entry(self, flow):
+        technical = _technical_output("ABBV", 241.0, 249.69, 250.94)
+        technical.technical_analysis[0].momentum_analysis.entry_zone_status = "CURRENT_ENTRY"
+        flow.state.technical_output = technical
+
+        structured = {
+            "positions": [{
+                "ticker": "ABBV",
+                "action": "WAIT-FOR-ENTRY",
+                "composite_score": 80.0,
+                "current_price": 250.94,
+                "trade_setup": {
+                    "direction": "LONG-BUY",
+                    "entry_zone_low": 241.0,
+                    "entry_zone_high": 249.69,
+                    "stop_loss": 233.0,
+                    "take_profit": 270.0,
+                },
+            }],
+            "deployed_pct": 0.0, "reserved_pct": 15.0, "cash_reserve_pct": 85.0,
+        }
+
+        with pytest.raises(BoundsViolationError) as exc_info:
+            flow._finalize_and_validate_portfolio(structured, "conservative")
+        assert any(
+            v["rule"] == "wait_for_entry_at_current_entry" and v["ticker"] == "ABBV"
+            for v in exc_info.value.violations
+        )
+
+    def test_flow_allows_wait_for_entry_at_pullback_entry(self, flow):
+        # PULLBACK_ENTRY is fully open per reasoning-depth-action-selection --
+        # WAIT-FOR-ENTRY there must not trip the CURRENT_ENTRY-only check.
+        flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)  # PULLBACK_ENTRY by default
+
+        structured = {
+            "positions": [{
+                "ticker": "MRK",
+                "action": "WAIT-FOR-ENTRY",
+                "composite_score": 80.0,
+                "current_price": 108.0,
+                "trade_setup": {
+                    "direction": "LONG-BUY",
+                    "entry_zone_low": 100.0,
+                    "entry_zone_high": 105.0,
+                    "stop_loss": 97.0,
+                    "take_profit": 115.0,
+                },
+            }],
+            "deployed_pct": 0.0, "reserved_pct": 15.0, "cash_reserve_pct": 85.0,
+        }
+
+        repriced = flow._finalize_and_validate_portfolio(structured, "conservative")
+        assert repriced["positions"][0]["action"] == "WAIT-FOR-ENTRY"

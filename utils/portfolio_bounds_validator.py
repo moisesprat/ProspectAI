@@ -17,6 +17,14 @@ are about to be published satisfy the invariants:
   - deployed_pct + reserved_pct + cash_reserve_pct == 100 (± tolerance)
   - if reserved_allocations is present: it sums to reserved_pct, and every
     WAIT-FOR-ENTRY position has an attributed entry with pct > 0
+  - no position with entry_zone_status=CURRENT_ENTRY is published as
+    WAIT-FOR-ENTRY (the one logical/mechanical invariant that survives
+    reasoning-depth-action-selection's loosened action-selection freedom --
+    "wait for entry" is a contradiction once price is already in the zone).
+    `ActionPolicyGate` only filters Critic directives on their way to the
+    Final Strategist; it does not constrain what the Final Strategist
+    decides on its own, so this check is the last line of defense against
+    that specific invariant reaching publication.
 """
 
 from typing import Any, Dict, List, Optional
@@ -63,8 +71,18 @@ def _is_price_anchored(entry_zone_low: float, entry_zone_high: float, current_pr
     return abs(entry_zone_low - entry_zone_high) < _EPS and abs(entry_zone_low - current_price) < 0.01
 
 
-def validate(final_output: Dict[str, Any], risk_profile: str) -> List[Dict[str, Any]]:
-    """Return a list of violation dicts. Empty list means the output is compliant."""
+def validate(
+    final_output: Dict[str, Any],
+    risk_profile: str,
+    entry_zone_status_by_ticker: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Return a list of violation dicts. Empty list means the output is compliant.
+
+    `entry_zone_status_by_ticker` (ticker -> entry_zone_status, from the
+    deterministic Phase-2 technical output) is optional but should always be
+    passed by callers that have it -- without it, the CURRENT_ENTRY/
+    WAIT-FOR-ENTRY invariant below cannot be checked.
+    """
     if risk_profile not in PROFILE_BOUNDS:
         raise ValueError(f"Unknown risk_profile {risk_profile!r}. Valid values: {sorted(PROFILE_BOUNDS)}")
 
@@ -72,6 +90,7 @@ def validate(final_output: Dict[str, Any], risk_profile: str) -> List[Dict[str, 
     max_alloc_pct = bounds["max_alloc_pct"]
     max_stop_pct = round(1.0 - bounds["stop_multiplier"], 4)
     min_rr_ratio = bounds["rr_ratio"]
+    zone_status = entry_zone_status_by_ticker or {}
 
     violations: List[Dict[str, Any]] = []
     positions = final_output.get("positions", [])
@@ -80,6 +99,13 @@ def validate(final_output: Dict[str, Any], risk_profile: str) -> List[Dict[str, 
         ticker = pos.get("ticker", "UNKNOWN")
         action = pos.get("action")
         alloc = float(pos.get("allocation_pct", 0.0) or 0.0)
+
+        if action == "WAIT-FOR-ENTRY" and zone_status.get(str(ticker).upper()) == "CURRENT_ENTRY":
+            violations.append({
+                "ticker": ticker, "rule": "wait_for_entry_at_current_entry",
+                "expected": "action != WAIT-FOR-ENTRY when entry_zone_status=CURRENT_ENTRY",
+                "actual": "WAIT-FOR-ENTRY",
+            })
 
         if action in DEPLOYED_ACTIONS and alloc > max_alloc_pct + _EPS:
             violations.append({
@@ -162,9 +188,13 @@ def validate(final_output: Dict[str, Any], risk_profile: str) -> List[Dict[str, 
     return violations
 
 
-def validate_or_raise(final_output: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
+def validate_or_raise(
+    final_output: Dict[str, Any],
+    risk_profile: str,
+    entry_zone_status_by_ticker: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Convenience wrapper: raises BoundsViolationError if non-compliant, else returns input unchanged."""
-    violations = validate(final_output, risk_profile)
+    violations = validate(final_output, risk_profile, entry_zone_status_by_ticker)
     if violations:
         raise BoundsViolationError(violations)
     return final_output

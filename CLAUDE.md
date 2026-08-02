@@ -64,7 +64,7 @@ ProspectAI is a **CrewAI Flow multi-agent pipeline** that runs 6 phases (with tw
 
 ```
 MarketAnalystAgent
-        │
+        │  (deterministic: CandidateUniverseFilter drops ETF/benchmark tickers)
   ┌─────┴──────┐  (parallel)
   ▼            ▼
 TechnicalAnalystAgent   FundamentalAnalystAgent
@@ -74,17 +74,35 @@ InvestorStrategicAgent (draft)
         │
         ▼
 CriticAgent (adversarial review)
-        │
+        │  (deterministic: ActionPolicyGate drops out-of-policy directives)
         ▼
-InvestorStrategicAgent (final revision)
+InvestorStrategicAgent (final revision — actions/rationale only)
+        │  (deterministic: PortfolioAllocatorTool re-invocation + PortfolioBoundsValidator)
+        ▼
+   validated result
 ```
 
-1. **MarketAnalystAgent** — calls `RedditSentimentTool` (or `SerperDevTool` fallback), identifies top 5 stocks by mention count + sentiment score.
-2. **TechnicalAnalystAgent** — calls `TechnicalAnalysisTool` (batch, all tickers at once); 13+ indicators (RSI, MACD, BB, ATR, etc.) via `yfinance` + `ta`.
-3. **FundamentalAnalystAgent** — calls `FundamentalDataTool` then `FundamentalGraderTool` (both batch). Phases 2 and 3 run in parallel after Phase 1.
-4. **InvestorStrategicAgent (draft)** — calls `CompositeScoreTool` then `PortfolioAllocatorTool`; decides action + allocation per ticker.
-5. **CriticAgent** — adversarial review of the draft; outputs `revision_directives` and `per_ticker_critiques`. `ActionPolicyGate` (`utils/action_policy_gate.py`) deterministically drops any directive that orders an action outside the entry_zone_status/risk_profile policy table before it reaches Phase 6.
-6. **InvestorStrategicAgent (final)** — applies critic directives (or defends with data); decides actions/rationale only. `ProspectAIFlow` — not the LLM — always re-invokes `PortfolioAllocatorTool` afterward and overwrites every numeric allocation/trade-setup field, then validates the result with `PortfolioBoundsValidator` (fail-closed: one repair re-invocation, then raises `BoundsViolationError` rather than publishing a non-compliant result).
+As of `reasoning-depth-action-selection`, **the only LLM-owned decision in the whole pipeline is which of the 4 valid actions (`LONG-BUY`/`WAIT-FOR-ENTRY`/`MONITOR`/`AVOID`) to assign to each ticker, and the rationale for it.** Every number that reaches the final output — composite score inputs, allocation %, entry zone, stop-loss, take-profit, bounds compliance — is computed by deterministic code and is never trusted from LLM output, even when the LLM echoes a number back. See "LLM vs. deterministic responsibility per phase" below for the full breakdown.
+
+1. **MarketAnalystAgent** — calls `RedditSentimentTool` (or `PatientSerperDevTool` fallback); LLM extracts up to 5 tickers and writes sentiment rationale. Deterministic: `CandidateUniverseFilter` (`utils/candidate_universe_filter.py`) strips sector-benchmark/broad-market ETFs from the LLM's candidate list after this phase, uniformly for both the Reddit and Serper paths.
+2. **TechnicalAnalystAgent** — calls `TechnicalAnalysisTool` (batch, all tickers at once); 13+ indicators (RSI, MACD, BB, ATR, etc.) via `yfinance` + `ta`. `TechnicalInterpretationTool` deterministically computes `momentum_score`, `entry_zone_low/high`, `entry_zone_status`, and `risk_level` from the raw indicators — the LLM only writes `overall_signal`/`key_signals` as its reading of those numbers, and copies the rest verbatim.
+3. **FundamentalAnalystAgent** — calls `FundamentalDataTool` then `FundamentalGraderTool` (both batch, deterministic grading). Phases 2 and 3 run in parallel after Phase 1. The LLM only writes `risk_factors`/`catalysts`/`fundamental_summary`; all grades (`valuation_grade`, `financial_health`, `growth_outlook`) are copied verbatim from the tool.
+4. **InvestorStrategicAgent (draft)** — calls `CompositeScoreTool` (deterministic weighted blend) then reasons over the resulting signals to decide **one action per ticker**, weighing technical/fundamental/sentiment signals holistically with no fixed decision table — only two facts are hard invariants (`entry_zone_status=CURRENT_ENTRY` excludes `WAIT-FOR-ENTRY`; `price_data_error` caps at `MONITOR`/`AVOID`). It then calls `PortfolioAllocatorTool` with its decided actions to get allocation %/trade-setup numbers — the LLM never computes those itself, only copies them into the draft.
+5. **CriticAgent** — adversarial review of the draft's *reasoning*, not its numbers (allocation caps, stop%, R/R, bucket sums are explicitly out of scope — `PortfolioBoundsValidator` and `ActionPolicyGate` cover those deterministically downstream, and the Critic has no authority to fix a numeric field anyway). Outputs `revision_directives` and `per_ticker_critiques` (both may legitimately be empty on a clean draft). `ActionPolicyGate` (`utils/action_policy_gate.py`) deterministically drops any directive/critique that orders an action outside the `entry_zone_status × risk_profile` policy table before it reaches Phase 6 — this table only excludes `WAIT-FOR-ENTRY` at `CURRENT_ENTRY`/`BELOW_ZONE`; `LONG-BUY` is permitted at every `entry_zone_status`, including `BELOW_ZONE`.
+6. **InvestorStrategicAgent (final)** — weighs the Critic's directives as a second analyst's counter-argument (every CRITICAL/MAJOR item must be explicitly adopted or rebutted with cited evidence) and decides the final action/rationale per ticker. Calls no tools. `ProspectAIFlow` — not the LLM — always re-invokes `PortfolioAllocatorTool` afterward (reading entry zones from the deterministic Phase-2 technical output, never from the LLM's own trade_setup) and overwrites every numeric allocation/trade-setup field, then validates the result with `PortfolioBoundsValidator` (fail-closed: one repair re-invocation, then raises `BoundsViolationError` rather than publishing a non-compliant result).
+
+### LLM vs. deterministic responsibility per phase
+
+| Phase | LLM decides | Code decides (never trusted from LLM output) |
+|---|---|---|
+| 1 Market Analysis | Which tickers to surface; sentiment tone/rationale when no measured score exists | `CandidateUniverseFilter` — drops ETF/benchmark tickers regardless of what the LLM picked |
+| 2 Technical Analysis | `overall_signal`/`key_signals` (reasoned reading of the raw indicators) | `TechnicalInterpretationTool` — `momentum_score`, `entry_zone_low/high`, `entry_zone_status`, `risk_level`, all raw indicator values (`ta`/`yfinance`) |
+| 3 Fundamental Analysis | `risk_factors`/`catalysts`/summary prose | `FundamentalGraderTool` — `valuation_grade`, `financial_health`, `growth_outlook`; all raw fundamentals (`yfinance`) |
+| 4 Draft Strategy | **The action** per ticker (open reasoning, no table, 2 hard invariants only) and its rationale | `CompositeScoreTool` — composite score; `PortfolioAllocatorTool` — allocation %, entry zone, stop-loss, take-profit for the LLM's chosen action |
+| 5 Critique Review | Whether the draft's *reasoning* holds up (findings may legitimately be zero) | `ActionPolicyGate` — strips any directive/critique requesting an action outside the policy table before Phase 6 ever sees it |
+| 6 Final Strategy | The final action per ticker (weighing Critic input) and its rationale | `PortfolioAllocatorTool` (Flow re-invocation, ignores whatever the LLM wrote for these fields) + `PortfolioBoundsValidator` (fail-closed gate on the published result) |
+
+The guardrail against the LLM inventing a 5th action is enforced independently of all of the above reasoning freedom: `PositionRecommendation.action` is a closed `Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]` in `schemas/agent_outputs.py`, and `ActionPolicyGate`'s directive parser only recognizes those same 4 tokens — an invented action fails schema validation outright rather than being silently accepted or misparsed.
 
 ### Key Files
 
@@ -137,8 +155,8 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
 | `MarketAnalysisOutput` | `sentiment_available` (bool), `candidate_stocks[]` — ticker, mention_count, average_sentiment [-1,1] or `null` when `sentiment_available=false` (never a fabricated `0.0`), relevance_score [0,1], rationale |
 | `TechnicalAnalysisOutput` | `technical_analysis[]` — ticker, raw_indicators, momentum_analysis (momentum_score 0-10, risk_level, regime, entry_zone) |
 | `FundamentalAnalysisOutput` | `fundamental_analysis[]` — ticker, valuation_metrics, fundamental_rating, key_strengths/risks |
-| `InvestorStrategicOutput` | `positions[]` — ticker, action, composite_score, allocation_pct, trade_setup or scaled_entry_setups, rationale |
-| `CriticOutput` | `per_ticker_critiques[]` — severity, issue_type, finding, instruction; `revision_directives[]` |
+| `InvestorStrategicOutput` | `positions[]` — ticker, action (`Literal["LONG-BUY","WAIT-FOR-ENTRY","MONITOR","AVOID"]`), composite_score, allocation_pct, trade_setup, rationale |
+| `CriticOutput` | `per_ticker_critiques[]` — severity, issue_type, finding, instruction (`default_factory=list`, may be empty); `revision_directives[]` (same) |
 
 ### Final `run_analysis()` Return Value
 
@@ -151,12 +169,11 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
         "positions": [
             {
                 "ticker": str,
-                "action": "LONG-BUY" | "SCALED-ENTRY" | "WAIT-FOR-ENTRY" | "MONITOR" | "AVOID",
+                "action": "LONG-BUY" | "WAIT-FOR-ENTRY" | "MONITOR" | "AVOID",
                 "composite_score": float,   # 0-100; formula: 30 sentiment + 40 momentum + 30 fundamentals
                 "allocation_pct": float,
                 "current_price": float | None,
                 "trade_setup": {"entry_zone_low", "entry_zone_high", "stop_loss", "take_profit"} | None,
-                "scaled_entry_setups": [{...}, {...}] | None,   # 2 tranches for SCALED-ENTRY
                 "rationale": str,
                 "monitoring_triggers": [str, ...],
                 "review_frequency": "DAILY" | "WEEKLY" | "MONTHLY"

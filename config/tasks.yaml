@@ -235,19 +235,16 @@ tasks:
       and produce a machine-readable JSON portfolio draft.
 
       RISK PROFILE: $risk_profile
-      Apply the following qualitative guidance throughout your decisions:
-        conservative — Prefer WAIT-FOR-ENTRY over LONG-BUY; use LONG-BUY only when price
-          is inside the zone with strong technicals and solid fundamentals. Spread allocations
-          across positions. Emphasize downside protection, stop rationale, and risk acknowledgment
-          in every rationale. Avoid concentrating more than 10% of commentary on upside alone.
-        aggressive — Prefer LONG-BUY; buy PULLBACK_ENTRY stocks when overall_signal is
-          BULLISH or MIXED and momentum is not clearly weak (momentum_score ≥ 5).
-          Concentrate allocations in highest composite_score positions. Lead rationales with
-          upside catalysts, momentum signals, and price targets. Fewer, larger positions are
-          preferred over spreading thinly.
-      The LLM chooses actions and writes rationale per this guidance.
-      All numeric bounds (allocation caps, stop %, R/R) are enforced by the allocate_portfolio
-      tool — you do NOT compute them.
+      This is a general disposition for your reasoning, not a set of branch conditions:
+        conservative — weigh capital preservation heavily; require broader alignment
+          across technical, fundamental, and sentiment signals before conviction clears
+          your bar for action; acknowledge downside risk explicitly in every rationale.
+        aggressive — weigh opportunity capture heavily; willing to act on strong
+          conviction in one dimension (e.g. compelling momentum) even when another
+          dimension is unresolved or mixed, as long as you name that tension and defend it.
+      The LLM chooses actions and writes rationale by reasoning through the evidence —
+      see STEP 3. All numeric bounds (allocation caps, stop %, R/R) are enforced by the
+      allocate_portfolio tool — you do NOT compute them.
 
       STEP 1 — Cross-reference data for each ticker:
         From Market context:      average_sentiment (float), rationale
@@ -289,36 +286,41 @@ tasks:
         For tickers with fundamental_unknown=true the tool returns fundamental_component=null —
         copy it as null, do NOT substitute a number.
 
-      STEP 3 — Decide one action per stock. Use the qualitative signals already
-        computed by the technical and fundamental tools as your reasoning inputs —
-        do NOT recalculate RSI thresholds, price-to-zone gaps, or numeric conditions.
-        Check these rules in order:
+      STEP 3 — Reason like a market analyst to decide one action per stock. Do NOT
+        apply a fixed lookup table — weigh the signals holistically and reach your
+        own conclusion, the way a real analyst reconciles conflicting evidence.
 
-        HARD STOPS (both profiles — not overridable):
-          price_data_error set (current_price=null) → MONITOR or AVOID only.
-          fundamental_unknown=true → MONITOR or WAIT-FOR-ENTRY only.
-          financial_health=WEAK → MONITOR or AVOID.
-          composite_score < 55 with no cited catalyst → MONITOR.
-          poor fundamentals + negative sentiment → AVOID.
+        Signals available as reasoning inputs (use the pre-computed values as-is —
+        do NOT recalculate RSI thresholds, price-to-zone gaps, or other numeric
+        conditions yourself):
+          Technical:   entry_zone_status, overall_signal, momentum_score, regime,
+                       risk_level, key_signals, raw_indicators
+          Fundamental: financial_health, growth_outlook, valuation_grade, risk_factors,
+                       catalysts (or fundamental_unknown=true — treat as a genuine
+                       uncertainty to weigh, not an automatic block)
+          Market:      average_sentiment (or "no data" when sentiment_available=false —
+                       reason from technical/fundamental alone, do not invent a tone)
+          Composite:   composite_score (already blends all three — a low score is a
+                       signal to weigh, not a threshold that pre-empts your reasoning)
 
-        entry_zone_status=CURRENT_ENTRY (price is in the actionable zone):
-          Both profiles → LONG-BUY is the default.
-          Override to MONITOR/AVOID only if financial_health=WEAK or
-            (overall_signal=BEARISH and no specific catalyst).
-          WAIT-FOR-ENTRY is never valid when entry_zone_status=CURRENT_ENTRY.
+        There is no pre-set resolution when signals conflict — e.g. strong technicals
+        with weak fundamentals, or solid fundamentals undermined by bearish momentum.
+        Form your own conviction: which signals matter most for this specific stock,
+        what is the strongest argument against your thesis, and does the evidence
+        clear the bar implied by $risk_profile (see RISK PROFILE above)? When you
+        identify a genuine tension, name it explicitly in the rationale and state why
+        the action you chose wins despite it — do not silently pick a side.
 
-        entry_zone_status=PULLBACK_ENTRY (stock has run above its zone):
-          conservative — default to WAIT-FOR-ENTRY.
-            Exception: LONG-BUY is valid when overall_signal=BULLISH AND
-            momentum_score ≥ 7 AND regime=TRENDING AND financial_health=STRONG.
-          aggressive — default to LONG-BUY when overall_signal=BULLISH or MIXED
-            AND momentum_score ≥ 5 AND financial_health is not WEAK.
-            Use WAIT-FOR-ENTRY when overall_signal=BEARISH, OR when
-            stochastic_status=Overbought AND momentum_score < 5.
+        The one fact that is NOT a judgment call: entry_zone_status=CURRENT_ENTRY
+        means price is ALREADY inside the actionable zone — WAIT-FOR-ENTRY is a
+        contradiction in terms here (there is nothing left to wait for), regardless
+        of profile or any other signal. Every other entry_zone_status (PULLBACK_ENTRY,
+        BELOW_ZONE) is fully open to your reasoning — there is no default action.
 
-        entry_zone_status=BELOW_ZONE (price below the actionable range):
-          Both profiles → MONITOR (fundamentals intact) or AVOID (financial_health=WEAK
-            or overall_signal=BEARISH). Do not buy into potential breakdown.
+        The other fact that is NOT a judgment call: price_data_error set
+        (current_price=null) means no valid trade_setup can be constructed at all —
+        cap that stock at MONITOR or AVOID regardless of how compelling the other
+        signals look, and say why in the rationale.
 
         Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID.
         HOLD, SHORT-SELL, and SCALED-ENTRY are invalid — they cause schema rejection.
@@ -341,8 +343,9 @@ tasks:
         Also copy composite_score verbatim from Step 2 into each position —
         do NOT paraphrase or cite a different value in the rationale text.
         Allocation cap: max $risk_profile per-position limit enforced by the tool (do not compute).
-        LONG-BUY above-zone: the tool automatically detects current_price > entry_zone_high
-          and anchors stop/TP to current_price for a valid R/R at actual entry.
+        LONG-BUY above- or below-zone: the tool automatically detects when current_price
+          is outside [entry_zone_low, entry_zone_high] and anchors stop/TP to
+          current_price for a valid R/R at actual entry.
         WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
         MONITOR / AVOID: allocation_pct=0, trade_setup=null.
         The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three separate
@@ -401,16 +404,13 @@ tasks:
       verification data for each ticker. Challenge every position and find every flaw.
 
       RISK PROFILE: $risk_profile
-      Apply profile-relative validation. Bounds for the ACTIVE profile only:
-
-      | Profile      | Max stop from entry_zone_low | Min R/R | Max per-position | PULLBACK_ENTRY LONG-BUY default |
-      |---|---|---|---|---|
-      | conservative | 3% (stop_loss >= entry_zone_low × 0.97) | 2.5 | 15% | WAIT-FOR-ENTRY (LONG-BUY only if BULLISH+momentum≥7+TRENDING+STRONG) |
-      | aggressive   | 5% (stop_loss >= entry_zone_low × 0.95) | 1.5 | 30% | LONG-BUY when BULLISH/MIXED+momentum≥5+health not WEAK |
-
-      Flag as CRITICAL when a trade_setup violates the ACTIVE profile bounds above.
-      Do NOT flag as a violation when bounds are valid for the active profile even if
-      they would be invalid for the other profile.
+      Allocation caps, stop-distance, and R/R bounds are enforced deterministically
+      by PortfolioBoundsValidator after this review — do not re-check them here, the
+      Draft Strategist has no authority to fix a numeric-bounds finding anyway (the
+      Flow recomputes every numeric field regardless of what this review says). Your
+      job is reasoning coherence: does the rationale's evidence actually support the
+      chosen action, under $risk_profile's general disposition (see draft_strategy's
+      RISK PROFILE guidance) — not whether a number falls inside a range.
 
       SENTIMENT AVAILABILITY: When a ticker's reference-table entry shows
       sentiment_available=false (or average_sentiment=null), do NOT raise any
@@ -442,43 +442,37 @@ tasks:
         WAIT-FOR-ENTRY at CURRENT_ENTRY. Never flag a LONG-BUY at CURRENT_ENTRY as
         a violation, and never instruct changing an action FROM LONG-BUY TO
         WAIT-FOR-ENTRY by citing CURRENT_ENTRY as the reason — that direction is
-        always wrong.
+        always wrong. This is the only issue type tied to a fixed rule; every other
+        issue type below is about whether the REASONING holds up, not whether an
+        action matches a table — PULLBACK_ENTRY and BELOW_ZONE have no default
+        action, so do not flag a position merely for choosing differently than you
+        would have.
         ACTION_PROFILE_MISMATCH — LONG-BUY on entry_zone_status=PULLBACK_ENTRY with overall_signal=BEARISH
                                   and no compelling fundamental override cited in rationale (MAJOR)
-        UNCONVINCING_OVERRIDE   — aggressive LONG-BUY on PULLBACK_ENTRY with momentum_score < 4
-                                  AND financial_health=WEAK AND no specific catalyst cited (MAJOR)
-        FABRICATED_SIGNAL       — "strong momentum" with momentum_score < 6, or "bullish" with Bearish/Mixed MACD (MAJOR)
-        ALLOCATION_MISMATCH     — allocation rank does not match composite_score rank (MAJOR)
+        UNCONVINCING_OVERRIDE   — LONG-BUY against weak momentum and weak financial_health with
+                                  no specific catalyst cited to justify the override (MAJOR)
+        FABRICATED_SIGNAL       — rationale claims a signal ("strong momentum", "bullish") that
+                                  contradicts the reference-table data for that stock (MAJOR)
         SENTIMENT_CONTRADICTION — average_sentiment < 0.0 with LONG-BUY, no negative caveat (MAJOR)
         VALUATION_IGNORED       — valuation_grade=VERY_EXPENSIVE with LONG-BUY, no valuation risk mentioned (MAJOR)
         TRIGGER_CONTRADICTION   — LONG-BUY trigger fires during normal uptrend (MINOR)
-        CONCENTRATION_BREACH    — allocation_pct > 15.0 (conservative) or > 30.0 (aggressive) for the active $risk_profile (CRITICAL)
         WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
         MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
         VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
-        WAIT_ENTRY_ZERO_ALLOC   — WAIT-FOR-ENTRY with no corresponding entry in
-                                  reserved_allocations, or an entry with pct=0. A
-                                  positive portfolio-level reserved_pct does NOT prove
-                                  this position was funded — check reserved_allocations
-                                  for this specific ticker, not the aggregate. (CRITICAL)
-        MONITOR_WITH_SETUP      — MONITOR with trade_setup populated (CRITICAL)
-        AVOID_WITH_SETUP        — AVOID with trade_setup populated (CRITICAL)
-        INVALID_ACTION          — action not in {LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID} (CRITICAL)
-        BUCKET_SUM_ERROR        — deployed_pct + reserved_pct + cash_reserve_pct ≠ 100 (±0.5%) (CRITICAL)
-        COMPOSITE_SCORE_MISMATCH— |position.composite_score − tool_value| > 1.0 (CRITICAL)
 
         For each finding, state the exact data value that creates the contradiction and what the draft says.
+        Do NOT check allocation caps, stop%/R-R bounds, bucket math, composite_score
+        arithmetic, or action-enum validity — PortfolioBoundsValidator and schema
+        validation already enforce those deterministically after this review runs;
+        re-checking them here is redundant and the Final Strategist has no authority
+        to fix a numeric field regardless of what you find.
 
-      STEP 3 — Portfolio-level review:
-        - Does deployed_pct + reserved_pct + cash_reserve_pct = 100 (±0.5%)?
-        - Does any position exceed 40% allocation?
-        - Are there at least 3 distinct composite_scores?
-        - Does each position's composite_score field match the value from the
-          compute_composite_scores tool output (do NOT recalculate — compare directly)?
-        - Do all monitoring triggers reference specific measurable thresholds?
+      STEP 3 — Portfolio-level review (reasoning coherence only, not arithmetic):
         - Is the overall_strategy internally consistent with the individual actions?
-        - Does overall_strategy accurately describe allocation logic (not falsely claiming
-          strict rank-proportionality when positions are capped at equal levels)?
+        - Does overall_strategy accurately describe the reasoning behind each
+          position (not misrepresenting a contested, conviction-based call as an
+          obvious one, or vice versa)?
+        - Do all monitoring triggers reference specific measurable thresholds?
 
       STEP 4 — Write revision_directives as exact instructions:
         Format: "[TICKER]: [specific change required] because [exact data contradiction]"
@@ -494,15 +488,21 @@ tasks:
                                  in the reference_table (no praise; if the draft has no
                                  grounded weaknesses, say so plainly instead of inventing one)
         per_ticker_critiques[]: ticker(str) severity(str) issue_type(str) finding(str) instruction(str)
-        portfolio_level_issues: str[] — bucket math, cap violations, score duplicates
-        revision_directives: str[] — "[TICKER]: [change] because [exact data]"
+          (may be an empty list — see RULES)
+        portfolio_level_issues: str[] — overall_strategy/reasoning consistency issues (may be empty)
+        revision_directives: str[] — "[TICKER]: [change] because [exact data]" (may be empty)
         approved_positions: str[] — tickers fully compliant (may be empty)
 
       RULES:
       - For each ticker, check all failure-mode criteria. If a position is fully
         compliant, record it in approved_positions and explain why — that is a valid
         and useful finding. Do not invent minor issues to fill a quota.
-      - Severity CRITICAL = requires mandatory action change or allocation change.
+      - A completely clean draft is a valid outcome: per_ticker_critiques and
+        revision_directives MAY both be empty lists when every position's reasoning
+        holds up. An empty list is not a failure of your review.
+      - Severity CRITICAL = requires mandatory action change (only PRICE_IN_ZONE_WAIT/
+        WAIT_IN_ZONE reach this severity now — every other issue type is MAJOR/MINOR
+        since it concerns reasoning/rationale quality, not a rule violation).
       - Severity MAJOR = requires rationale or trigger correction.
       - Severity MINOR = recommendation to improve clarity or precision.
       - approved_positions lists tickers where the draft is FULLY correct (can be empty).
@@ -527,22 +527,22 @@ tasks:
       Receive the draft (Task 4) and the Critic's review (Task 5).
       Produce the revised final portfolio by applying the Critic's directives.
 
-      RISK PROFILE: $risk_profile
-      You MUST stay within $risk_profile bounds when deciding whether to accept or
-      reject a directive:
-        conservative: max stop 3% from entry_zone_low, min R/R 2.5, max per-position 15%
-        aggressive:   max stop 5% from entry_zone_low, min R/R 1.5, max per-position 30%
-      Do NOT drift toward the other profile when resolving Critic directives. If the Critic
-      flags a trade setup as a violation but it is within the active profile bounds, defend
-      the original with a citation of the profile bounds.
+      RISK PROFILE: $risk_profile — same general disposition as in the Draft (see
+      draft_strategy's RISK PROFILE guidance). Numeric bounds (allocation caps,
+      stop-distance, R/R) are enforced deterministically after this task runs —
+      the Critic no longer reviews them and neither do you.
 
-      STEP 1 — Read the Critic's revision_directives carefully.
-        For EACH directive:
-          - If you agree: implement the change and note it in the rationale.
-          - If you disagree: cite the specific data point from the Draft that
-            contradicts the Critic's finding and explain why the original stands.
-        You MUST address every CRITICAL and MAJOR critique.
-        MINOR critiques may be accepted or defended with evidence.
+      STEP 1 — Treat the Critic's revision_directives as a second analyst's
+        counter-argument, not a checklist to execute. For EACH directive:
+          - If it changes your mind: adopt it and state in the rationale what
+            changed and why the Critic's point was persuasive.
+          - If it doesn't: cite the specific data point from the Draft that the
+            Critic's argument fails to account for, and explain why your original
+            conviction stands.
+        Either way, every CRITICAL and MAJOR critique MUST be explicitly addressed
+        (adopted or rebutted with evidence) — silently ignoring one is not a valid
+        outcome, even if your final judgment is to keep the original action.
+        MINOR critiques may be accepted or defended with less rigor.
 
       STEP 2 — Decide the final action per position (LONG-BUY, WAIT-FOR-ENTRY,
         MONITOR, AVOID) by applying the directives you accepted in STEP 1. Do NOT
@@ -585,7 +585,6 @@ tasks:
         HOLD, SHORT-SELL, and SCALED-ENTRY are not valid actions.
       - risk_level: Low / Medium / High / Very High.
       - review_frequency: DAILY / WEEKLY / MONTHLY.
-      - Maximum single-position size: 15% (conservative) or 30% (aggressive) per $risk_profile.
     expected_output: >
       JSON dict with sector='$sector', positions
       (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/

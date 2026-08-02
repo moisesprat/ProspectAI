@@ -30,6 +30,16 @@ Trade setup formulas (stop_multiplier and rr_ratio from PROFILE_BOUNDS):
     The zone values are preserved in entry_zone_low/high for context, but
     stop/TP are anchored to current_price so R/R is valid at actual entry.
 
+  LONG-BUY below-zone (current_price < entry_zone_low):
+    Same price-anchored formula as above-zone. Reachable since
+    reasoning-depth-action-selection: LONG-BUY at entry_zone_status=BELOW_ZONE
+    is no longer gated out (buying below a broken support is a defensible,
+    if risky, analyst judgment call, not a logical impossibility -- see
+    ActionPolicyGate). Without this anchoring, the plain zone-anchored formula
+    would place the entry zone/stop ABOVE the current price while the
+    Strategist asserts an immediate buy -- a valid TradeSetup by the schema's
+    invariant, but an economically incoherent one.
+
   WAIT-FOR-ENTRY: same zone-anchored formula as in-zone LONG-BUY.
 
 The LLM decided the actions. This tool only does the math from those decisions.
@@ -123,9 +133,10 @@ class PortfolioAllocatorTool(BaseTool):
                                never an unattributed aggregate.
 
     trade_setup:
-        LONG-BUY in-zone:    zone-anchored stop/TP (stop = entry_zone_low × stop_multiplier)
-        LONG-BUY above-zone: price-anchored stop/TP (stop = current_price × stop_multiplier)
-                             detected automatically when current_price > entry_zone_high
+        LONG-BUY in-zone:            zone-anchored stop/TP (stop = entry_zone_low × stop_multiplier)
+        LONG-BUY above- or below-zone: price-anchored stop/TP (stop = current_price × stop_multiplier)
+                             detected automatically when current_price is outside
+                             [entry_zone_low, entry_zone_high]
         WAIT-FOR-ENTRY:      zone-anchored formula; allocation_pct is earmarked
         MONITOR/AVOID:       null
     """
@@ -224,8 +235,14 @@ class PortfolioAllocatorTool(BaseTool):
             for r in results:
                 if r["action"] == "LONG-BUY" and r["ticker"] in final_allocs:
                     alloc = final_allocs[r["ticker"]]
-                    # Above-zone LONG-BUY: anchor stop/TP to current_price for valid R/R
+                    # Above-zone or below-zone LONG-BUY: anchor stop/TP to
+                    # current_price for a valid R/R at actual entry, rather than
+                    # to a zone the price isn't in.
                     if r["current_price"] > r["entry_zone_high"] > 0:
+                        setup = _trade_setup_price_anchored(
+                            r["current_price"], stop_multiplier, rr_ratio,
+                        )
+                    elif 0 < r["current_price"] < r["entry_zone_low"]:
                         setup = _trade_setup_price_anchored(
                             r["current_price"], stop_multiplier, rr_ratio,
                         )
