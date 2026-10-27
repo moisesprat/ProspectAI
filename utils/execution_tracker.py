@@ -1,7 +1,8 @@
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -25,6 +26,28 @@ class PhaseMetrics:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+@dataclass
+class ToolCallRecord:
+    """One tool invocation. Holds only non-sensitive facts: timing, outcome, size.
+
+    ``error`` is the exception CLASS NAME only and ``output_chars`` is a length;
+    messages, arguments and output text are never stored because execution
+    metrics are public (SSE, R2 report JSON, SPA).
+    """
+
+    phase: str
+    tool: str
+    start: float
+    end: float
+    ok: bool
+    error: Optional[str] = None
+    output_chars: Optional[int] = None
+
+    @property
+    def elapsed_sec(self) -> float:
+        return round(max(0.0, self.end - self.start), 3)
 
 
 _PHASE_ORDER = [
@@ -64,6 +87,8 @@ class ExecutionTracker:
         self._pipeline_end: float = 0.0
         self._phases: Dict[str, PhaseMetrics] = {}
         self._model_totals: Dict[str, Dict[str, int]] = {}
+        self._tool_calls: List[ToolCallRecord] = []
+        self._lock = threading.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -76,6 +101,46 @@ class ExecutionTracker:
 
     def set_sector(self, sector: str) -> None:
         self._sector = sector
+
+    # ── Tool calls ─────────────────────────────────────────────────────────────
+
+    def record_tool_call(
+        self,
+        phase: str,
+        tool: str,
+        start: float,
+        end: float,
+        ok: bool,
+        error: Optional[str] = None,
+        output_chars: Optional[int] = None,
+    ) -> None:
+        """Record one tool call. Thread-safe: the wrapper runs in crewai executor threads."""
+        record = ToolCallRecord(phase, tool, start, end, ok, error, output_chars)
+        with self._lock:
+            self._tool_calls.append(record)
+
+    def _tool_call_dicts(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            calls = list(self._tool_calls)
+        calls.sort(key=lambda c: c.start)
+        if self._pipeline_start:
+            origin = self._pipeline_start
+        elif calls:
+            origin = calls[0].start
+        else:
+            origin = 0.0
+        return [
+            {
+                "phase": c.phase,
+                "tool": c.tool,
+                "start_offset_sec": round(c.start - origin, 3),
+                "elapsed_sec": c.elapsed_sec,
+                "ok": c.ok,
+                "error": c.error,
+                "output_chars": c.output_chars,
+            }
+            for c in calls
+        ]
 
     # ── Phase hooks ────────────────────────────────────────────────────────────
 
@@ -217,4 +282,7 @@ class ExecutionTracker:
             "phases": phases,
             "totals": totals,
             "by_model": self._model_totals,
+            "metrics_version": 2,
+            "partial": False,
+            "tool_calls": self._tool_call_dicts(),
         }

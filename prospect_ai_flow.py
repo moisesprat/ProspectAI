@@ -120,7 +120,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
-        self._factory = TaskFactory()
+        self._factory = TaskFactory(tracker_getter=lambda: self._tracker)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
