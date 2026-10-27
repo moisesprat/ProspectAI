@@ -30,8 +30,12 @@ from schemas.agent_outputs import (
 class TaskFactory:
     """Agent and task factory used by ProspectAIFlow."""
 
-    def __init__(self, tracker_getter: Optional[Callable[[], Any]] = None):
-        self.config = Config()
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        tracker_getter: Optional[Callable[[], Any]] = None,
+    ):
+        self.config = config if config is not None else Config()
         # Late-bound: the ExecutionTracker is created in run_analysis(), after the factory.
         self._tracker_getter = tracker_getter or (lambda: None)
 
@@ -41,6 +45,12 @@ class TaskFactory:
         self.fundamental_analyst = FundamentalAnalystAgent()
         self.investor_strategist = InvestorStrategicAgent()
         self.critic = CriticAgent()
+        # Inject the shared Config before any get_agent() builds an LLM (DEPL-03).
+        for agent in (
+            self.market_analyst, self.technical_analyst, self.fundamental_analyst,
+            self.investor_strategist, self.critic,
+        ):
+            agent.use_config(self.config)
 
         # Same instance is shared with the phase config below (now instrumented).
         self.search_tool = instrument_tool(PatientSerperDevTool(), "market_analysis", self._tracker_getter)

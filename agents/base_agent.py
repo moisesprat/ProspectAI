@@ -1,4 +1,3 @@
-import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from crewai import Agent, LLM
@@ -38,9 +37,15 @@ class BaseAgent(ABC):
         self.agent = None
         self.config = Config()
 
+    def use_config(self, config: Config) -> None:
+        """Inject the pipeline Config (model/provider/base URL). Must precede get_agent()."""
+        if self.agent is not None:
+            raise RuntimeError("use_config must be called before get_agent()")
+        self.config = config
+
     def _get_llm(self):
-        """Resolve LLM from MODEL_PROVIDER + AGENT_*_MODEL/MODEL (yaml llm.model is fallback)."""
-        provider = os.getenv("MODEL_PROVIDER", "anthropic")
+        """Resolve LLM from config provider + AGENT_*_MODEL/MODEL (yaml llm.model is fallback)."""
+        provider = self.config.provider
 
         resolved = self.config.model_id_for_agent(self.agent_key)
         model = resolved or self.llm_model

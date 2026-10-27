@@ -24,6 +24,7 @@ from utils.portfolio_bounds_validator import BoundsViolationError, validate as v
 from utils.action_policy_gate import filter_directives, filter_critiques
 from utils.candidate_universe_filter import filter_candidates
 from utils import yfinance_cache
+from config.config import Config
 from prospect_ai_crew import TaskFactory
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,14 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         task_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
         progress_callback: Optional[Callable] = None,
+        *,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        config: Optional[Config] = None,
     ):
+        if config is not None and any(v is not None for v in (model, provider, ollama_base_url)):
+            raise ValueError("Pass either config= or model/provider/ollama_base_url, not both")
         super().__init__()
         self._task_callback = task_callback
         self._step_callback = step_callback
@@ -120,7 +128,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
-        self._factory = TaskFactory(tracker_getter=lambda: self._tracker)
+        # Public: the backend reads pipeline_config.model_id_for_agent(k) for SSE model names.
+        self.pipeline_config = (
+            config if config is not None
+            else Config(model=model, provider=provider, ollama_base_url=ollama_base_url)
+        )
+        self._factory = TaskFactory(config=self.pipeline_config, tracker_getter=lambda: self._tracker)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
