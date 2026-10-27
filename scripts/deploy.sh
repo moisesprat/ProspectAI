@@ -7,7 +7,9 @@
 #      suites green in fresh venvs built from their locks, and
 #      pin == pyproject == PyPI == lock (prospectai-backend/scripts/check_pin.py)
 #   1. Bumps the version in pyproject.toml (the only version source)
-#   2. Updates README.md version badge and release notes
+#   2. Updates the README.md version badge and releases the hand-written
+#      "### Unreleased — <title>" notes as the new version (preflight refuses
+#      when they are missing)
 #   3. Builds wheel + sdist, uploads to PyPI via twine, polls PyPI until live
 #   4. Rewrites the prospectai pin in prospectai-backend/requirements-serve.txt,
 #      recompiles requirements-serve.lock and re-runs check_pin
@@ -241,6 +243,27 @@ fi
 
 log "Version: $CURRENT_VERSION → $NEW_VERSION"
 
+# Release notes are written by hand, for ProspectAI users, under a
+# "### Unreleased — <title>" entry at the top of README.md's "## Release Notes"
+# section. They are never generated from commit subjects, which are written for
+# developers and leaked plan ids and decision codes into the public changelog
+# (v1.9.3). check_release_notes gates the release on that entry; update_readme
+# renames it to the new version at release time.
+check_release_notes() {
+  "$PYTHON" - "$README" <<'PYEOF'
+import re, sys
+content = open(sys.argv[1]).read()
+rn = re.search(r'## Release Notes\n\n(.*?)(?:\n## |\Z)', content, re.DOTALL)
+if not rn:
+    sys.exit("README.md has no '## Release Notes' section")
+first = rn.group(1).lstrip()
+m = re.match(r'### Unreleased — (\S.*)\n((?:- \S.*\n?)+)', first)
+if not m:
+    sys.exit("README.md release notes must start with '### Unreleased — <title>' "
+             "followed by at least one '- ' bullet written for users")
+PYEOF
+}
+
 # ── Preflight: offline suites from the locks, then the pin check ─────────────
 CHECK_PIN=()
 
@@ -272,6 +295,8 @@ log "Pin preflight (pin = pyproject = PyPI = lock)"
 "${CHECK_PIN[@]}" --pyproject "$PYPROJECT" || die "REFUSING: pin preflight failed"
 if [[ "$SKIP_PYPI" != true ]]; then
   "${CHECK_PIN[@]}" --unpublished "$NEW_VERSION" || die "REFUSING: pin preflight failed"
+  log "Release notes preflight (README '### Unreleased — <title>')"
+  check_release_notes || die "REFUSING: write the user-facing release notes first"
 fi
 
 if [[ "$PREFLIGHT_ONLY" == true ]]; then
@@ -300,75 +325,34 @@ PYEOF
 }
 
 update_readme() {
-  "$PYTHON" - "$README" "$NEW_VERSION" "$CURRENT_VERSION" "$REPO_ROOT" <<'PYEOF'
-import re, subprocess, sys
+  "$PYTHON" - "$README" "$NEW_VERSION" "$CURRENT_VERSION" <<'PYEOF'
+import re, sys
 
 readme_path  = sys.argv[1]
 new_version  = sys.argv[2]
 prev_version = sys.argv[3]
-repo_root    = sys.argv[4]
 
-# ── Collect commits made since the previous version bump ─────────────────────
-log_lines = subprocess.run(
-    ["git", "-C", repo_root, "log", "--oneline"],
-    capture_output=True, text=True, check=True
-).stdout.strip().splitlines()
-
-# Find the line that bumped pyproject.toml to prev_version
-bump_idx = next(
-    (i for i, l in enumerate(log_lines) if prev_version in l),
-    None
-)
-# Everything before that index = new work going into new_version
-new_commits = log_lines[:bump_idx] if bump_idx else log_lines[:10]
-
-# Filter out pure meta-commits; strip conventional-commit prefixes
-SKIP = re.compile(r'bump version|chore:|Co-Authored|^Merge ', re.IGNORECASE)
-PREFIX = re.compile(r'^(feat|fix|refactor|chore|docs|test|style|perf|build):\s*', re.IGNORECASE)
-bullets = []
-title_candidate = None
-for line in new_commits:
-    msg = line.split(" ", 1)[1] if " " in line else line
-    if SKIP.search(msg):
-        continue
-    clean = PREFIX.sub("", msg).strip()
-    if title_candidate is None:
-        title_candidate = clean
-    bullets.append(f"- {clean}")
-
-if not bullets:
-    bullets = ["- Maintenance and stability improvements"]
-title = (title_candidate or "Maintenance release")[:60]
-new_entry = f"### v{new_version} — {title}\n" + "\n".join(bullets)
-
-# ── Rewrite README ────────────────────────────────────────────────────────────
 content = open(readme_path).read()
 
-# Update version badge
 content = content.replace(
     f"**Current release: v{prev_version}**",
     f"**Current release: v{new_version}**",
 )
 
-# Find the Release Notes section (between "## Release Notes\n\n" and the next "## ")
 rn = re.search(r'(## Release Notes\n\n)(.*?)(\n## )', content, re.DOTALL)
-if rn:
-    body = rn.group(2).rstrip()
-    existing = [e.strip() for e in re.split(r'(?=### v)', body) if e.strip()]
-    # New entry + 4 existing = 5 total
-    kept = "\n\n".join([new_entry] + existing[:4])
-    content = (
-        content[:rn.start()]
-        + rn.group(1) + kept + "\n"
-        + rn.group(3)
-        + content[rn.end():]
-    )
-else:
-    print("WARNING: '## Release Notes' section not found — skipping notes update",
-          file=sys.stderr)
+if not rn:
+    sys.exit("ERROR: '## Release Notes' section not found")
+body = rn.group(2).rstrip()
+entries = [e.strip() for e in re.split(r'(?=^### )', body, flags=re.MULTILINE) if e.strip()]
+if not entries or not entries[0].startswith("### Unreleased — "):
+    sys.exit("ERROR: the first release-notes entry is not '### Unreleased — <title>'")
+entries[0] = entries[0].replace("### Unreleased — ", f"### v{new_version} — ", 1)
+# The released entry + 4 earlier ones = 5 total
+kept = "\n\n".join(entries[:5])
+content = content[:rn.start()] + rn.group(1) + kept + "\n" + rn.group(3) + content[rn.end():]
 
 open(readme_path, "w").write(content)
-print(f"    README.md updated — v{new_version} release notes prepended, last 5 kept")
+print(f"    README.md updated — Unreleased notes released as v{new_version}, last 5 kept")
 PYEOF
 }
 
