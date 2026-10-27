@@ -60,6 +60,31 @@ _PHASE_ORDER = [
 ]
 
 
+def _union_sec(intervals: List[tuple]) -> float:
+    """Length covered by the union of (start, end) pairs; overlaps count once.
+
+    Technical and fundamental analysis run concurrently, and crewai may run
+    several native tool calls in parallel, so plain sums of durations can
+    exceed wall time. Subtracting such a sum from an elapsed time goes
+    negative; the union does not.
+    """
+    spans = sorted((s, e) for s, e in intervals if e > s)
+    total = 0.0
+    cur_start: Optional[float] = None
+    cur_end = 0.0
+    for start, end in spans:
+        if cur_start is None:
+            cur_start, cur_end = start, end
+        elif start <= cur_end:
+            cur_end = max(cur_end, end)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+    if cur_start is not None:
+        total += cur_end - cur_start
+    return total
+
+
 class ExecutionTracker:
     """Tracks per-phase wall-clock timing and LLM token usage for a single pipeline run.
 
@@ -251,23 +276,78 @@ class ExecutionTracker:
     # ── Output ─────────────────────────────────────────────────────────────────
 
     def to_dict(self) -> Dict[str, Any]:
-        pipeline_elapsed = (
-            round(self._pipeline_end - self._pipeline_start, 3)
-            if self._pipeline_end and self._pipeline_start
-            else 0.0
-        )
+        return self._build(now=None, partial=False)
+
+    def _build(self, now: Optional[float], partial: bool) -> Dict[str, Any]:
+        """Build the execution_metrics dict (contract v2, additive over v1).
+
+        now=None gives the final view: running phases keep elapsed_sec 0.0 as
+        before. A float `now` gives a snapshot view where running phases and
+        an unfinished pipeline are measured up to `now`.
+        """
+        if self._pipeline_start and self._pipeline_end:
+            pipeline_elapsed = round(max(0.0, self._pipeline_end - self._pipeline_start), 3)
+        elif self._pipeline_start and now is not None:
+            pipeline_elapsed = round(max(0.0, now - self._pipeline_start), 3)
+        else:
+            pipeline_elapsed = 0.0
+
+        with self._lock:
+            records = list(self._tool_calls)
+        by_phase: Dict[str, List[ToolCallRecord]] = {}
+        for rec in records:
+            by_phase.setdefault(rec.phase, []).append(rec)
+
         phases = []
+        phase_intervals = []
         for name in _PHASE_ORDER:
-            pm = self._phases.get(name, PhaseMetrics(name=name))
+            pm = self._phases.get(name)
+            if pm is None:
+                status = "not_started"
+            elif pm.end_time:
+                status = "completed"
+            elif pm.start_time:
+                status = "running"
+            else:
+                status = "not_started"
+            pm = pm if pm is not None else PhaseMetrics(name=name)
+
+            if status == "running" and now is not None:
+                elapsed = round(max(0.0, now - pm.start_time), 3)
+            else:
+                elapsed = pm.elapsed_sec
+
+            if pm.start_time:
+                if pm.end_time:
+                    phase_intervals.append((pm.start_time, pm.end_time))
+                elif now is not None:
+                    phase_intervals.append((pm.start_time, now))
+
+            calls = by_phase.get(name, [])
+            if status == "not_started":
+                tool_total = tool_wall = overhead = None
+            else:
+                tool_total = round(sum(max(0.0, c.end - c.start) for c in calls), 3)
+                tool_wall_raw = _union_sec([(c.start, c.end) for c in calls])
+                tool_wall = round(tool_wall_raw, 3)
+                overhead = round(max(0.0, elapsed - tool_wall_raw), 3)
+
             phases.append({
                 "name": name,
-                "elapsed_sec": pm.elapsed_sec,
+                "elapsed_sec": elapsed,
                 "input_tokens": pm.input_tokens,
                 "output_tokens": pm.output_tokens,
                 "cached_tokens": pm.cached_tokens,
                 "cache_creation_tokens": pm.cache_creation_tokens,
                 "total_tokens": pm.total_tokens,
+                "status": status,
+                "tool_call_count": len(calls),
+                "tool_total_sec": tool_total,
+                "tool_wall_sec": tool_wall,
+                "llm_overhead_sec": overhead,
+                "tools": self._tool_rollup(calls),
             })
+
         totals = {
             "input_tokens": sum(p["input_tokens"] for p in phases),
             "output_tokens": sum(p["output_tokens"] for p in phases),
@@ -275,6 +355,30 @@ class ExecutionTracker:
             "cache_creation_tokens": sum(p["cache_creation_tokens"] for p in phases),
             "total_tokens": sum(p["total_tokens"] for p in phases),
         }
+
+        if phase_intervals:
+            union = _union_sec(phase_intervals)
+            phases_union: Optional[float] = round(union, 3)
+            unattributed: Optional[float] = round(max(0.0, pipeline_elapsed - union), 3)
+        else:
+            phases_union = None
+            unattributed = None
+
+        timed_phases = [p for p in phases if p["status"] != "not_started" and p["elapsed_sec"] > 0]
+        slowest_phase = None
+        if timed_phases:
+            top = max(timed_phases, key=lambda p: p["elapsed_sec"])
+            slowest_phase = {"name": top["name"], "elapsed_sec": top["elapsed_sec"]}
+        slowest_call = None
+        if records:
+            top_rec = max(records, key=lambda c: c.end - c.start)
+            slowest_call = {
+                "phase": top_rec.phase,
+                "tool": top_rec.tool,
+                "elapsed_sec": top_rec.elapsed_sec,
+                "ok": top_rec.ok,
+            }
+
         return {
             "run_at": self._run_at.strftime("%Y-%m-%dT%H:%M:%SZ") if self._run_at else "",
             "sector": self._sector,
@@ -283,6 +387,29 @@ class ExecutionTracker:
             "totals": totals,
             "by_model": self._model_totals,
             "metrics_version": 2,
-            "partial": False,
+            "partial": partial,
             "tool_calls": self._tool_call_dicts(),
+            "phases_union_sec": phases_union,
+            "unattributed_sec": unattributed,
+            "slowest_phase": slowest_phase,
+            "slowest_tool_call": slowest_call,
         }
+
+    @staticmethod
+    def _tool_rollup(calls: List[ToolCallRecord]) -> List[Dict[str, Any]]:
+        grouped: Dict[str, List[ToolCallRecord]] = {}
+        for c in calls:
+            grouped.setdefault(c.tool, []).append(c)
+        rollup = []
+        for tool, recs in grouped.items():
+            durations = [max(0.0, c.end - c.start) for c in recs]
+            rollup.append({
+                "tool": tool,
+                "count": len(recs),
+                "total_sec": round(sum(durations), 3),
+                "max_sec": round(max(durations), 3),
+                "error_count": sum(1 for c in recs if not c.ok),
+                "output_chars_total": sum(c.output_chars or 0 for c in recs),
+            })
+        rollup.sort(key=lambda r: r["total_sec"], reverse=True)
+        return rollup

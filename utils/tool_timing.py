@@ -12,6 +12,11 @@ misattribute (or lose) calls from the concurrently running technical_analysis
 and fundamental_analysis phases. Each tool instance belongs to exactly one
 phase in TaskFactory, so the instance binding is exact.
 
+Both crewai execution paths reach the wrapper: the ReAct path captures
+``tool._run`` when converting to a structured tool (after instrumentation), and
+the native function-calling path calls ``BaseTool.run`` -> ``self._run``, which
+resolves the instance attribute set here.
+
 Timing is public data (SSE, R2 report JSON, SPA). Only the phase, tool name,
 duration, ok flag, exception CLASS NAME and output character count are ever
 recorded or logged; never exception messages, tool arguments or tool output,

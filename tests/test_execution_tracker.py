@@ -173,3 +173,165 @@ class TestExecutionTrackerMetadata:
         tracker = ExecutionTracker()
         d = tracker.to_dict()
         assert d["run_at"] == ""
+
+
+# ─── Tool calls, rollups and interval unions (STALL-01) ───────────────────────
+
+def _tracker_with_pipeline(start: float = 1.0, end: float = 41.0) -> ExecutionTracker:
+    tracker = ExecutionTracker()
+    tracker._pipeline_start = start
+    tracker._pipeline_end = end
+    return tracker
+
+
+def _set_phase(tracker, name, start, end=0.0):
+    tracker._phases[name] = PhaseMetrics(name=name, start_time=start, end_time=end)
+
+
+def _phase(metrics, name):
+    return next(p for p in metrics["phases"] if p["name"] == name)
+
+
+class TestToolCalls:
+
+    def test_record_and_export_fields(self):
+        tracker = _tracker_with_pipeline(start=100.0, end=140.0)
+        tracker.record_tool_call("market_analysis", "Search", 102.0, 104.5, True, None, 321)
+        calls = tracker.to_dict()["tool_calls"]
+        assert calls == [{
+            "phase": "market_analysis", "tool": "Search", "start_offset_sec": 2.0,
+            "elapsed_sec": 2.5, "ok": True, "error": None, "output_chars": 321,
+        }]
+
+    def test_calls_sorted_by_start(self):
+        tracker = _tracker_with_pipeline(start=1.0, end=50.0)
+        tracker.record_tool_call("a", "late", 10.0, 11.0, True)
+        tracker.record_tool_call("a", "early", 3.0, 4.0, True)
+        assert [c["tool"] for c in tracker.to_dict()["tool_calls"]] == ["early", "late"]
+
+    def test_offset_measured_from_earliest_call_without_pipeline_start(self):
+        tracker = ExecutionTracker()
+        tracker.record_tool_call("a", "t1", 50.0, 51.0, True)
+        tracker.record_tool_call("a", "t2", 52.0, 53.0, True)
+        offsets = [c["start_offset_sec"] for c in tracker.to_dict()["tool_calls"]]
+        assert offsets == [0.0, 2.0]
+
+    def test_v1_keys_unchanged_and_v2_markers_present(self):
+        d = _tracker_with_pipeline().to_dict()
+        for key in ("run_at", "sector", "pipeline_elapsed_sec", "phases", "totals", "by_model"):
+            assert key in d
+        assert d["metrics_version"] == 2
+        assert d["partial"] is False
+        assert d["tool_calls"] == []
+        for p in d["phases"]:
+            for key in ("name", "elapsed_sec", "input_tokens", "output_tokens",
+                        "cached_tokens", "cache_creation_tokens", "total_tokens"):
+                assert key in p
+
+    def test_concurrent_recording_is_thread_safe(self):
+        import threading
+
+        tracker = ExecutionTracker()
+
+        def worker():
+            for i in range(50):
+                tracker.record_tool_call("technical_analysis", "t", float(i), float(i) + 0.1, True)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(tracker.to_dict()["tool_calls"]) == 400
+
+
+class TestToolUnions:
+
+    def test_overlapping_tool_calls_split_tool_and_llm_time(self):
+        tracker = _tracker_with_pipeline()
+        _set_phase(tracker, "technical_analysis", 10.0, 14.0)
+        tracker.record_tool_call("technical_analysis", "T", 10.0, 12.0, True)
+        tracker.record_tool_call("technical_analysis", "T", 11.0, 13.0, True)
+        p = _phase(tracker.to_dict(), "technical_analysis")
+        assert p["tool_total_sec"] == 4.0
+        assert p["tool_wall_sec"] == 3.0
+        assert p["llm_overhead_sec"] == 1.0
+
+    def test_overhead_never_negative(self):
+        tracker = _tracker_with_pipeline()
+        _set_phase(tracker, "technical_analysis", 10.0, 11.0)
+        tracker.record_tool_call("technical_analysis", "T", 9.0, 12.0, True)
+        p = _phase(tracker.to_dict(), "technical_analysis")
+        assert p["llm_overhead_sec"] == 0.0
+
+    def test_overlapping_phases_counted_once(self):
+        tracker = _tracker_with_pipeline(start=1.0, end=41.0)
+        _set_phase(tracker, "technical_analysis", 10.0, 20.0)
+        _set_phase(tracker, "fundamental_analysis", 12.0, 25.0)
+        d = tracker.to_dict()
+        assert d["phases_union_sec"] == 15.0
+        assert d["unattributed_sec"] == 25.0
+        assert d["unattributed_sec"] >= 0
+
+    def test_unattributed_never_negative(self):
+        tracker = _tracker_with_pipeline(start=1.0, end=5.0)
+        _set_phase(tracker, "market_analysis", 1.0, 3.0)
+        _set_phase(tracker, "draft_strategy", 3.0, 9.0)
+        assert tracker.to_dict()["unattributed_sec"] == 0.0
+
+    def test_no_phases_gives_null_union_and_unattributed(self):
+        d = _tracker_with_pipeline().to_dict()
+        assert d["phases_union_sec"] is None
+        assert d["unattributed_sec"] is None
+
+
+class TestRollupAndStatus:
+
+    def test_per_tool_rollup_and_sorting(self):
+        tracker = _tracker_with_pipeline()
+        _set_phase(tracker, "fundamental_analysis", 10.0, 30.0)
+        tracker.record_tool_call("fundamental_analysis", "Data", 10.0, 11.0, True, None, 10)
+        tracker.record_tool_call("fundamental_analysis", "Data", 12.0, 15.0, False, "TimeoutError", None)
+        tracker.record_tool_call("fundamental_analysis", "Data", 16.0, 18.0, True, None, 5)
+        tracker.record_tool_call("fundamental_analysis", "Grader", 19.0, 19.5, True, None, 1)
+        tools = _phase(tracker.to_dict(), "fundamental_analysis")["tools"]
+        assert [t["tool"] for t in tools] == ["Data", "Grader"]
+        assert tools[0] == {
+            "tool": "Data", "count": 3, "total_sec": 6.0, "max_sec": 3.0,
+            "error_count": 1, "output_chars_total": 15,
+        }
+
+    def test_status_completed_running_not_started(self):
+        tracker = _tracker_with_pipeline()
+        _set_phase(tracker, "market_analysis", 2.0, 8.0)
+        _set_phase(tracker, "technical_analysis", 8.0, 0.0)
+        d = tracker.to_dict()
+        assert _phase(d, "market_analysis")["status"] == "completed"
+        assert _phase(d, "technical_analysis")["status"] == "running"
+        assert _phase(d, "final_strategy")["status"] == "not_started"
+
+    def test_not_started_phase_has_null_splits_and_zero_elapsed(self):
+        p = _phase(_tracker_with_pipeline().to_dict(), "critique_review")
+        assert p["tool_total_sec"] is None
+        assert p["tool_wall_sec"] is None
+        assert p["llm_overhead_sec"] is None
+        assert p["elapsed_sec"] == 0.0
+        assert p["tools"] == []
+        assert p["tool_call_count"] == 0
+
+    def test_slowest_phase_and_tool_call(self):
+        tracker = _tracker_with_pipeline()
+        _set_phase(tracker, "market_analysis", 2.0, 5.0)
+        _set_phase(tracker, "technical_analysis", 5.0, 20.0)
+        tracker.record_tool_call("market_analysis", "Search", 2.0, 4.0, True)
+        tracker.record_tool_call("technical_analysis", "Tech", 6.0, 16.0, False, "ValueError")
+        d = tracker.to_dict()
+        assert d["slowest_phase"] == {"name": "technical_analysis", "elapsed_sec": 15.0}
+        assert d["slowest_tool_call"] == {
+            "phase": "technical_analysis", "tool": "Tech", "elapsed_sec": 10.0, "ok": False,
+        }
+
+    def test_slowest_fields_none_when_empty(self):
+        d = _tracker_with_pipeline().to_dict()
+        assert d["slowest_phase"] is None
+        assert d["slowest_tool_call"] is None
