@@ -1,0 +1,6 @@
+# Compile constraints for scripts/lock.sh (uv pip compile -c constraints.txt).
+# These are the crewai versions production runs on Modal, so the lock (and CI)
+# test what is deployed. Bumping crewai means: edit this file, run
+# `bash scripts/lock.sh`, and keep the offline suite green.
+crewai==1.12.2
+crewai-tools==1.12.2

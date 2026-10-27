@@ -29,37 +29,75 @@ def _strip_optional_provider_prefix(model_value: str) -> str:
 
 
 class Config:
-    """Configuration class for ProspectAI"""
+    """Configuration class for ProspectAI.
+
+    Model selection is an explicit input (DEPL-03): the process environment is
+    snapshotted once, at construction, and never written back. Explicit
+    ``model`` / ``provider`` / ``ollama_base_url`` win over the snapshot, so two
+    runs in one warm process cannot inherit each other's choices.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+    ):
+        self._explicit_model = (
+            _strip_optional_provider_prefix(model) if model and model.strip() else None
+        )
+        self._explicit_provider = provider.strip() if provider and provider.strip() else None
+        self._explicit_ollama_base_url = ollama_base_url or None
+
+        # Env snapshot (read once). ANTHROPIC_API_KEY stays a lazy read: secrets are
+        # never copied into the instance.
+        self._env_model = os.getenv(GLOBAL_MODEL_ENV)
+        self._env_anthropic_model = os.getenv("ANTHROPIC_MODEL")
+        self._env_ollama_model = os.getenv("OLLAMA_MODEL")
+        self._env_provider = os.getenv("MODEL_PROVIDER")
+        self._env_ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+        self._env_agent_models: Dict[str, Optional[str]] = {
+            key: os.getenv(env_key) for key, env_key in AGENT_MODEL_ENV_KEYS.items()
+        }
 
     @property
     def ANTHROPIC_API_KEY(self):
         return os.getenv("ANTHROPIC_API_KEY")
 
     @property
+    def provider(self) -> str:
+        return self._explicit_provider or self._env_provider or "anthropic"
+
+    @property
     def ANTHROPIC_MODEL(self):
-        return os.getenv("ANTHROPIC_MODEL")
+        return self._env_anthropic_model
 
     @property
     def OLLAMA_BASE_URL(self):
-        return os.getenv("OLLAMA_BASE_URL")
+        return self._explicit_ollama_base_url or self._env_ollama_base_url
 
     @property
     def OLLAMA_MODEL(self):
-        return os.getenv("OLLAMA_MODEL")
+        return self._env_ollama_model
 
     def default_model_id(self) -> Optional[str]:
         """
-        Global default model id: MODEL first, then legacy provider-specific env vars.
+        Global default model id: explicit model, then MODEL, then legacy
+        provider-specific env vars (all from the construction-time snapshot).
         """
-        model = os.getenv(GLOBAL_MODEL_ENV)
+        if self._explicit_model:
+            return self._explicit_model
+
+        model = self._env_model
         if model and model.strip():
             return _strip_optional_provider_prefix(model)
 
-        if os.getenv("MODEL_PROVIDER", "anthropic") == "ollama":
-            fallback = os.getenv("OLLAMA_MODEL")
+        if self.provider == "ollama":
+            fallback = self._env_ollama_model
             return fallback.strip() if fallback and fallback.strip() else None
 
-        fallback = os.getenv("ANTHROPIC_MODEL")
+        fallback = self._env_anthropic_model
         return fallback.strip() if fallback and fallback.strip() else None
 
     def model_id_for_agent(self, agent_key: str) -> Optional[str]:
@@ -67,11 +105,9 @@ class Config:
         Resolve model for one agent.
         AGENT_*_MODEL overrides global MODEL.
         """
-        env_key = AGENT_MODEL_ENV_KEYS.get(agent_key)
-        if env_key:
-            per = os.getenv(env_key)
-            if per and per.strip():
-                return _strip_optional_provider_prefix(per)
+        per = self._env_agent_models.get(agent_key)
+        if per and per.strip():
+            return _strip_optional_provider_prefix(per)
 
         return self.default_model_id()
 

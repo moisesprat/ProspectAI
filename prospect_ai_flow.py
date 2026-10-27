@@ -24,6 +24,7 @@ from utils.portfolio_bounds_validator import BoundsViolationError, validate as v
 from utils.action_policy_gate import filter_directives, filter_critiques
 from utils.candidate_universe_filter import filter_candidates
 from utils import yfinance_cache
+from config.config import Config
 from prospect_ai_crew import TaskFactory
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,14 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         task_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
         progress_callback: Optional[Callable] = None,
+        *,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        config: Optional[Config] = None,
     ):
+        if config is not None and any(v is not None for v in (model, provider, ollama_base_url)):
+            raise ValueError("Pass either config= or model/provider/ollama_base_url, not both")
         super().__init__()
         self._task_callback = task_callback
         self._step_callback = step_callback
@@ -120,7 +128,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
-        self._factory = TaskFactory()
+        # Public: the backend reads pipeline_config.model_id_for_agent(k) for SSE model names.
+        self.pipeline_config = (
+            config if config is not None
+            else Config(model=model, provider=provider, ollama_base_url=ollama_base_url)
+        )
+        self._factory = TaskFactory(config=self.pipeline_config, tracker_getter=lambda: self._tracker)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -668,6 +681,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     # Public entry point
     # ─────────────────────────────────────────────────────────────────────────
+    def metrics_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Execution metrics so far (partial=True), or None before run_analysis starts."""
+        if self._tracker is None:
+            return None
+        return self._tracker.snapshot()
+
     def run_analysis(
         self,
         market_criteria: Dict[str, Any],
@@ -693,21 +712,34 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._tracker = tracker
         try:
             self.kickoff(inputs={"sector": sector, "today": today, "risk_profile": risk_profile})
-        finally:
+
+            structured = _parse_crew_result(self._final_crew_result)
+            structured = self._finalize_and_validate_portfolio(structured, risk_profile)
+
+            validation_issues = validate_portfolio(structured)
+            if validation_issues:
+                for issue in validation_issues:
+                    log_fn = logger.error if issue.severity == "critical" else logger.warning
+                    log_fn("[%s] %s — %s: %s", issue.severity.upper(), issue.ticker, issue.field, issue.message)
+                structured["validation_warnings"] = [
+                    {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
+                    for i in validation_issues
+                ]
+        except Exception as exc:
             tracker.finish()
-
-        structured = _parse_crew_result(self._final_crew_result)
-        structured = self._finalize_and_validate_portfolio(structured, risk_profile)
-
-        validation_issues = validate_portfolio(structured)
-        if validation_issues:
-            for issue in validation_issues:
-                log_fn = logger.error if issue.severity == "critical" else logger.warning
-                log_fn("[%s] %s — %s: %s", issue.severity.upper(), issue.ticker, issue.field, issue.message)
-            structured["validation_warnings"] = [
-                {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
-                for i in validation_issues
-            ]
+            # Timing survives failure: the caller can read exc.partial_metrics. Some
+            # exception types reject attributes; never let that mask the real error.
+            try:
+                exc.partial_metrics = tracker.snapshot()  # type: ignore[attr-defined]
+            except Exception:
+                logger.warning("could not attach partial_metrics to %s", type(exc).__name__)
+            raise
+        except BaseException:
+            tracker.finish()
+            raise
+        # Finish after finalize/validate so their time lands in pipeline_elapsed_sec
+        # (and in unattributed_sec, since no phase covers it).
+        tracker.finish()
 
         summary = (
             structured.get("overall_strategy", "")

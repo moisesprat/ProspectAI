@@ -256,3 +256,90 @@ class TestFinalStrategyPhase:
         flow.state.error = "upstream failure"
         with pytest.raises(RuntimeError, match="upstream failure"):
             await flow.final_strategy()
+
+
+# ─── Partial metrics on failure (STALL-01, D-04) ──────────────────────────────
+
+class TestPartialMetrics:
+    def _failing_kickoff(self, flow):
+        import time
+
+        def kickoff(inputs=None):
+            flow._tracker.start_phase("market_analysis")
+            t0 = time.perf_counter()
+            time.sleep(0.01)
+            flow._tracker.record_tool_call(
+                "market_analysis", "Search", t0, time.perf_counter(), False, "TimeoutError", None
+            )
+            time.sleep(0.01)
+            raise RuntimeError("boom")
+
+        return kickoff
+
+    def test_kickoff_failure_attaches_partial_metrics(self, flow):
+        flow.kickoff = self._failing_kickoff(flow)
+        with pytest.raises(RuntimeError, match="boom") as info:
+            flow.run_analysis({"sector": "Technology"})
+        pm = info.value.partial_metrics
+        assert pm["partial"] is True
+        market = next(p for p in pm["phases"] if p["name"] == "market_analysis")
+        assert market["status"] == "running"
+        assert market["elapsed_sec"] > 0
+        assert [c["tool"] for c in pm["tool_calls"]] == ["Search"]
+        assert pm["tool_calls"][0]["error"] == "TimeoutError"
+        assert pm["pipeline_elapsed_sec"] > 0
+
+    def test_metrics_snapshot_none_before_run_and_partial_after_failure(self, flow):
+        assert flow.metrics_snapshot() is None
+        flow.kickoff = self._failing_kickoff(flow)
+        with pytest.raises(RuntimeError):
+            flow.run_analysis({"sector": "Technology"})
+        snap = flow.metrics_snapshot()
+        assert snap["partial"] is True
+        assert len(snap["tool_calls"]) == 1
+
+    def test_post_kickoff_failure_also_carries_partial_metrics(self, flow):
+        from utils.portfolio_bounds_validator import BoundsViolationError
+
+        flow.kickoff = lambda inputs=None: flow._tracker.start_phase("final_strategy")
+        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
+             patch.object(
+                 flow, "_finalize_and_validate_portfolio",
+                 side_effect=BoundsViolationError(
+                     [{"ticker": "AAA", "rule": "max_allocation", "expected": 10, "actual": 20}]
+                 ),
+             ):
+            with pytest.raises(BoundsViolationError) as info:
+                flow.run_analysis({"sector": "Technology"})
+        assert info.value.partial_metrics["partial"] is True
+
+    def test_unattachable_exception_still_propagates_unchanged(self, flow, caplog):
+        import logging
+
+        class Sealed(Exception):
+            def __setattr__(self, name, value):
+                raise AttributeError("sealed")
+
+        def kickoff(inputs=None):
+            raise Sealed("sealed-failure")
+
+        flow.kickoff = kickoff
+        with caplog.at_level(logging.WARNING, logger="prospect_ai_flow"):
+            with pytest.raises(Sealed, match="sealed-failure"):
+                flow.run_analysis({"sector": "Technology"})
+        assert any("could not attach partial_metrics" in r.getMessage() for r in caplog.records)
+
+    def test_success_is_not_partial_and_includes_finalize_time(self, flow):
+        import time
+
+        def slow_finalize(structured, risk_profile):
+            time.sleep(0.05)
+            return {"positions": [], "overall_strategy": "ok"}
+
+        flow.kickoff = lambda inputs=None: None
+        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
+             patch.object(flow, "_finalize_and_validate_portfolio", side_effect=slow_finalize):
+            out = flow.run_analysis({"sector": "Technology"})
+        metrics = out["execution_metrics"]
+        assert metrics["partial"] is False
+        assert metrics["pipeline_elapsed_sec"] >= 0.05

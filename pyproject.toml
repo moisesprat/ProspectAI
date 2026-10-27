@@ -22,17 +22,23 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-    "crewai>=1.0.0",
-    "crewai-tools>=1.0.0",
-    "python-dotenv>=1.0.0",
-    "pandas>=2.1.4",
-    "numpy>=1.26.0",
-    "requests>=2.31.0",
-    "yfinance>=0.2.28",
-    "PyYAML>=6.0",
-    "ta>=0.10.2",
-    "anthropic>=0.40.0",
+    "crewai>=1.12,<2",
+    "crewai-tools>=1.12,<2",
+    "python-dotenv>=1.1,<2",
+    "pandas>=3.1,<4",
+    "numpy>=2.4,<3",
+    "requests>=2.32,<3",
+    "yfinance>=1.7,<2",
+    "PyYAML>=6.0,<7",
+    "ta>=0.11,<0.12",
+    "anthropic>=2.3,<3",
+    "praw>=7.8,<8",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "pytest-cov>=7.1,<8", "pytest-socket>=0.8,<0.9"]
+# Declared, not removed: dropping these is DEBT-02 (Phase 5).
+legacy = ["portkey-ai>=2.3,<3", "plotly>=5.17,<6", "reportlab>=5.1,<6"]
 
 [project.scripts]
 prospectai = "main:main"
