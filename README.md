@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.9.2**
+**Current release: v1.9.3**
 
 ### ⚠️ Important Disclaimer
 
@@ -309,6 +309,17 @@ twine upload dist/*
 
 ## Release Notes
 
+### v1.9.3 — build(01-05): verified publish→pin→deploy→smoke path; /deplo
+- build(01-05): verified publish→pin→deploy→smoke path; /deploy wraps deploy.sh (DEPL-01, TEST-04, D-10, D-25)
+- build(01-05): deploy.sh preflight gate — main == origin/main, clean trees, offline suites, check_pin (TEST-04, D-11, D-23, D-25, D-27)
+- refactor(cli): pass model/provider/url into the flow instead of mutating env (DEPL-03)
+- feat(config): inject model explicitly into ProspectAIFlow (DEPL-03)
+- feat(01-02): partial metrics on failure + metrics_snapshot() (STALL-01, D-04)
+- feat(01-02): per-phase tool rollups, interval unions and slowest-step fields (STALL-01)
+- feat(01-02): record per-tool-call timing into execution_metrics (STALL-01)
+- ci(01-01): offline pytest gate + lock stale check on PRs (TEST-05)
+- build(01-01): compile pinned lock from pyproject + constraints (DEPL-04)
+
 ### v1.9.2 — Refactor reasoning and validation logic in action selection
 - Refactor reasoning and validation logic in action selection and portfolio management
 
@@ -339,12 +350,6 @@ twine upload dist/*
 - add risk aversion profile selector to portfolio allocation
 - implement continuous scrolling marquee for recent-wins strip with hover pause and seamless looping
 - enhance token tracking in ExecutionTracker and AnthropicCachingCompletion for improved cache metrics
-
-### v1.8.0 — update tests to use AnthropingCachingCompletion and improve s
-- update tests to use AnthropicCachingCompletion and improve structure
-- replace CachingLLM with make_caching_llm factory for improved prompt caching
-- implement CachingLLM for prompt caching and enhance execution tracking metrics
-- implement long-buy wins enrichment with trigger price and recommendation label
 
 ## Roadmap
 
