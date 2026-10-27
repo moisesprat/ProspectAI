@@ -394,9 +394,12 @@ pytest==9.1.1
     #   prospectai (pyproject.toml)
     #   pytest-asyncio
     #   pytest-cov
+    #   pytest-socket
 pytest-asyncio==1.4.1
     # via prospectai (pyproject.toml)
 pytest-cov==7.1.0
+    # via prospectai (pyproject.toml)
+pytest-socket==0.8.1
     # via prospectai (pyproject.toml)
 python-dateutil==3.0.0
     # via

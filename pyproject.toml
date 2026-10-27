@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "pytest-cov>=7.1,<8"]
+dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "pytest-cov>=7.1,<8", "pytest-socket>=0.8,<0.9"]
 # Declared, not removed: dropping these is DEBT-02 (Phase 5).
 legacy = ["portkey-ai>=2.3,<3", "plotly>=5.17,<6", "reportlab>=5.1,<6"]
 
