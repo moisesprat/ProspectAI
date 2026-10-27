@@ -12,6 +12,8 @@ uv pip sync --python .venv/bin/python requirements.txt
 cp env.example .env  # then fill in API keys
 
 # Bump crewai: edit constraints.txt, run `bash scripts/lock.sh`, keep the suite green
+# anthropic pin rule: the anthropic range in pyproject.toml must match crewai's own anthropic extra
+# (crewai 1.12.2 -> ~=0.73.0); anthropic 2.x drops `temperature` and broke 1.9.3. tests/test_llm_sdk_compat.py guards it; bump both together.
 
 # Run analysis (Anthropic, default)
 python3 main.py --sector Technology
