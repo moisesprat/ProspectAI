@@ -1,185 +1,268 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ProspectAI — Release & Deploy Script
+# ProspectAI — Release & Deploy Script (the single deploy path)
 #
 # Steps:
-#   1. Bumps patch version in pyproject.toml and prospectai-backend/serve.py
-#   2. Updates README.md version badge and release notes (last 5 entries, auto-generated from git log)
-#   3. Cleans dist/
-#   4. Builds wheel + sdist
-#   5. Uploads to PyPI via twine
-#   6. Deploys new image to Modal
+#   0. Gates: both repos on `main` == origin/main, clean trees, both offline
+#      suites green in fresh venvs built from their locks, and
+#      pin == pyproject == PyPI == lock (prospectai-backend/scripts/check_pin.py)
+#   1. Bumps the version in pyproject.toml (the only version source)
+#   2. Updates README.md version badge and release notes
+#   3. Builds wheel + sdist, uploads to PyPI via twine, polls PyPI until live
+#   4. Rewrites the prospectai pin in prospectai-backend/requirements-serve.txt,
+#      recompiles requirements-serve.lock and re-runs check_pin
+#   5. Deploys to Modal with BACKEND_SHA / DEPLOYED_AT baked into the image
+#   6. Polls the live /api/version and fails unless it reports the pin and the
+#      baked backend_sha
+#   7. Only then creates one local commit per repo. It never pushes.
 #
 # Usage:
-#   ./scripts/deploy.sh              # auto-bump patch (e.g. 1.5.7 → 1.5.8)
-#   ./scripts/deploy.sh 1.6.0        # explicit version
-#   ./scripts/deploy.sh --skip-pypi  # redeploy Modal only (version already on PyPI)
+#   ./scripts/deploy.sh                  # auto-bump patch (e.g. 1.5.7 -> 1.5.8)
+#   ./scripts/deploy.sh 1.6.0            # explicit version
+#   ./scripts/deploy.sh --skip-pypi      # recover: deploy the version already in
+#                                        # pyproject.toml / on PyPI, no bump
+#   ./scripts/deploy.sh --preflight-only # run every gate, change nothing
+#   ./scripts/deploy.sh --preflight-only --allow-dirty      # skip clean-tree gate
+#   ./scripts/deploy.sh --preflight-only --allow-off-main   # skip branch gate
+#   ./scripts/deploy.sh -h | --help
 #
 # Requirements:
-#   pip install build twine
-#   modal token set  (already authenticated)
-#   PyPI token in ~/.pypirc or TWINE_PASSWORD env var
+#   uv (https://docs.astral.sh/uv/), an authenticated modal CLI
+#   (`modal token set`), and a PyPI token in ~/.pypirc or TWINE_PASSWORD for twine.
+#
+# Policies:
+#   - A raw `modal deploy serve.py` bypasses every check here and shows
+#     `backend_sha: unknown` in /api/version. Do not use it (D-10).
+#   - The private backend repo has no required CI; its gate is this preflight,
+#     which runs the backend offline suite from the backend lock (D-23).
+#   - On success the script makes one commit per repo and never pushes. The
+#     operator publishes `main` afterwards (D-25).
+#   - Releases run only when both repos are on `main` and identical to
+#     `origin/main`, meaning merged, CI-checked code. --allow-off-main exists
+#     only for preflight development, and is rejected without --preflight-only
+#     (D-27). --allow-dirty is likewise preflight-only.
 # =============================================================================
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKEND_SERVE="$REPO_ROOT/../prospectai-backend/serve.py"
+BACKEND_ROOT="$(cd "$REPO_ROOT/../prospectai-backend" 2>/dev/null && pwd)" || {
+  echo "ERROR: prospectai-backend not found next to $REPO_ROOT" >&2
+  exit 1
+}
 PYPROJECT="$REPO_ROOT/pyproject.toml"
 README="$REPO_ROOT/README.md"
 DIST_DIR="$REPO_ROOT/dist"
+BACKEND_URL="${PROSPECTAI_BACKEND_URL:-https://moisesprat--prospectai-backend-fastapi-app.modal.run}"
+LOCK_DIR="${TMPDIR:-/tmp}/prospectai-deploy.lock"
 
-# Resolve python3 / pip3
-PYTHON=$(command -v python3 || command -v python)
-PIP=$(command -v pip3 || command -v pip)
+# Resolve python3 (used only for tiny one-off text edits and version math)
+PYTHON=$(command -v python3 || command -v python) || {
+  echo "ERROR: python3 not found" >&2
+  exit 1
+}
 
 SKIP_PYPI=false
+PREFLIGHT_ONLY=false
+ALLOW_DIRTY=false
+ALLOW_OFF_MAIN=false
 EXPLICIT_VERSION=""
+LOCK_HELD=0
+TMP_VENVS=""
+UPLOADED=0
+NEW_VERSION=""
 
+log() { echo "==> $*"; }
+die() { echo "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/deploy.sh [X.Y.Z] [--skip-pypi] [--preflight-only]
+                         [--allow-dirty] [--allow-off-main] [-h|--help]
+
+  X.Y.Z             explicit release version (default: auto-bump the patch)
+  --skip-pypi       deploy the version already in pyproject.toml / on PyPI
+                    (recovery after a failed post-upload step); no bump
+  --preflight-only  run every gate and exit; changes nothing
+  --allow-dirty     skip the clean-tree gate (only valid with --preflight-only)
+  --allow-off-main  skip the main == origin/main gate (only valid with
+                    --preflight-only)
+  -h, --help        show this help
+USAGE
+}
+
+# ── Argument parsing (before any side effect) ────────────────────────────────
 for arg in "$@"; do
-  if [[ "$arg" == "--skip-pypi" ]]; then
-    SKIP_PYPI=true
-  elif [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    EXPLICIT_VERSION="$arg"
-  fi
+  case "$arg" in
+    --skip-pypi)      SKIP_PYPI=true ;;
+    --preflight-only) PREFLIGHT_ONLY=true ;;
+    --allow-dirty)    ALLOW_DIRTY=true ;;
+    --allow-off-main) ALLOW_OFF_MAIN=true ;;
+    -h|--help)        usage; exit 0 ;;
+    *)
+      if [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        EXPLICIT_VERSION="$arg"
+      else
+        echo "ERROR: unknown argument: $arg" >&2
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
 done
 
-# ── 1. Resolve version ────────────────────────────────────────────────────────
-# Use python3 to extract version — avoids macOS sed/grep parsing edge cases
+if [[ "$ALLOW_DIRTY" == true && "$PREFLIGHT_ONLY" != true ]]; then
+  echo "ERROR: --allow-dirty is only valid with --preflight-only" >&2
+  exit 2
+fi
+if [[ "$ALLOW_OFF_MAIN" == true && "$PREFLIGHT_ONLY" != true ]]; then
+  echo "ERROR: --allow-off-main is only valid with --preflight-only" >&2
+  exit 2
+fi
+if [[ "$SKIP_PYPI" == true && -n "$EXPLICIT_VERSION" ]]; then
+  echo "ERROR: --skip-pypi deploys the version already in pyproject.toml; do not pass X.Y.Z" >&2
+  exit 2
+fi
+
+# ── Concurrency guard + cleanup trap ─────────────────────────────────────────
+cleanup() {
+  local rc=$?
+  if [[ -n "$TMP_VENVS" && -d "$TMP_VENVS" ]]; then rm -rf "$TMP_VENVS"; fi
+  if [[ "$LOCK_HELD" == 1 ]]; then rmdir "$LOCK_DIR" 2>/dev/null || true; fi
+  if [[ $rc -ne 0 && "$UPLOADED" == 1 ]]; then
+    echo "" >&2
+    echo "prospectai $NEW_VERSION is on PyPI but not verified in production; no commits were made. Fix the cause, then run: scripts/deploy.sh --skip-pypi" >&2
+  fi
+  return $rc
+}
+trap cleanup EXIT
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  die "another deploy.sh is running (remove $LOCK_DIR if stale)"
+fi
+LOCK_HELD=1
+
+# ── Tree gates ───────────────────────────────────────────────────────────────
+# Release only merged, CI-checked code: each repo on main and equal to
+# origin/main after a fetch (D-27). The messages name branches only and never
+# suggest a command that writes to a remote.
+require_main_up_to_date() {
+  local repo branch counts ahead behind
+  for repo in "$REPO_ROOT" "$BACKEND_ROOT"; do
+    branch=$(git -C "$repo" branch --show-current)
+    if [[ "$branch" != "main" ]]; then
+      die "REFUSING: $repo is on '$branch', not on main — merge its Phase 1 PR, then switch to main and fast-forward (D-27)"
+    fi
+    git -C "$repo" fetch --quiet origin main || die "REFUSING: cannot fetch origin/main for $repo"
+    if [[ "$(git -C "$repo" rev-parse HEAD)" != "$(git -C "$repo" rev-parse origin/main)" ]]; then
+      counts=$(git -C "$repo" rev-list --left-right --count HEAD...origin/main)
+      ahead=${counts%%[[:space:]]*}
+      behind=${counts##*[[:space:]]}
+      die "REFUSING: $repo main differs from origin/main ($ahead ahead, $behind behind) — release only what is on origin/main (D-27)"
+    fi
+  done
+}
+
+# Dirty paths that are not on the allow list. In --skip-pypi mode the four
+# files deploy.sh itself rewrites may be dirty (recovery after a failed
+# post-upload step); everything else still refuses.
+dirty_paths() {
+  local repo="$1" allowed="$2" line path out=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    path="${line:3}"
+    if [[ "$SKIP_PYPI" == true && " $allowed " == *" $path "* ]]; then continue; fi
+    out+="$line"$'\n'
+  done < <(git -C "$repo" status --porcelain)
+  printf '%s' "$out"
+}
+
+require_clean_trees() {
+  local pa be
+  pa=$(dirty_paths "$REPO_ROOT" "pyproject.toml README.md")
+  if [[ -n "$pa" ]]; then
+    die "REFUSING: $REPO_ROOT has uncommitted changes:"$'\n'"$pa"
+  fi
+  be=$(dirty_paths "$BACKEND_ROOT" "requirements-serve.txt requirements-serve.lock")
+  if [[ -n "$be" ]]; then
+    die "REFUSING: $BACKEND_ROOT has uncommitted changes:"$'\n'"$be"
+  fi
+}
+
+if [[ "$ALLOW_OFF_MAIN" != true ]]; then require_main_up_to_date; fi
+if [[ "$ALLOW_DIRTY" != true ]]; then require_clean_trees; fi
+
+# ── Resolve version ──────────────────────────────────────────────────────────
+# python3 extracts the version — avoids macOS sed/grep parsing edge cases
 CURRENT_VERSION=$("$PYTHON" -c "
 import re, sys
-content = open('$PYPROJECT').read()
+content = open(sys.argv[1]).read()
 m = re.search(r'^version\s*=\s*\"([^\"]+)\"', content, re.MULTILINE)
 print(m.group(1) if m else sys.exit('ERROR: version not found in pyproject.toml'))
-")
+" "$PYPROJECT")
 
-if [[ -n "$EXPLICIT_VERSION" ]]; then
+if [[ "$SKIP_PYPI" == true ]]; then
+  NEW_VERSION="$CURRENT_VERSION"
+elif [[ -n "$EXPLICIT_VERSION" ]]; then
   NEW_VERSION="$EXPLICIT_VERSION"
 else
   # Auto-bump patch using python arithmetic (avoids IFS/read issues on macOS)
   NEW_VERSION=$("$PYTHON" -c "
-v = '$CURRENT_VERSION'.split('.')
+import sys
+v = sys.argv[1].split('.')
 v[2] = str(int(v[2]) + 1)
 print('.'.join(v))
-")
+" "$CURRENT_VERSION")
 fi
 
-echo "==> Version: $CURRENT_VERSION → $NEW_VERSION"
-
-# ── 2. Update pyproject.toml ──────────────────────────────────────────────────
-sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$PYPROJECT"
-echo "    pyproject.toml updated"
-
-# ── 3. Update serve.py (pip_install line) ─────────────────────────────────────
-if [[ -f "$BACKEND_SERVE" ]]; then
-  sed -i '' "s/prospectai==$CURRENT_VERSION/prospectai==$NEW_VERSION/" "$BACKEND_SERVE"
-  echo "    prospectai-backend/serve.py updated"
-else
-  echo "    WARNING: $BACKEND_SERVE not found — skipping serve.py update"
+if [[ "$SKIP_PYPI" != true ]]; then
+  "$PYTHON" -c "
+import sys
+cur, new = (tuple(int(p) for p in v.split('.')) for v in sys.argv[1:3])
+sys.exit(0 if new > cur else 1)
+" "$CURRENT_VERSION" "$NEW_VERSION" || die "REFUSING: new version $NEW_VERSION is not greater than current $CURRENT_VERSION"
 fi
 
-# ── 3b. Update README.md (version badge + release notes) ─────────────────────
-if [[ -f "$README" ]]; then
-  "$PYTHON" - "$README" "$NEW_VERSION" "$CURRENT_VERSION" <<'PYEOF'
-import re, subprocess, sys
+log "Version: $CURRENT_VERSION → $NEW_VERSION"
 
-readme_path  = sys.argv[1]
-new_version  = sys.argv[2]
-prev_version = sys.argv[3]
+# ── Preflight: offline suites from the locks, then the pin check ─────────────
+CHECK_PIN=()
 
-# ── Collect commits made since the previous version bump ─────────────────────
-log_lines = subprocess.run(
-    ["git", "log", "--oneline"],
-    capture_output=True, text=True, check=True
-).stdout.strip().splitlines()
+build_preflight_venvs() {
+  command -v uv >/dev/null 2>&1 || die "uv not found — install from https://docs.astral.sh/uv/"
+  TMP_VENVS=$(mktemp -d)
+  log "Building preflight venvs from the locks"
+  uv venv --quiet --python 3.11 "$TMP_VENVS/pa"
+  uv pip sync --quiet --python "$TMP_VENVS/pa/bin/python" "$REPO_ROOT/requirements.txt"
+  uv venv --quiet --python 3.11 "$TMP_VENVS/be"
+  uv pip sync --quiet --python "$TMP_VENVS/be/bin/python" "$BACKEND_ROOT/requirements-serve.lock"
+  uv pip install --quiet --python "$TMP_VENVS/be/bin/python" -r "$BACKEND_ROOT/requirements-dev.txt"
+  CHECK_PIN=("$TMP_VENVS/be/bin/python" "$BACKEND_ROOT/scripts/check_pin.py")
+}
 
-# Find the line that bumped pyproject.toml to prev_version
-bump_idx = next(
-    (i for i, l in enumerate(log_lines) if prev_version in l),
-    None
-)
-# Everything before that index = new work going into new_version
-new_commits = log_lines[:bump_idx] if bump_idx else log_lines[:10]
+run_offline_suites() {
+  log "ProspectAI offline suite"
+  (cd "$REPO_ROOT" && CREWAI_TRACING_ENABLED=false "$TMP_VENVS/pa/bin/python" -m pytest --disable-socket --allow-unix-socket -q) \
+    || die "REFUSING: ProspectAI offline suite failed (D-23)"
+  log "prospectai-backend offline suite"
+  (cd "$BACKEND_ROOT" && CREWAI_TRACING_ENABLED=false "$TMP_VENVS/be/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) \
+    || die "REFUSING: prospectai-backend offline suite failed (D-23)"
+}
 
-# Filter out pure meta-commits; strip conventional-commit prefixes
-SKIP = re.compile(r'bump version|chore:|Co-Authored|^Merge ', re.IGNORECASE)
-PREFIX = re.compile(r'^(feat|fix|refactor|chore|docs|test|style|perf|build):\s*', re.IGNORECASE)
-bullets = []
-title_candidate = None
-for line in new_commits:
-    msg = line.split(" ", 1)[1] if " " in line else line
-    if SKIP.search(msg):
-        continue
-    clean = PREFIX.sub("", msg).strip()
-    if title_candidate is None:
-        title_candidate = clean
-    bullets.append(f"- {clean}")
+build_preflight_venvs
+run_offline_suites
 
-if not bullets:
-    bullets = ["- Maintenance and stability improvements"]
-title = (title_candidate or "Maintenance release")[:60]
-new_entry = f"### v{new_version} — {title}\n" + "\n".join(bullets)
-
-# ── Rewrite README ────────────────────────────────────────────────────────────
-content = open(readme_path).read()
-
-# Update version badge
-content = content.replace(
-    f"**Current release: v{prev_version}**",
-    f"**Current release: v{new_version}**",
-)
-
-# Find the Release Notes section (between "## Release Notes\n\n" and the next "## ")
-rn = re.search(r'(## Release Notes\n\n)(.*?)(\n## )', content, re.DOTALL)
-if rn:
-    body = rn.group(2).rstrip()
-    existing = [e.strip() for e in re.split(r'(?=### v)', body) if e.strip()]
-    # New entry + 4 existing = 5 total
-    kept = "\n\n".join([new_entry] + existing[:4])
-    content = (
-        content[:rn.start()]
-        + rn.group(1) + kept + "\n"
-        + rn.group(3)
-        + content[rn.end():]
-    )
-else:
-    print("WARNING: '## Release Notes' section not found — skipping notes update",
-          file=sys.stderr)
-
-open(readme_path, "w").write(content)
-print(f"    README.md updated — v{new_version} release notes prepended, last 5 kept")
-PYEOF
-else
-  echo "    WARNING: $README not found — skipping README update"
+log "Pin preflight (pin = pyproject = PyPI = lock)"
+"${CHECK_PIN[@]}" --pyproject "$PYPROJECT" || die "REFUSING: pin preflight failed"
+if [[ "$SKIP_PYPI" != true ]]; then
+  "${CHECK_PIN[@]}" --unpublished "$NEW_VERSION" || die "REFUSING: pin preflight failed"
 fi
 
-# ── 4. Clean dist/ ────────────────────────────────────────────────────────────
-echo "==> Cleaning dist/"
-rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR"
-
-# ── 5. Build ──────────────────────────────────────────────────────────────────
-echo "==> Building wheel + sdist"
-cd "$REPO_ROOT"
-"$PYTHON" -m build
-
-# ── 6. Upload to PyPI ─────────────────────────────────────────────────────────
-if [[ "$SKIP_PYPI" == false ]]; then
-  echo "==> Uploading to PyPI"
-  "$PYTHON" -m twine upload dist/*
-  echo "    Uploaded prospectai==$NEW_VERSION to PyPI"
-
-  echo "==> Waiting 15s for PyPI to propagate..."
-  sleep 15
-else
-  echo "==> Skipping PyPI upload (--skip-pypi)"
+if [[ "$PREFLIGHT_ONLY" == true ]]; then
+  msg="PREFLIGHT OK: prospectai $CURRENT_VERSION (pin = pyproject = PyPI = lock); next release would be $NEW_VERSION; both offline suites green"
+  if [[ "$ALLOW_OFF_MAIN" == true ]]; then msg+="; branch gate SKIPPED (--allow-off-main)"; fi
+  echo "$msg"
+  exit 0
 fi
 
-# ── 7. Deploy to Modal ────────────────────────────────────────────────────────
-echo "==> Deploying to Modal"
-cd "$REPO_ROOT/../prospectai-backend"
-modal deploy serve.py
-echo "    Modal deploy complete"
-
-echo ""
-echo "Done. prospectai==$NEW_VERSION is live."
+die "release path not implemented yet"
