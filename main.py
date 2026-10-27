@@ -13,24 +13,34 @@ from dotenv import load_dotenv
 from utils.reddit_sentiment_tool import RedditSentimentTool
 
 
-def _global_model_configured() -> bool:
-    """MODEL preferred; legacy provider-specific model vars are fallback."""
+def _global_model_configured(provider: str = "anthropic") -> bool:
+    """MODEL preferred; legacy provider-specific model vars are fallback (reads env only)."""
     if os.getenv("MODEL", "").strip():
         return True
-    if os.getenv("MODEL_PROVIDER", "anthropic") == "ollama":
+    if provider == "ollama":
         return bool(os.getenv("OLLAMA_MODEL", "").strip())
     return bool(os.getenv("ANTHROPIC_MODEL", "").strip())
 
 
-def load_and_validate_env():
-    """Load .env if present (local dev), otherwise rely on environment variables (Modal, CI)."""
+def resolve_model_settings(args) -> tuple:
+    """Resolve (provider, model, ollama_base_url) from CLI args and env without writing env (DEPL-03)."""
+    provider = "ollama" if args.ollama else (os.getenv("MODEL_PROVIDER") or "anthropic")
+    model = args.model.strip() if args.model and args.model.strip() else None
+    ollama_base_url = args.url or os.getenv("OLLAMA_BASE_URL")
+    return provider, model, ollama_base_url
+
+
+def load_and_validate_env(provider: str, model, ollama_base_url):
+    """Load .env if present (local dev), otherwise rely on environment variables (Modal, CI).
+
+    Reads the environment only; model/provider/URL arrive as arguments.
+    """
     env_path = Path(".env")
     if env_path.exists():
         load_dotenv(env_path)
 
     missing = []
 
-    provider = os.getenv("MODEL_PROVIDER", "anthropic")
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         missing.append("ANTHROPIC_API_KEY")
 
@@ -42,10 +52,10 @@ def load_and_validate_env():
 
     # Provider-specific required vars
     if provider == "ollama":
-        if not os.getenv("OLLAMA_BASE_URL"):
+        if not ollama_base_url:
             missing.append("OLLAMA_BASE_URL")
 
-    if not _global_model_configured():
+    if not (model or _global_model_configured(provider)):
         missing.append("MODEL (or legacy ANTHROPIC_MODEL / OLLAMA_MODEL)")
 
     if missing:
@@ -159,43 +169,20 @@ def main():
 
     args = parse_arguments()
 
-    # Apply CLI overrides to env before validation
-    if args.ollama:
-        os.environ["MODEL_PROVIDER"] = "ollama"
-    elif not os.getenv("MODEL_PROVIDER"):
-        os.environ["MODEL_PROVIDER"] = "anthropic"
-    if args.model:
-        os.environ["MODEL"] = args.model.strip()
-    if args.url:
-        os.environ["OLLAMA_BASE_URL"] = args.url
-
-    load_and_validate_env()
-
-    # Set MODEL for CrewAI env fallback as provider/model_id.
-    raw_model = (
-        os.getenv("MODEL")
-        or (
-            os.getenv("OLLAMA_MODEL")
-            if os.getenv("MODEL_PROVIDER", "anthropic") == "ollama"
-            else os.getenv("ANTHROPIC_MODEL")
-        )
-        or ""
-    ).strip()
-    if "/" in raw_model:
-        raw_model = raw_model.split("/", 1)[1].strip()
-    provider = os.getenv("MODEL_PROVIDER", "anthropic")
-    os.environ["MODEL"] = f"{provider}/{raw_model}"
+    provider, model, ollama_base_url = resolve_model_settings(args)
+    load_and_validate_env(provider, model, ollama_base_url)
 
     from prospect_ai_flow import ProspectAIFlow
 
-    if provider == "ollama":
-        print(f"MODEL_PROVIDER=ollama | global model id: {raw_model} @ {os.getenv('OLLAMA_BASE_URL')}")
-    else:
-        print(f"MODEL_PROVIDER=anthropic | global model id: {raw_model}")
-
     print(f"Analyzing sector: {args.sector}")
     print("Initializing ProspectAI...")
-    prospect_ai = ProspectAIFlow()
+    prospect_ai = ProspectAIFlow(model=model, provider=provider, ollama_base_url=ollama_base_url)
+
+    effective_model = prospect_ai.pipeline_config.default_model_id()
+    if provider == "ollama":
+        print(f"MODEL_PROVIDER=ollama | global model id: {effective_model} @ {ollama_base_url}")
+    else:
+        print(f"MODEL_PROVIDER=anthropic | global model id: {effective_model}")
 
     print(f"Risk profile: {args.risk_profile}")
     market_criteria = {

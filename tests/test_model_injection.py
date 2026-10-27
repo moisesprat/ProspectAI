@@ -92,3 +92,48 @@ class TestFlowInjection:
     def test_zero_arg_construction(self, clean_env):
         clean_env.setenv("MODEL", HAIKU)
         assert isinstance(ProspectAIFlow().pipeline_config, Config)
+
+
+# ─── CLI (main.py) ─────────────────────────────────────────────────────────────
+
+def _run_main(monkeypatch, argv):
+    import main
+    import prospect_ai_flow
+    from unittest.mock import MagicMock
+
+    flow_cls = MagicMock()
+    flow_cls.return_value.run_analysis.return_value = {"summary": "s", "execution_metrics": {}}
+    monkeypatch.setattr(prospect_ai_flow, "ProspectAIFlow", flow_cls)
+    monkeypatch.setattr(main, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["prospectai", *argv])
+    main.main()
+    return flow_cls
+
+
+class TestCli:
+    def test_model_flag_passed_not_written(self, clean_env):
+        before = dict(os.environ)
+        flow_cls = _run_main(clean_env, ["--model", "claude-x", "--sector", "Technology"])
+        _, kwargs = flow_cls.call_args
+        assert kwargs["model"] == "claude-x"
+        assert kwargs["provider"] == "anthropic"
+        assert dict(os.environ) == before
+
+    def test_ollama_and_url_passed_not_written(self, clean_env):
+        before = dict(os.environ)
+        flow_cls = _run_main(
+            clean_env, ["--ollama", "--url", "http://host:1", "--model", "qwen", "--sector", "Technology"]
+        )
+        _, kwargs = flow_cls.call_args
+        assert kwargs["provider"] == "ollama"
+        assert kwargs["ollama_base_url"] == "http://host:1"
+        assert kwargs["model"] == "qwen"
+        assert dict(os.environ) == before
+
+    def test_missing_model_exits_1_env_untouched(self, clean_env, capsys):
+        before = dict(os.environ)
+        with pytest.raises(SystemExit) as exc:
+            _run_main(clean_env, ["--sector", "Technology"])
+        assert exc.value.code == 1
+        assert "MODEL (or legacy ANTHROPIC_MODEL / OLLAMA_MODEL)" in capsys.readouterr().out
+        assert dict(os.environ) == before
