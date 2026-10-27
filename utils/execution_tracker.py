@@ -278,6 +278,14 @@ class ExecutionTracker:
     def to_dict(self) -> Dict[str, Any]:
         return self._build(now=None, partial=False)
 
+    def snapshot(self) -> Dict[str, Any]:
+        """Partial view for a run that is running or has failed (partial=True).
+
+        Running phases report elapsed_sec up to now, and an unfinished pipeline
+        reports pipeline_elapsed_sec up to now.
+        """
+        return self._build(now=time.perf_counter(), partial=True)
+
     def _build(self, now: Optional[float], partial: bool) -> Dict[str, Any]:
         """Build the execution_metrics dict (contract v2, additive over v1).
 
