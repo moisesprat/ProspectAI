@@ -230,6 +230,10 @@ The full product spans three repos. Changes to this package's public API or `run
 > publishes `main` in both repos (D-25, D-27). A raw `modal deploy` bypasses the checks.
 > `/api/version`'s `backend_sha` names the backend commit the image was built from, which is the parent of
 > that release's `chore: pin` commit, because deploy.sh commits the pin only after the smoke test passes.
+>
+> **Release notes:** before releasing, write the notes for ProspectAI users (what changed for them, no plan ids or
+> decision codes) under `### Unreleased — <title>` at the top of README.md's `## Release Notes`. deploy.sh refuses
+> to release without that entry and renames it to the new version; the public changelog page is built from it.
 
 ### Adding a New Agent
 
