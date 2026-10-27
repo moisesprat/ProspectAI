@@ -309,16 +309,16 @@ twine upload dist/*
 
 ## Release Notes
 
-### v1.9.3 — build(01-05): verified publish→pin→deploy→smoke path; /deplo
-- build(01-05): verified publish→pin→deploy→smoke path; /deploy wraps deploy.sh (DEPL-01, TEST-04, D-10, D-25)
-- build(01-05): deploy.sh preflight gate — main == origin/main, clean trees, offline suites, check_pin (TEST-04, D-11, D-23, D-25, D-27)
-- refactor(cli): pass model/provider/url into the flow instead of mutating env (DEPL-03)
-- feat(config): inject model explicitly into ProspectAIFlow (DEPL-03)
-- feat(01-02): partial metrics on failure + metrics_snapshot() (STALL-01, D-04)
-- feat(01-02): per-phase tool rollups, interval unions and slowest-step fields (STALL-01)
-- feat(01-02): record per-tool-call timing into execution_metrics (STALL-01)
-- ci(01-01): offline pytest gate + lock stale check on PRs (TEST-05)
-- build(01-01): compile pinned lock from pyproject + constraints (DEPL-04)
+### Unreleased — Analyses work again
+- Fixed an issue in 1.9.3 where every analysis failed right after starting, caused by an incompatible version of the AI provider's library.
+- Added an automatic check that stops an incompatible AI library version from ever being released again.
+
+### v1.9.3 — Performance insights and safer releases
+- Every analysis now records how long each step and each data source takes, so slow runs can be diagnosed and sped up. The timings appear in a collapsible section of the report's execution metrics.
+- If an analysis fails partway through, the timings gathered up to that point are kept with the error instead of being lost.
+- The AI model for each run is now passed to that run directly, so one run can no longer change another's model settings.
+- Dependencies are locked to exact versions, and every change must pass the full test suite before it can be merged.
+- Releases now go through a single verified process, and the live service reports exactly which version it is running.
 
 ### v1.9.2 — Refactor reasoning and validation logic in action selection
 - Refactor reasoning and validation logic in action selection and portfolio management

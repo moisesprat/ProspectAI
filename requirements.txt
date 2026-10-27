@@ -14,13 +14,12 @@ annotated-doc==0.0.5
     # via typer
 annotated-types==0.8.0
     # via pydantic
-anthropic==2.3.0
+anthropic==0.73.0
     # via prospectai (pyproject.toml)
 anyio==4.15.1
     # via
     #   anthropic
     #   httpx
-    #   httpx2
     #   mcp
     #   openai
     #   portkey-ai
@@ -98,6 +97,7 @@ deprecation==2.1.0
     # via lancedb
 distro==1.9.0
     # via
+    #   anthropic
     #   openai
     #   portkey-ai
     #   posthog
@@ -132,18 +132,16 @@ grpcio==1.85.0
 h11==0.16.0
     # via
     #   httpcore
-    #   httpcore2
     #   uvicorn
 hf-xet==1.7.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
-httpcore2==2.16.0 ; sys_platform != 'emscripten'
-    # via httpx2
 httptools==0.9.0
     # via uvicorn
 httpx==0.28.1
     # via
+    #   anthropic
     #   chromadb
     #   crewai
     #   huggingface-hub
@@ -152,17 +150,12 @@ httpx==0.28.1
     #   portkey-ai
 httpx-sse==0.4.3
     # via mcp
-httpx2==2.16.0
-    # via anthropic
-httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
-    # via httpx2
 huggingface-hub==1.16.1
     # via tokenizers
 idna==3.20
     # via
     #   anyio
     #   httpx
-    #   httpx2
     #   requests
     #   yarl
 importlib-metadata==8.7.1
@@ -258,7 +251,6 @@ openpyxl==3.1.5
     # via crewai
 opentelemetry-api==1.34.1
     # via
-    #   anthropic
     #   chromadb
     #   crewai
     #   opentelemetry-exporter-otlp-proto-grpc
@@ -519,10 +511,6 @@ tqdm==4.70.1
     #   lancedb
     #   openai
     #   portkey-ai
-truststore==0.10.5 ; sys_platform != 'emscripten'
-    # via
-    #   httpcore2
-    #   httpx2
 typer==0.27.3
     # via
     #   chromadb
@@ -540,7 +528,6 @@ typing-extensions==4.16.0
     #   beautifulsoup4
     #   chromadb
     #   grpcio
-    #   httpx2
     #   huggingface-hub
     #   lance-namespace-urllib3-client
     #   mcp

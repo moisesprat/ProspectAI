@@ -31,7 +31,11 @@ dependencies = [
     "yfinance>=1.7,<2",
     "PyYAML>=6.0,<7",
     "ta>=0.11,<0.12",
-    "anthropic>=2.3,<3",
+    # MUST match crewai's own anthropic extra (crewai 1.12.2 declares anthropic~=0.73.0).
+    # crewai's Anthropic provider passes `temperature`, which anthropic 2.x removed from
+    # messages.create; 1.9.3 shipped with 2.3.0 and every run failed (hotfix 1.9.4).
+    # Bump this only together with crewai (see tests/test_llm_sdk_compat.py).
+    "anthropic>=0.73,<0.74",
     "praw>=7.8,<8",
 ]
 
