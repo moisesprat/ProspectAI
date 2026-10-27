@@ -41,7 +41,7 @@ Custom Claude Code commands available in this project:
 
 | Command | Purpose |
 |---|---|
-| `/deploy <version>` | Full release pipeline — bumps version in `pyproject.toml` and `serve.py`, builds wheel, uploads to PyPI, deploys Modal backend |
+| `/deploy <version>` | Runs `scripts/deploy.sh`, the single deploy path: preflight (main == origin/main, clean trees, both offline suites, pin = pyproject = PyPI = lock), version bump, build/upload, PyPI wait, backend pin + lock, Modal deploy, `/api/version` smoke test, and local commits with no push |
 | `/test [file] [-k pattern]` | Runs pytest suite; accepts an optional target file or `-k` filter |
 | `/prospectai-analytics` | Fetches live usage stats from Modal (`/api/analytics`): runs by sector, risk profile, and action-type breakdown |
 | `/prospectai-longbuy-analysis` | Fetches all LONG-BUY entries from the Modal Dict, computes ROI vs live yfinance prices, and saves a colour-coded Excel workbook to the repo root |
@@ -222,9 +222,12 @@ The full product spans three repos. Changes to this package's public API or `run
 | `../prospectai-backend` | Modal/FastAPI service that runs the pipeline | Imports `ProspectAIFlow`, `Config`; streams SSE to the frontend; **pins a specific `prospectai` version** |
 | `../prospectai-web` | Vanilla-JS SPA deployed on Cloudflare Pages | Consumes SSE events from the backend; renders agent progress + final report |
 
-> **Version coupling:** the backend installs the package via `pip_install("prospectai==X.Y.Z")`.
-> After merging breaking changes here, bump `VERSION.md` / `pyproject.toml`, publish to PyPI, then
-> redeploy the Modal backend so it picks up the new version.
+> **Version coupling:** the backend pins `prospectai` only in `prospectai-backend/requirements-serve.txt`,
+> compiled into `requirements-serve.lock`, which the Modal image installs. Releases go through
+> `scripts/deploy.sh`, and only from `main` == `origin/main` in both repos. After a release, the operator
+> publishes `main` in both repos (D-25, D-27). A raw `modal deploy` bypasses the checks.
+> `/api/version`'s `backend_sha` names the backend commit the image was built from, which is the parent of
+> that release's `chore: pin` commit, because deploy.sh commits the pin only after the smoke test passes.
 
 ### Adding a New Agent
 

@@ -192,6 +192,22 @@ require_clean_trees() {
 if [[ "$ALLOW_OFF_MAIN" != true ]]; then require_main_up_to_date; fi
 if [[ "$ALLOW_DIRTY" != true ]]; then require_clean_trees; fi
 
+# Credential presence is tested only; neither the file nor the variable is ever
+# printed, and shell tracing is never enabled.
+require_release_tools() {
+  command -v modal >/dev/null 2>&1 || die "modal CLI not found — uv tool install modal && modal token set"
+  if [[ "$SKIP_PYPI" != true ]]; then
+    uv tool run twine --version >/dev/null 2>&1 || die "twine not available via 'uv tool run twine' — check uv and network"
+    if [[ ! -f "$HOME/.pypirc" && -z "${TWINE_PASSWORD:-}" ]]; then
+      die "PyPI credentials not configured (~/.pypirc or TWINE_PASSWORD)"
+    fi
+  fi
+}
+if [[ "$PREFLIGHT_ONLY" != true ]]; then
+  command -v uv >/dev/null 2>&1 || die "uv not found — install from https://docs.astral.sh/uv/"
+  require_release_tools
+fi
+
 # ── Resolve version ──────────────────────────────────────────────────────────
 # python3 extracts the version — avoids macOS sed/grep parsing edge cases
 CURRENT_VERSION=$("$PYTHON" -c "
@@ -265,4 +281,169 @@ if [[ "$PREFLIGHT_ONLY" == true ]]; then
   exit 0
 fi
 
-die "release path not implemented yet"
+# ── Release path ─────────────────────────────────────────────────────────────
+# Each step dies with a clear message. Until the smoke test passes, no commit is
+# made, so a failure after the upload is recovered with `--skip-pypi`.
+
+# Rewrite exactly one line of a file with a regex; exit 1 unless exactly one
+# line matched, so a rewrite can never be a silent no-op.
+rewrite_one_line() {
+  "$PYTHON" - "$@" <<'PYEOF'
+import re, sys
+path, pattern, replacement = sys.argv[1], sys.argv[2], sys.argv[3]
+content = open(path).read()
+new, n = re.subn(pattern, lambda m: replacement, content, flags=re.MULTILINE)
+if n != 1:
+    sys.exit(f"ERROR: expected exactly one line matching {pattern!r} in {path}, found {n}")
+open(path, "w").write(new)
+PYEOF
+}
+
+update_readme() {
+  "$PYTHON" - "$README" "$NEW_VERSION" "$CURRENT_VERSION" "$REPO_ROOT" <<'PYEOF'
+import re, subprocess, sys
+
+readme_path  = sys.argv[1]
+new_version  = sys.argv[2]
+prev_version = sys.argv[3]
+repo_root    = sys.argv[4]
+
+# ── Collect commits made since the previous version bump ─────────────────────
+log_lines = subprocess.run(
+    ["git", "-C", repo_root, "log", "--oneline"],
+    capture_output=True, text=True, check=True
+).stdout.strip().splitlines()
+
+# Find the line that bumped pyproject.toml to prev_version
+bump_idx = next(
+    (i for i, l in enumerate(log_lines) if prev_version in l),
+    None
+)
+# Everything before that index = new work going into new_version
+new_commits = log_lines[:bump_idx] if bump_idx else log_lines[:10]
+
+# Filter out pure meta-commits; strip conventional-commit prefixes
+SKIP = re.compile(r'bump version|chore:|Co-Authored|^Merge ', re.IGNORECASE)
+PREFIX = re.compile(r'^(feat|fix|refactor|chore|docs|test|style|perf|build):\s*', re.IGNORECASE)
+bullets = []
+title_candidate = None
+for line in new_commits:
+    msg = line.split(" ", 1)[1] if " " in line else line
+    if SKIP.search(msg):
+        continue
+    clean = PREFIX.sub("", msg).strip()
+    if title_candidate is None:
+        title_candidate = clean
+    bullets.append(f"- {clean}")
+
+if not bullets:
+    bullets = ["- Maintenance and stability improvements"]
+title = (title_candidate or "Maintenance release")[:60]
+new_entry = f"### v{new_version} — {title}\n" + "\n".join(bullets)
+
+# ── Rewrite README ────────────────────────────────────────────────────────────
+content = open(readme_path).read()
+
+# Update version badge
+content = content.replace(
+    f"**Current release: v{prev_version}**",
+    f"**Current release: v{new_version}**",
+)
+
+# Find the Release Notes section (between "## Release Notes\n\n" and the next "## ")
+rn = re.search(r'(## Release Notes\n\n)(.*?)(\n## )', content, re.DOTALL)
+if rn:
+    body = rn.group(2).rstrip()
+    existing = [e.strip() for e in re.split(r'(?=### v)', body) if e.strip()]
+    # New entry + 4 existing = 5 total
+    kept = "\n\n".join([new_entry] + existing[:4])
+    content = (
+        content[:rn.start()]
+        + rn.group(1) + kept + "\n"
+        + rn.group(3)
+        + content[rn.end():]
+    )
+else:
+    print("WARNING: '## Release Notes' section not found — skipping notes update",
+          file=sys.stderr)
+
+open(readme_path, "w").write(content)
+print(f"    README.md updated — v{new_version} release notes prepended, last 5 kept")
+PYEOF
+}
+
+if [[ "$SKIP_PYPI" != true ]]; then
+  log "Bumping pyproject.toml to $NEW_VERSION"
+  rewrite_one_line "$PYPROJECT" "^version = \"$CURRENT_VERSION\"\$" "version = \"$NEW_VERSION\""
+  [[ -f "$README" ]] && update_readme
+
+  log "Building wheel + sdist"
+  rm -rf "$DIST_DIR"
+  (cd "$REPO_ROOT" && uv build --out-dir "$DIST_DIR")
+  uv tool run twine check "$DIST_DIR"/*
+
+  log "Uploading to PyPI"
+  uv tool run twine upload "$DIST_DIR"/*
+  UPLOADED=1
+  echo "    Uploaded prospectai==$NEW_VERSION to PyPI"
+
+  log "Waiting for PyPI to serve $NEW_VERSION"
+  "${CHECK_PIN[@]}" --wait-pypi "$NEW_VERSION" --timeout 600 \
+    || die "PyPI did not show prospectai $NEW_VERSION within 600 s"
+else
+  log "Skipping PyPI upload (--skip-pypi): deploying published $NEW_VERSION"
+  UPLOADED=1
+fi
+
+log "Rewriting backend pin to prospectai==$NEW_VERSION"
+rewrite_one_line "$BACKEND_ROOT/requirements-serve.txt" '^prospectai==[0-9]+\.[0-9]+\.[0-9]+$' "prospectai==$NEW_VERSION"
+
+log "Recompiling backend lock (lock.sh --refresh-package prospectai)"
+lock_ok=false
+for attempt in 1 2 3 4 5; do
+  if bash "$BACKEND_ROOT/scripts/lock.sh" --refresh-package prospectai --quiet; then
+    lock_ok=true
+    break
+  fi
+  echo "    lock compile attempt $attempt/5 failed — the simple index can lag the JSON API" >&2
+  if [[ $attempt -lt 5 ]]; then sleep 30; fi
+done
+[[ "$lock_ok" == true ]] || die "lock compile failed after 5 attempts"
+
+log "Post-bump pin check"
+"${CHECK_PIN[@]}" --pyproject "$PYPROJECT" || die "pin check failed after the bump"
+
+# BACKEND_SHA names the backend source commit the image is built from. The pin
+# and lock edits are this script's own and are committed after the smoke test,
+# so they are excluded from the dirty test (D-25).
+BACKEND_SHA=$(git -C "$BACKEND_ROOT" rev-parse --short HEAD)
+if [[ -n "$(git -C "$BACKEND_ROOT" status --porcelain -- . ':!requirements-serve.txt' ':!requirements-serve.lock')" ]]; then
+  BACKEND_SHA="$BACKEND_SHA-dirty"
+fi
+DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+export BACKEND_SHA DEPLOYED_AT
+
+log "Deploying to Modal (backend $BACKEND_SHA)"
+(cd "$BACKEND_ROOT" && modal deploy serve.py)
+
+log "Smoke test: $BACKEND_URL/api/version"
+"${CHECK_PIN[@]}" --deployed-url "$BACKEND_URL" --expect-sha "$BACKEND_SHA" --timeout 300 \
+  || die "SMOKE FAILED: deployed /api/version does not report prospectai $NEW_VERSION / backend_sha $BACKEND_SHA — no commits made"
+
+# ── Commits (D-25): only after a passing smoke test; never pushes ────────────
+log "Creating local release commits"
+if ! git -C "$REPO_ROOT" diff --quiet HEAD -- pyproject.toml README.md; then
+  git -C "$REPO_ROOT" add pyproject.toml README.md
+  git -C "$REPO_ROOT" commit -m "chore: release prospectai v$NEW_VERSION" \
+    -m "Published to PyPI; deployed to Modal at $DEPLOYED_AT (backend $BACKEND_SHA)."
+fi
+if ! git -C "$BACKEND_ROOT" diff --quiet HEAD -- requirements-serve.txt requirements-serve.lock; then
+  git -C "$BACKEND_ROOT" add requirements-serve.txt requirements-serve.lock
+  git -C "$BACKEND_ROOT" commit -m "chore: pin prospectai==$NEW_VERSION" \
+    -m "Deployed to Modal at $DEPLOYED_AT; /api/version smoke passed." \
+    -m "backend_sha $BACKEND_SHA in /api/version is this commit's parent: the image was built from that source plus the pin and lock change recorded here."
+fi
+UPLOADED=0
+
+echo ""
+echo "Done. prospectai==$NEW_VERSION is live and verified. Local commits created on main in ProspectAI and prospectai-backend — publish main in both repos when ready; the next deploy.sh run refuses until origin/main has them (D-27)."
