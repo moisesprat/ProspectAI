@@ -342,3 +342,17 @@ def test_normal_preflight_still_requires_pin_equals_pyproject(sandbox):
     proc = sb.run("--preflight-only")
     assert proc.returncode != 0, _out(proc)
     assert REFUSE_PIN in proc.stderr, _out(proc)
+
+
+# ── a flaky PyPI wait completes in one run (review WR-02) ────────────────────
+
+def test_transient_pypi_errors_during_wait_do_not_abort_release(sandbox):
+    sb = sandbox()
+    sb.set_knob("transient_after_upload", 3)
+
+    proc = sb.run()
+    assert proc.returncode == 0, _out(proc)
+    assert DONE in proc.stdout, _out(proc)
+    assert "PIN CHECK WAIT" in proc.stderr, _out(proc)
+    _release_commits_made(sb)
+    assert sb.events().count("twine upload 1.0.1") == 1
