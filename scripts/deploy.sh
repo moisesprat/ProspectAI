@@ -22,7 +22,10 @@
 #   ./scripts/deploy.sh                  # auto-bump patch (e.g. 1.5.7 -> 1.5.8)
 #   ./scripts/deploy.sh 1.6.0            # explicit version
 #   ./scripts/deploy.sh --skip-pypi      # recover: deploy the version already in
-#                                        # pyproject.toml / on PyPI, no bump
+#                                        # pyproject.toml / on PyPI, no bump. The
+#                                        # preflight requires only that version
+#                                        # to be on PyPI; pin, lock and PyPI are
+#                                        # re-checked to agree before deploying
 #   ./scripts/deploy.sh --preflight-only # run every gate, change nothing
 #   ./scripts/deploy.sh --preflight-only --allow-dirty      # skip clean-tree gate
 #   ./scripts/deploy.sh --preflight-only --allow-off-main   # skip branch gate
@@ -84,7 +87,11 @@ Usage: scripts/deploy.sh [X.Y.Z] [--skip-pypi] [--preflight-only]
 
   X.Y.Z             explicit release version (default: auto-bump the patch)
   --skip-pypi       deploy the version already in pyproject.toml / on PyPI
-                    (recovery after a failed post-upload step); no bump
+                    (recovery after a failed post-upload step); no bump.
+                    The preflight requires only that the pyproject version is
+                    on PyPI; the pin and lock are then rewritten idempotently
+                    and pin = pyproject = PyPI = lock is re-checked before
+                    deploying
   --preflight-only  run every gate and exit; changes nothing
   --allow-dirty     skip the clean-tree gate (only valid with --preflight-only)
   --allow-off-main  skip the main == origin/main gate (only valid with
@@ -291,16 +298,32 @@ run_offline_suites() {
 build_preflight_venvs
 run_offline_suites
 
-log "Pin preflight (pin = pyproject = PyPI = lock)"
-"${CHECK_PIN[@]}" --pyproject "$PYPROJECT" || die "REFUSING: pin preflight failed"
-if [[ "$SKIP_PYPI" != true ]]; then
+# A normal release requires pin = pyproject = PyPI = lock before the upload
+# (D-11). A --skip-pypi recovery runs after an interrupted release, when the pin
+# and lock may still be at the previous version because they are rewritten only
+# after the upload, so its preflight requires only that the pyproject version is
+# on PyPI (D-28, review CR-01). The full check then runs at "Post-bump pin
+# check", after the idempotent pin rewrite and lock recompile and before
+# `modal deploy`. --wait-pypi absorbs a short PyPI lag; a version that is not on
+# PyPI within 60 s is refused.
+if [[ "$SKIP_PYPI" == true ]]; then
+  log "Recovery preflight (--skip-pypi): prospectai $NEW_VERSION must already be on PyPI"
+  "${CHECK_PIN[@]}" --wait-pypi "$NEW_VERSION" --timeout 60 \
+    || die "REFUSING: prospectai $NEW_VERSION (pyproject.toml) is not published on PyPI — --skip-pypi only deploys a version that is already on PyPI"
+else
+  log "Pin preflight (pin = pyproject = PyPI = lock)"
+  "${CHECK_PIN[@]}" --pyproject "$PYPROJECT" || die "REFUSING: pin preflight failed"
   "${CHECK_PIN[@]}" --unpublished "$NEW_VERSION" || die "REFUSING: pin preflight failed"
   log "Release notes preflight (README '### Unreleased — <title>')"
   check_release_notes || die "REFUSING: write the user-facing release notes first"
 fi
 
 if [[ "$PREFLIGHT_ONLY" == true ]]; then
-  msg="PREFLIGHT OK: prospectai $CURRENT_VERSION (pin = pyproject = PyPI = lock); next release would be $NEW_VERSION; both offline suites green"
+  if [[ "$SKIP_PYPI" == true ]]; then
+    msg="PREFLIGHT OK (--skip-pypi): prospectai $NEW_VERSION (pyproject.toml) is on PyPI; the recovery rewrites the pin, recompiles the lock and requires pin = pyproject = PyPI = lock before deploying; both offline suites green"
+  else
+    msg="PREFLIGHT OK: prospectai $CURRENT_VERSION (pin = pyproject = PyPI = lock); next release would be $NEW_VERSION; both offline suites green"
+  fi
   if [[ "$ALLOW_OFF_MAIN" == true ]]; then msg+="; branch gate SKIPPED (--allow-off-main)"; fi
   echo "$msg"
   exit 0
