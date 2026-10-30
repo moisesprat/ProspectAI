@@ -419,7 +419,7 @@ pre_upload_backend_gate() {
   fi
 
   log "Gate: prospectai-backend offline suite against prospectai $NEW_VERSION"
-  (cd "$BACKEND_ROOT" && CREWAI_TRACING_ENABLED=false "$wg/venv/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) || return 1
+  (cd "$BACKEND_ROOT" && CREWAI_TRACING_ENABLED=false PROSPECTAI_REQ_FILE="$wg/requirements-serve.txt" "$wg/venv/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) || return 1
 }
 
 if [[ "$SKIP_PYPI" != true ]]; then
