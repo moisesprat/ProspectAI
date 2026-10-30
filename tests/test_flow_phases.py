@@ -1,4 +1,5 @@
 """Unit tests for individual ProspectAIFlow phase methods (F-08)."""
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -489,3 +490,63 @@ class TestToolCallGuard:
         with pytest.raises(MissingToolCallError) as info:
             flow.run_analysis({"sector": "Technology"})
         assert info.value.partial_metrics["partial"] is True
+
+
+# ─── Flow-owned phases keep the SSE step contract (plan 02-13, D-16) ──────────
+
+class TestFlowOwnedStepContract:
+    """agent_start first, tool steps with tool/tool_input/log, one task_complete."""
+
+    @staticmethod
+    def _wire(flow, *results):
+        from tests.test_llm_role_audit import market_output, stub_tools, wire_tools
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        flow.state.market_output = market_output()
+        wire_tools(flow, stub_tools())
+        flow._factory.build_task.return_value = _make_task()
+        return events
+
+    @staticmethod
+    def _run(flow, *results):
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+            asyncio.run(flow.fundamental_analysis())
+
+    def test_fundamental_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import narrative_entry, narrative_payload, narrative_result
+
+        events = self._wire(flow)
+        self._run(flow, narrative_result(narrative_payload(narrative_entry("AAA"))))
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 2
+        steps = [e for e in events if e[0] == "step"]
+        assert [s[2].tool for s in steps] == ["fetch_fundamental_data", "grade_fundamental_data"]
+        for _kind, phase_index, step in steps:
+            assert phase_index == 2
+            assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+            assert isinstance(step.log, str) and step.log
+        done = events[-1][1]
+        assert done["task_index"] == 2
+        published = json.dumps(flow.state.fundamental_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
+    def test_retry_does_not_duplicate_events(self, flow):
+        from tests.test_llm_role_audit import narrative_entry, narrative_payload, narrative_result
+
+        events = self._wire(flow)
+        self._run(
+            flow,
+            narrative_result(narrative_payload(narrative_entry("BBB"))),
+            narrative_result(narrative_payload(narrative_entry("AAA"))),
+        )
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds.count("agent_start") == 1
+        assert kinds.count("task_complete") == 1
+        assert kinds.count("step") == 2
+        assert kinds[0] == "agent_start" and kinds[-1] == "task_complete"
