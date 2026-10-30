@@ -14,10 +14,18 @@ from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
     FundamentalAnalysisOutput,
+    FundamentalNarrativeOutput,
     InvestorStrategicOutput,
     CriticOutput,
 )
 from utils.execution_tracker import ExecutionTracker
+from utils.flow_tools import call_tool
+from utils.fundamental_records import (
+    build_fundamental_records,
+    merge_fundamental,
+    narrative_context,
+    require_narrative_coverage,
+)
 from utils.phase_runner import extract_model, run_phase
 from utils.recommendation_validator import validate_portfolio
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
@@ -177,6 +185,24 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "output_len": len(raw),
             })
 
+    def _emit_progress_model(self, task_index: int, model: BaseModel, result: Optional[CrewOutput]) -> None:
+        """task_complete for a phase whose published output the Flow built itself.
+
+        Same payload keys as _emit_progress, but the preview is the published
+        model rather than the LLM's raw answer. ``result`` may be None when the
+        phase made no LLM call.
+        """
+        if self._progress_callback:
+            raw = (result.raw if result is not None else "") or ""
+            self._progress_callback({
+                "event": "task_complete",
+                "task_index": task_index,
+                "agent": _AGENT_NAMES[task_index] if task_index < len(_AGENT_NAMES) else "unknown",
+                "preview": json.dumps(model.model_dump(mode="json"))[:500],
+                "tokens_est": max(1, len(raw) // 4),
+                "output_len": len(raw),
+            })
+
     def _make_crew(self, task, phase_index: int) -> Crew:
         wrapped_step_cb: Optional[Callable] = None
         if self._step_callback:
@@ -238,6 +264,13 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         except Exception:
             return None
 
+    def _phase_llm(self, phase: str) -> Any:
+        """The phase agent's LLM, for phases that start the tracker before building a task."""
+        try:
+            return self._factory._phase_config[phase]["agent"].llm
+        except Exception:
+            return None
+
     def _fmt_ctx(self, label: str, content: str) -> str:
         return f"=== {label} ===\n{content}"
 
@@ -262,6 +295,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         build_args: tuple = (),
         build_kwargs: Optional[Dict[str, Any]] = None,
         validate: Optional[Callable[[_M], None]] = None,
+        start_tracker: bool = True,
     ) -> "tuple[CrewOutput, _M]":
         """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
 
@@ -269,6 +303,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         finish_phase once after the accepted attempt (tokens of failed attempts are
         not added, a known metrics gap). The tool-call guard runs per attempt, so a
         retry cannot pass on the tool calls of an earlier attempt.
+
+        ``start_tracker=False`` is for a phase that already started its tracker
+        phase because the Flow ran tools before the first attempt (CORR-10).
         """
         tracker = self._tracker
         box: Dict[str, Any] = {}
@@ -280,7 +317,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             task = self._factory.build_task(
                 phase, self.state.sector, self.state.today, *build_args, **kwargs,
             )
-            if tracker and "task" not in box:
+            if tracker and start_tracker and "task" not in box:
                 tracker.start_phase(phase, llm=self._task_llm(task))
             box["task"] = task
             return task
@@ -588,14 +625,63 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     @listen(market_analysis)
     async def fundamental_analysis(self):
+        """Flow-owned phase (CORR-10, D-06): the Flow fetches, grades and builds every
+        record; the LLM writes only strengths, risks, thesis and summary.
+
+        The tools run in this method (off the loop, with synthetic SSE steps), so
+        the per-attempt tool-call guard has nothing to check: the agent has no
+        tools, and a missing or failed call becomes a failed record, never a
+        model-invented number.
+        """
         self._check_error()
         self._emit_start(2)
-        ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        result, self.state.fundamental_output = await self._run_phase(
-            "fundamental_analysis", 2, FundamentalAnalysisOutput, build_args=(ctx,),
+        phase = "fundamental_analysis"
+        mo = self.state.market_output
+        tickers = list(dict.fromkeys(
+            c.ticker.strip().upper() for c in (mo.candidate_stocks if mo else []) if c.ticker.strip()
+        ))
+        if not tickers:
+            raise RuntimeError(f"{phase}: no candidate tickers from market_analysis")
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        fetch_json = await call_tool(
+            self._factory.flow_tool(phase, "fetch_fundamental_data"),
+            phase_index=2, step_callback=self._step_callback,
+            thought=f"Fetching fundamentals for {len(tickers)} tickers",
+            tickers_json=json.dumps(tickers),
         )
-        self._emit_progress(2, result)
-        return result.raw or ""
+        grades_json = await call_tool(
+            self._factory.flow_tool(phase, "grade_fundamental_data"),
+            phase_index=2, step_callback=self._step_callback,
+            thought="Grading fundamentals",
+            fundamentals_batch_json=fetch_json,
+        )
+        records = build_fundamental_records(fetch_json, grades_json)
+        requested = {t: records[t] for t in tickers if t in records}
+
+        result: Optional[CrewOutput] = None
+        narrative: Optional[FundamentalNarrativeOutput] = None
+        if any(r["data_status"] != "failed" for r in requested.values()):
+            ctx = "\n\n".join([
+                self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis()),
+                self._fmt_ctx("Fundamental Data (computed by the pipeline)", narrative_context(tickers, requested)),
+            ])
+            result, narrative = await self._run_phase(
+                phase, 2, FundamentalNarrativeOutput, build_args=(ctx,),
+                validate=lambda n: require_narrative_coverage(n, requested),
+                start_tracker=False,
+            )
+        else:
+            # Nothing to write about: no LLM call, fixed text, every ticker UNKNOWN.
+            logger.warning("%s: no fundamental data for any candidate; skipping the narrative call", phase)
+            if tracker:
+                tracker.finish_phase(phase, None, "none")
+
+        self.state.fundamental_output = merge_fundamental(self.state.sector, tickers, records, narrative)
+        self._emit_progress_model(2, self.state.fundamental_output, result)
+        return (result.raw if result is not None else "") or ""
 
     @listen(and_(technical_analysis, fundamental_analysis))
     async def draft_strategy(self):

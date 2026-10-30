@@ -21,7 +21,7 @@ from utils.tool_timing import instrument_tool
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
-    FundamentalAnalysisOutput,
+    FundamentalNarrativeOutput,
     InvestorStrategicOutput,
     CriticOutput,
 )
@@ -64,43 +64,64 @@ class TaskFactory:
         # Same instance is shared with the phase config below (now instrumented).
         self.search_tool = instrument_tool(PatientSerperDevTool(), "market_analysis", self._tracker_getter)
 
-        # Phase config built once; tools are shared instances
+        # Phase config built once; tools are shared instances.
+        #   agent_tools: handed to the crewai Task, so the LLM calls them.
+        #   flow_tools:  name -> instrumented instance the Flow calls itself through
+        #                utils.flow_tools.call_tool (CORR-10). The LLM never sees them.
+        # `schema` is what the LLM answers; for fundamental_analysis that is the
+        # narrative model, and the Flow merges it into FundamentalAnalysisOutput.
         self._phase_config = {
             "market_analysis": {
-                "agent":  self.market_analyst.get_agent(),
-                "tools":  self._timed("market_analysis", [RedditSentimentTool(), self.search_tool]),
-                "schema": MarketAnalysisOutput,
+                "agent":       self.market_analyst.get_agent(),
+                "agent_tools": self._timed("market_analysis", [RedditSentimentTool(), self.search_tool]),
+                "flow_tools":  {},
+                "schema":      MarketAnalysisOutput,
             },
             "technical_analysis": {
-                "agent":  self.technical_analyst.get_agent(),
-                "tools":  self._timed("technical_analysis", [TechnicalAnalysisTool()]),
-                "schema": TechnicalAnalysisOutput,
+                "agent":       self.technical_analyst.get_agent(),
+                "agent_tools": self._timed("technical_analysis", [TechnicalAnalysisTool()]),
+                "flow_tools":  {},
+                "schema":      TechnicalAnalysisOutput,
             },
             "fundamental_analysis": {
-                "agent":  self.fundamental_analyst.get_agent(),
-                "tools":  self._timed("fundamental_analysis", [FundamentalDataTool(), FundamentalGraderTool()]),
-                "schema": FundamentalAnalysisOutput,
+                "agent":       self.fundamental_analyst.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name(
+                    "fundamental_analysis", [FundamentalDataTool(), FundamentalGraderTool()],
+                ),
+                "schema":      FundamentalNarrativeOutput,
             },
             "draft_strategy": {
-                "agent":  self.investor_strategist.get_agent(),
-                "tools":  self._timed("draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()]),
-                "schema": InvestorStrategicOutput,
+                "agent":       self.investor_strategist.get_agent(),
+                "agent_tools": self._timed("draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()]),
+                "flow_tools":  {},
+                "schema":      InvestorStrategicOutput,
             },
             "critique_review": {
-                "agent":  self.critic.get_agent(),
-                "tools":  [],
-                "schema": CriticOutput,
+                "agent":       self.critic.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  {},
+                "schema":      CriticOutput,
             },
             "final_strategy": {
-                "agent":  self.investor_strategist.get_agent(),
-                "tools":  [],
-                "schema": InvestorStrategicOutput,
+                "agent":       self.investor_strategist.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  {},
+                "schema":      InvestorStrategicOutput,
             },
         }
 
     def _timed(self, phase: str, tools: list) -> list:
         """Instrument every tool in `phase` once (idempotent) with its phase label."""
         return [instrument_tool(t, phase, self._tracker_getter) for t in tools]
+
+    def _timed_by_name(self, phase: str, tools: list) -> dict:
+        """Like _timed, keyed by tool name (the tools the Flow calls itself)."""
+        return {t.name: t for t in self._timed(phase, tools)}
+
+    def flow_tool(self, phase: str, name: str):
+        """The instrumented tool instance the Flow calls in `phase` (KeyError if unknown)."""
+        return self._phase_config[phase]["flow_tools"][name]
 
     def build_task(
         self,
@@ -128,7 +149,7 @@ class TaskFactory:
         return Task(
             description=description,
             agent=pc["agent"],
-            tools=pc["tools"],
+            tools=pc["agent_tools"],
             expected_output=cfg["expected_output"],
             output_pydantic=pc["schema"],
         )

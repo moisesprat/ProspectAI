@@ -217,13 +217,20 @@ class TestTechnicalAnalysisPhase:
 class TestFundamentalAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_fundamental_output(self, flow):
-        pydantic_out = MagicMock(spec=FundamentalAnalysisOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            market_output, narrative_entry, narrative_payload, narrative_result,
+            stub_tools, wire_tools,
+        )
+        flow.state.market_output = market_output()
+        wire_tools(flow, stub_tools())
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(narrative_payload(narrative_entry("AAA")))
+            )
             await flow.fundamental_analysis()
-        assert flow.state.fundamental_output is pydantic_out
+        assert isinstance(flow.state.fundamental_output, FundamentalAnalysisOutput)
+        assert [a.ticker for a in flow.state.fundamental_output.fundamental_analysis] == ["AAA", "BBB"]
 
 
 class TestDraftStrategyPhase:
@@ -438,7 +445,6 @@ class TestToolCallGuard:
         "phase,schema",
         [
             ("technical_analysis", TechnicalAnalysisOutput),
-            ("fundamental_analysis", FundamentalAnalysisOutput),
             ("draft_strategy", InvestorStrategicOutput),
         ],
     )

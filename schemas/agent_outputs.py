@@ -165,6 +165,23 @@ class FundamentalAnalysisOutput(BaseModel):
     summary: str = Field(..., min_length=100)
 
 
+# What the Fundamental Analyst LLM is allowed to write (CORR-10, D-06, D-15).
+# The Flow fetches and grades, builds every number, label and data_status, and
+# merges these four narrative fields into the published FundamentalAnalysisOutput
+# (utils/fundamental_records.py). This model has no number or grade field, and
+# pydantic ignores any extra key an answer adds, so the LLM cannot set one.
+class FundamentalNarrative(BaseModel):
+    ticker: str
+    key_strengths: List[str] = Field(..., min_length=1)
+    key_risks: List[str] = Field(..., min_length=1)
+    investment_thesis: str = Field(..., min_length=10)
+
+
+class FundamentalNarrativeOutput(BaseModel):
+    analyses: List[FundamentalNarrative] = Field(..., min_length=1)
+    summary: str = Field(..., min_length=100)
+
+
 # ---------------------------------------------------------------------------
 # INVESTOR STRATEGIC OUTPUT (used for final report validation)
 # ---------------------------------------------------------------------------

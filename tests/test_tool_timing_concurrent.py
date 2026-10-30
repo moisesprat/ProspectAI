@@ -109,12 +109,12 @@ class TestTaskFactoryWiring:
         factory = TaskFactory(tracker_getter=lambda: tracker)
         seen = 0
         for phase, cfg in factory._phase_config.items():
-            for tool in cfg["tools"]:
+            for tool in [*cfg["agent_tools"], *cfg["flow_tools"].values()]:
                 seen += 1
                 assert tool._prospectai_timed_phase == phase
                 assert instrument_tool(tool, phase, lambda: tracker) is tool
         assert seen == 7
-        assert factory.search_tool in factory._phase_config["market_analysis"]["tools"]
+        assert factory.search_tool in factory._phase_config["market_analysis"]["agent_tools"]
 
     def test_wrapping_twice_records_one_call_per_invocation(self):
         tracker = ExecutionTracker()
@@ -131,5 +131,5 @@ class TestTaskFactoryWiring:
         from prospect_ai_crew import TaskFactory
 
         factory = TaskFactory()
-        tool = factory._phase_config["technical_analysis"]["tools"][0]
+        tool = factory._phase_config["technical_analysis"]["agent_tools"][0]
         assert tool._prospectai_timed_phase == "technical_analysis"

@@ -346,9 +346,16 @@ def test_flow_retry_passes_feedback_to_build_task(flow):
 
 from schemas.agent_outputs import (  # noqa: E402
     CriticOutput,
-    FundamentalAnalysisOutput,
+    FundamentalNarrativeOutput,
     InvestorStrategicOutput,
     MarketAnalysisOutput,
+)
+from tests.test_llm_role_audit import (  # noqa: E402
+    market_output,
+    narrative_entry,
+    narrative_payload,
+    stub_tools,
+    wire_tools,
 )
 from tests.test_schemas import _portfolio  # noqa: E402
 from utils.execution_tracker import ExecutionTracker  # noqa: E402
@@ -356,7 +363,7 @@ from utils.execution_tracker import ExecutionTracker  # noqa: E402
 _PHASE_METHODS = [
     ("market_analysis", MarketAnalysisOutput),
     ("technical_analysis", TechnicalAnalysisOutput),
-    ("fundamental_analysis", FundamentalAnalysisOutput),
+    ("fundamental_analysis", FundamentalNarrativeOutput),
     ("draft_strategy", InvestorStrategicOutput),
     ("critique_review", CriticOutput),
     ("final_strategy", InvestorStrategicOutput),
@@ -365,7 +372,11 @@ _PHASE_METHODS = [
 
 def _stub_result(schema):
     """Crew result whose pydantic payload is a spec'd stand-in for ``schema``."""
-    model = MagicMock(spec=schema)
+    if schema is FundamentalNarrativeOutput:
+        # A real model: the Flow-owned fundamental phase checks narrative coverage.
+        model = FundamentalNarrativeOutput.model_validate(narrative_payload(narrative_entry("AAA")))
+    else:
+        model = MagicMock(spec=schema)
     if schema is MarketAnalysisOutput:
         model.candidate_stocks = []
     task_out = SimpleNamespace(pydantic=model, json_dict=None)
@@ -392,6 +403,9 @@ def tracked_flow(flow):
     flow._tracker = ExecutionTracker()
     flow._tracker.start()
     flow._factory.build_task.return_value = _task()
+    # The fundamental phase is Flow-owned (plan 02-13): it needs candidates and flow tools.
+    flow.state.market_output = market_output()
+    wire_tools(flow, stub_tools())
     stack = _patch_context(flow)
     yield flow
     for p in stack:
