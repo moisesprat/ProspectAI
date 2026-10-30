@@ -242,75 +242,75 @@ class TestCompositeScoreFormula:
 
     def test_sentiment_max_at_positive_one(self):
         scores = _compute({"ticker": "A", "average_sentiment": 1.0,
-                           "momentum_score": 0, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
+                           "momentum_score": 0, "quality": "Low",
+                           "growth": "Declining"})
         assert scores[0]["sentiment_component"] == 30.0
 
     def test_sentiment_neutral_gives_15(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
-                           "momentum_score": 0, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
+                           "momentum_score": 0, "quality": "Low",
+                           "growth": "Declining"})
         assert scores[0]["sentiment_component"] == pytest.approx(15.0)
 
     def test_sentiment_negative_one_gives_zero(self):
         scores = _compute({"ticker": "A", "average_sentiment": -1.0,
-                           "momentum_score": 0, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
+                           "momentum_score": 0, "quality": "Low",
+                           "growth": "Declining"})
         assert scores[0]["sentiment_component"] == pytest.approx(0.0)
 
     def test_sentiment_scales_linearly(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.2,
-                           "momentum_score": 0, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
+                           "momentum_score": 0, "quality": "Low",
+                           "growth": "Declining"})
         # ((0.2 + 1) / 2) * 30 = 18.0
         assert scores[0]["sentiment_component"] == pytest.approx(18.0)
 
     def test_technical_component_max_40(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
-                           "momentum_score": 10, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
+                           "momentum_score": 10, "quality": "Low",
+                           "growth": "Declining"})
         assert scores[0]["technical_component"] == 40.0
 
-    @pytest.mark.parametrize("health,growth,expected", [
-        ("STRONG",   "HIGH",      30),
-        ("STRONG",   "MODERATE",  27),
-        ("ADEQUATE", "HIGH",      20),
-        ("ADEQUATE", "LOW",       13),
-        ("WEAK",     "MODERATE",  12),
-        ("WEAK",     "DECLINING",  6),  # minimum: 5 + 1
+    @pytest.mark.parametrize("quality,growth,expected", [
+        ("High",   "High Growth",      30),
+        ("High",   "Moderate Growth",  27),
+        ("Medium", "High Growth",      20),
+        ("Medium", "Stable",       13),
+        ("Low",     "Moderate Growth",  12),
+        ("Low",     "Declining",  6),  # minimum: 5 + 1
     ])
-    def test_fundamental_component(self, health, growth, expected):
+    def test_fundamental_component(self, quality, growth, expected):
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
                            "momentum_score": 0,
-                           "financial_health": health,
-                           "growth_outlook": growth})
+                           "quality": quality,
+                           "growth": growth})
         assert scores[0]["fundamental_component"] == expected
 
     def test_composite_max_is_100(self):
         scores = _compute({"ticker": "A", "average_sentiment": 1.0,
-                           "momentum_score": 10, "financial_health": "STRONG",
-                           "growth_outlook": "HIGH"})
+                           "momentum_score": 10, "quality": "High",
+                           "growth": "High Growth"})
         assert scores[0]["composite_score"] == pytest.approx(100.0)
 
     def test_composite_min_above_zero(self):
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
-                           "momentum_score": 0, "financial_health": "WEAK",
-                           "growth_outlook": "DECLINING"})
-        assert scores[0]["composite_score"] >= 6  # WEAK(5) + DECLINING(1)
+                           "momentum_score": 0, "quality": "Low",
+                           "growth": "Declining"})
+        assert scores[0]["composite_score"] >= 6  # Low(5) + Declining(1)
 
     def test_distinct_inputs_produce_distinct_scores(self):
         scores = _compute(
             {"ticker": "A", "average_sentiment": 0.8, "momentum_score": 8,
-             "financial_health": "STRONG", "growth_outlook": "HIGH"},
+             "quality": "High", "growth": "High Growth"},
             {"ticker": "B", "average_sentiment": 0.3, "momentum_score": 5,
-             "financial_health": "ADEQUATE", "growth_outlook": "MODERATE"},
+             "quality": "Medium", "growth": "Moderate Growth"},
         )
         assert scores[0]["composite_score"] != scores[1]["composite_score"]
 
     def test_all_component_fields_present(self):
         scores = _compute({"ticker": "NVDA", "average_sentiment": 0.7,
-                           "momentum_score": 7.5, "financial_health": "STRONG",
-                           "growth_outlook": "HIGH"})
+                           "momentum_score": 7.5, "quality": "High",
+                           "growth": "High Growth"})
         for field in ("ticker", "sentiment_component", "technical_component",
                       "fundamental_component", "composite_score"):
             assert field in scores[0]
@@ -326,39 +326,81 @@ class TestCompositeScoreSentimentUnavailable:
 
     def test_null_sentiment_marks_sentiment_unavailable_and_drops_component(self):
         scores = _compute({"ticker": "A", "average_sentiment": None,
-                           "momentum_score": 8, "financial_health": "STRONG",
-                           "growth_outlook": "HIGH"})
+                           "momentum_score": 8, "quality": "High",
+                           "growth": "High Growth"})
         assert scores[0]["sentiment_unavailable"] is True
         assert scores[0]["sentiment_component"] is None
 
     def test_zero_sentiment_is_not_treated_as_unavailable(self):
         # 0.0 is a real measured neutral score, never a stand-in for "unavailable".
         scores = _compute({"ticker": "A", "average_sentiment": 0.0,
-                           "momentum_score": 8, "financial_health": "STRONG",
-                           "growth_outlook": "HIGH"})
+                           "momentum_score": 8, "quality": "High",
+                           "growth": "High Growth"})
         assert scores[0]["sentiment_unavailable"] is False
         assert scores[0]["sentiment_component"] == 15.0
 
     def test_null_sentiment_renormalizes_to_100_ceiling(self):
         # Max technical (40) + max fundamental (30) = 70, renormalized to 100.
         scores = _compute({"ticker": "A", "average_sentiment": None,
-                           "momentum_score": 10, "financial_health": "STRONG",
-                           "growth_outlook": "HIGH"})
+                           "momentum_score": 10, "quality": "High",
+                           "growth": "High Growth"})
         assert scores[0]["composite_score"] == pytest.approx(100.0)
 
     def test_null_sentiment_renormalization_preserves_relative_ranking(self):
         scores = _compute(
             {"ticker": "A", "average_sentiment": None, "momentum_score": 9,
-             "financial_health": "STRONG", "growth_outlook": "HIGH"},
+             "quality": "High", "growth": "High Growth"},
             {"ticker": "B", "average_sentiment": None, "momentum_score": 3,
-             "financial_health": "WEAK", "growth_outlook": "DECLINING"},
+             "quality": "Low", "growth": "Declining"},
         )
         assert scores[0]["composite_score"] > scores[1]["composite_score"]
 
     def test_null_sentiment_and_unknown_fundamentals_renormalizes_over_technical_only(self):
         scores = _compute({"ticker": "A", "average_sentiment": None,
-                           "momentum_score": 10, "financial_health": "UNKNOWN",
-                           "growth_outlook": "UNKNOWN"})
+                           "momentum_score": 10, "quality": "UNKNOWN",
+                           "growth": "UNKNOWN"})
         assert scores[0]["sentiment_unavailable"] is True
         assert scores[0]["fundamental_unknown"] is True
         assert scores[0]["composite_score"] == pytest.approx(100.0)
+
+
+class TestCompositeStrictInputs:
+    """Strict labels, no defaults for missing inputs (CORR-02 / CORR-11, D-11)."""
+
+    def _raw(self, *stocks) -> dict:
+        return json.loads(CompositeScoreTool()._run(json.dumps(list(stocks))))
+
+    def test_composite_rejects_legacy_labels(self):
+        out = self._raw({"ticker": "nvda", "average_sentiment": 0.0, "momentum_score": 5,
+                         "quality": "STRONG", "growth": "High Growth"})
+        assert "error" in out
+        assert "NVDA" in out["error"] and "STRONG" in out["error"]
+        out = self._raw({"ticker": "AMD", "average_sentiment": 0.0, "momentum_score": 5,
+                         "quality": "High", "growth": "HIGH"})
+        assert "error" in out and "AMD" in out["error"] and "HIGH" in out["error"]
+
+    def test_composite_rejects_lowercase_labels(self):
+        out = self._raw({"ticker": "A", "average_sentiment": 0.0, "momentum_score": 5,
+                         "quality": "high", "growth": "Stable"})
+        assert "error" in out and "high" in out["error"]
+
+    def test_composite_missing_keys_are_unknown(self):
+        scores = _compute({"ticker": "A", "average_sentiment": 0.0, "momentum_score": 5})
+        assert scores[0]["fundamental_component"] is None
+        assert scores[0]["fundamental_unknown"] is True
+
+    def test_composite_missing_sentiment_key_is_unavailable_not_zero(self):
+        scores = _compute({"ticker": "A", "momentum_score": 5,
+                           "quality": "High", "growth": "High Growth"})
+        assert scores[0]["sentiment_unavailable"] is True
+        assert scores[0]["sentiment_component"] is None
+
+    def test_composite_missing_momentum_is_an_error_naming_the_ticker(self):
+        out = self._raw({"ticker": "zzz", "average_sentiment": 0.0,
+                         "quality": "High", "growth": "High Growth"})
+        assert "error" in out and "ZZZ" in out["error"]
+
+    def test_composite_null_momentum_is_an_error(self):
+        out = self._raw({"ticker": "A", "average_sentiment": 0.0, "momentum_score": None,
+                         "quality": "High", "growth": "High Growth"})
+        assert "error" in out and "A" in out["error"]
