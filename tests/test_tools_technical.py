@@ -139,7 +139,7 @@ class TestTechnicalAnalysisSuccess:
 
     def test_risk_level_is_valid(self):
         interp = self._run_one("NVDA")["interpretation"]
-        assert interp["risk_level"] in ("LOW", "MEDIUM", "HIGH")
+        assert interp["risk_level"] in ("Low", "Medium", "High")
 
     def test_entry_zone_low_less_than_high(self):
         interp = self._run_one("NVDA")["interpretation"]

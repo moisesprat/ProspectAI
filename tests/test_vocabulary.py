@@ -15,6 +15,7 @@ from typing import get_args
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 import prospect_ai_flow
 from prospect_ai_flow import ProspectAIFlow
@@ -308,3 +309,26 @@ def test_prompt_enum_hints_match_schema():
     growth_hint = "|".join(sorted(_members(GrowthLabel), key=growth_order.index))
     assert f'"quality": "<{quality_hint}>"' in text
     assert f'"growth": "<{growth_hint}>"' in text
+
+
+# ── Technical risk_level (D-11) ──────────────────────────────────────────────
+
+def test_risk_level_labels_match_schema():
+    from utils import technical_interpretation_tool
+
+    src = inspect.getsource(technical_interpretation_tool)
+    emitted = set(re.findall(r'risk_level = "([^"]+)"', src))
+    schema = _members(MomentumAnalysis.model_fields["risk_level"].annotation)
+    assert emitted == schema == {"Low", "Medium", "High"}
+
+
+def test_risk_level_is_strict():
+    base = dict(
+        momentum_score=5.0, trend_strength="Neutral", key_signals=["x"],
+        support_resistance=SupportResistance(support=1.0, resistance=2.0),
+        comprehensive_analysis="c" * 60,
+    )
+    assert MomentumAnalysis(risk_level="High", **base).risk_level == "High"
+    for bad in ("HIGH", "high", "MEDIUM"):
+        with pytest.raises(ValidationError):
+            MomentumAnalysis(risk_level=bad, **base)
