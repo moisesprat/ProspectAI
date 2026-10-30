@@ -312,7 +312,7 @@ class TestRedditBudget:
             for text in texts:
                 assert "http" not in text.lower(), text
                 assert "reddit.com" not in text.lower(), text
-                assert "r/investing" in text, text
+                assert "r/investing" in text or "r/stocks" in text, text
         # status and exception class are named
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")

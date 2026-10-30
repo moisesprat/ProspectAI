@@ -18,6 +18,7 @@ timeout and raises ``requests.exceptions.Timeout``), and records every call's
 Reused by plan 02-16's loop-thread test.
 """
 
+import inspect
 from typing import Any, Callable, List, Tuple, Union
 
 import requests
@@ -56,10 +57,10 @@ class FakeClock:
         Build a ``requests.get`` replacement.
 
         ``response`` is one response object (returned every call), a list
-        (one entry per call, the last repeated), or a callable
-        ``(call_index, url) -> response``. An entry that is an Exception
-        instance is raised instead of returned. ``latency`` is the fake
-        seconds each call costs.
+        (one entry per call, the last repeated), or a plain function
+        ``(call_index, url) -> response`` (a Mock is a response, not a
+        function). An entry that is an Exception instance is raised instead of
+        returned. ``latency`` is the fake seconds each call costs.
         """
 
         def _get(url: str, params: Any = None, headers: Any = None, timeout: Any = None, **_: Any) -> Any:
@@ -72,7 +73,7 @@ class FakeClock:
                 raise requests.exceptions.Timeout("read timed out")
             self.now += latency
 
-            if callable(response):
+            if inspect.isfunction(response) or inspect.ismethod(response):
                 item = response(index, url)
             elif isinstance(response, list):
                 item = response[min(index, len(response) - 1)]
