@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.9.4**
+**Current release: v1.10.0**
 
 ### ⚠️ Important Disclaimer
 
@@ -310,7 +310,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Now powered by Claude Haiku 5.5
+### v1.10.0 — Now powered by Claude Haiku 5.5
 - Analyses now run on Claude Haiku 5.5, Anthropic's latest model.
 - If a data-gathering step finishes without actually fetching its data, the analysis now stops with a clear error instead of reporting figures the model made up.
 
@@ -342,13 +342,6 @@ twine upload dist/*
 - Add action totals summary section to analytics output
 - Add action breakdown by sector to analytics API and update command output
 - Implement reasoning-based action selection in Draft Strategist
-
-### v1.9.0 — enhance LONG-BUY trade setup logic to ensure stop_loss and
-- enhance LONG-BUY trade setup logic to ensure stop_loss and entry zones are anchored to current_price
-- harden PositionRecommendation schema: auto-correct above-zone trade_setup invariant violations before Pydantic validation
-- remove scaled_entry_setups from draft output in ProspectAIFlow
-- remove SCALED-ENTRY action and related logic from PositionRecommendation schema
-- implement reasoning-based action selection in Draft Strategist, removing SCALED-ENTRY and enhancing Critic validation
 
 ## Roadmap
 
