@@ -1,7 +1,11 @@
 """Unit tests for the Anthropic prompt-caching wrapper."""
+import json
+
 import pytest
+from pydantic import BaseModel
 
 from agents.caching_llm import AnthropicCachingCompletion, make_caching_llm
+from tests.test_llm_request_shape import install_capture
 
 
 def _long_text(chars: int) -> str:
@@ -82,3 +86,54 @@ def test_factory_returns_caching_class_for_anthropic():
 def test_factory_returns_vanilla_llm_for_ollama():
     llm = make_caching_llm(model="ollama/qwen3.5:9b", base_url="http://localhost:11434")
     assert not isinstance(llm, AnthropicCachingCompletion)
+
+
+# ─── Thinking-block responses (MODEL-01, D-03) ────────────────────────────────
+
+class _Answer(BaseModel):
+    ticker: str
+    note: str
+
+
+_ANSWER_JSON = json.dumps({"ticker": "AAA", "note": "ok"})
+_THINKING_FIRST = [
+    {"type": "thinking", "thinking": "", "signature": "s"},
+    {"type": "text", "text": _ANSWER_JSON},
+]
+
+
+@pytest.fixture
+def thinking_low():
+    return make_caching_llm(
+        model="anthropic/claude-haiku-5-5", api_key="test-key", thinking="low"
+    )
+
+
+@pytest.mark.asyncio
+async def test_thinking_first_response_parses(thinking_low):
+    transport = install_capture(thinking_low, _THINKING_FIRST)
+    result = await thinking_low.acall(
+        [{"role": "user", "content": "hi"}], response_model=_Answer
+    )
+    assert isinstance(result, _Answer)
+    assert result.ticker == "AAA"
+    assert transport.requests[0]["body"]["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.asyncio
+async def test_thinking_first_plain_text(thinking_low):
+    install_capture(thinking_low, _THINKING_FIRST)
+    result = await thinking_low.acall([{"role": "user", "content": "hi"}])
+    assert result == _ANSWER_JSON
+
+
+@pytest.mark.asyncio
+async def test_cache_markers_with_thinking(thinking_low):
+    transport = install_capture(thinking_low, _THINKING_FIRST)
+    await thinking_low.acall(
+        [{"role": "user", "content": _long_text(10000)}], response_model=_Answer
+    )
+    body = transport.requests[0]["body"]
+    assert body["thinking"] == {"type": "adaptive"}
+    block = body["messages"][0]["content"][0]
+    assert block["cache_control"] == {"type": "ephemeral"}
