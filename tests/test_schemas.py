@@ -216,7 +216,7 @@ def test_fundamental_analysis_output_valid():
                 valuation_metrics=ValuationMetrics(pe_ratio=28.5, pb_ratio=45.2),
                 fundamental_rating=FundamentalRating(
                     valuation="EXPENSIVE", quality="High",
-                    growth="Moderate Growth", overall="Buy"
+                    growth="Moderate Growth",
                 ),
                 key_strengths=["Industry-leading margins"],
                 key_risks=["China revenue concentration"],
@@ -232,6 +232,39 @@ def test_fundamental_analysis_output_valid():
         ),
     )
     assert output.fundamental_analysis[0].ticker == "AAPL"
+
+
+def test_fundamental_rating_fields_are_exactly_three():
+    assert set(FundamentalRating.model_fields) == {"valuation", "quality", "growth"}
+
+
+def test_old_payload_with_overall_loads():
+    # D-09: stored payloads that still carry `overall` load; the key is ignored.
+    rating = FundamentalRating.model_validate({
+        "valuation": "FAIR", "quality": "Medium", "growth": "Stable", "overall": "Hold",
+    })
+    assert not hasattr(rating, "overall")
+
+
+def test_fundamental_rating_accepts_unknown_labels():
+    rating = FundamentalRating(valuation="UNKNOWN", quality="UNKNOWN", growth="UNKNOWN")
+    assert rating.quality == "UNKNOWN"
+
+
+def test_fundamental_rating_is_strict_about_case():
+    with pytest.raises(ValidationError):
+        FundamentalRating(valuation="fair", quality="Medium", growth="Stable")
+    with pytest.raises(ValidationError):
+        FundamentalRating(valuation="FAIR", quality="STRONG", growth="Stable")
+
+
+def test_stock_fundamental_analysis_data_status_defaults_none():
+    a = StockFundamentalAnalysis(
+        ticker="AAPL", company_name="Apple", valuation_metrics=ValuationMetrics(),
+        fundamental_rating=FundamentalRating(valuation="FAIR", quality="Medium", growth="Stable"),
+        key_strengths=["x"], key_risks=["y"], investment_thesis="a thesis text",
+    )
+    assert a.data_status is None
 
 
 # ── TradeSetup invariants ─────────────────────────────────────────────────────

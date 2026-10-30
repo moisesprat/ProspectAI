@@ -9,7 +9,8 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 
 from utils.fundamental_data_tool import FundamentalDataTool
-from utils.fundamental_grader_tool import FundamentalGraderTool
+from utils.fundamental_grader_tool import FundamentalGraderTool, fundamentals_status
+from schemas.agent_outputs import FundamentalRating, StockFundamentalAnalysis
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -294,91 +295,160 @@ def _grade(ticker="TEST", **kwargs) -> dict:
 class TestValuationGrade:
 
     def test_pe_below_15_is_cheap(self):
-        assert _grade(pe_ratio=12.0)["valuation_grade"] == "CHEAP"
+        assert _grade(pe_ratio=12.0)["valuation"] == "CHEAP"
 
     def test_pe_15_to_25_is_fair(self):
-        assert _grade(pe_ratio=20.0)["valuation_grade"] == "FAIR"
+        assert _grade(pe_ratio=20.0)["valuation"] == "FAIR"
 
     def test_pe_25_to_40_is_expensive(self):
-        assert _grade(pe_ratio=32.0)["valuation_grade"] == "EXPENSIVE"
+        assert _grade(pe_ratio=32.0)["valuation"] == "EXPENSIVE"
 
     def test_pe_above_40_is_very_expensive(self):
-        assert _grade(pe_ratio=65.0)["valuation_grade"] == "VERY_EXPENSIVE"
+        assert _grade(pe_ratio=65.0)["valuation"] == "VERY_EXPENSIVE"
 
     def test_ps_used_when_pe_missing(self):
-        assert _grade(ps_ratio=2.0)["valuation_grade"] == "CHEAP"
-        assert _grade(ps_ratio=4.5)["valuation_grade"] == "FAIR"
-        assert _grade(ps_ratio=8.0)["valuation_grade"] == "EXPENSIVE"
+        assert _grade(ps_ratio=2.0)["valuation"] == "CHEAP"
+        assert _grade(ps_ratio=4.5)["valuation"] == "FAIR"
+        assert _grade(ps_ratio=8.0)["valuation"] == "EXPENSIVE"
 
-    def test_defaults_to_fair_when_no_data(self):
-        assert _grade()["valuation_grade"] == "FAIR"
+    def test_no_pe_no_ps_is_unknown(self):
+        # CORR-11: absence of data is UNKNOWN, never a rewarded FAIR.
+        assert _grade()["valuation"] == "UNKNOWN"
 
 
-class TestFinancialHealth:
+class TestQuality:
 
-    def test_strong_when_all_metrics_healthy(self):
+    def test_high_when_all_three_metrics_healthy(self):
         result = _grade(current_ratio=2.0, debt_to_equity=0.5, free_cash_flow=1_000_000)
-        assert result["financial_health"] == "STRONG"
+        assert result["quality"] == "High"
+        assert result["quality_score"] == 20
 
-    def test_weak_when_current_ratio_below_1(self):
-        result = _grade(current_ratio=0.8)
-        assert result["financial_health"] == "WEAK"
+    def test_all_none_balance_sheet_is_unknown(self):
+        result = _grade()
+        assert result["quality"] == "UNKNOWN"
+        assert result["quality_score"] is None
 
-    def test_weak_when_de_above_3(self):
-        result = _grade(debt_to_equity=3.5)
-        assert result["financial_health"] == "WEAK"
+    def test_high_quality_needs_all_three_metrics(self):
+        # Two strong metrics present, one missing: Medium, never High.
+        assert _grade(current_ratio=2.0, debt_to_equity=0.5)["quality"] == "Medium"
+        assert _grade(current_ratio=2.0, free_cash_flow=10)["quality"] == "Medium"
+        assert _grade(debt_to_equity=0.5, free_cash_flow=10)["quality"] == "Medium"
 
-    def test_weak_when_fcf_negative(self):
-        result = _grade(free_cash_flow=-500_000)
-        assert result["financial_health"] == "WEAK"
+    def test_one_weak_metric_is_low(self):
+        # Any present weak metric gives Low even when the others are missing.
+        assert _grade(current_ratio=0.8)["quality"] == "Low"
+        assert _grade(debt_to_equity=3.5)["quality"] == "Low"
+        assert _grade(free_cash_flow=-500_000)["quality"] == "Low"
+        assert _grade(current_ratio=0.8)["quality_score"] == 5
 
-    def test_adequate_when_metrics_middling(self):
+    def test_medium_when_metrics_middling(self):
         result = _grade(current_ratio=1.2, debt_to_equity=1.5, free_cash_flow=100)
-        assert result["financial_health"] == "ADEQUATE"
+        assert result["quality"] == "Medium"
+        assert result["quality_score"] == 10
 
 
-class TestGrowthOutlook:
+class TestGrowth:
 
-    def test_high_when_revenue_above_15_pct(self):
-        assert _grade(revenue_growth_yoy=0.20)["growth_outlook"] == "HIGH"
+    def test_high_growth_when_revenue_above_15_pct(self):
+        assert _grade(revenue_growth_yoy=0.20)["growth"] == "High Growth"
 
-    def test_moderate_when_revenue_5_to_15_pct(self):
-        assert _grade(revenue_growth_yoy=0.10)["growth_outlook"] == "MODERATE"
+    def test_moderate_growth_when_revenue_5_to_15_pct(self):
+        assert _grade(revenue_growth_yoy=0.10)["growth"] == "Moderate Growth"
 
-    def test_low_when_revenue_0_to_5_pct(self):
-        assert _grade(revenue_growth_yoy=0.03)["growth_outlook"] == "LOW"
+    def test_stable_when_revenue_0_to_5_pct(self):
+        assert _grade(revenue_growth_yoy=0.03)["growth"] == "Stable"
 
     def test_declining_when_revenue_negative(self):
-        assert _grade(revenue_growth_yoy=-0.05)["growth_outlook"] == "DECLINING"
+        assert _grade(revenue_growth_yoy=-0.05)["growth"] == "Declining"
 
-    def test_defaults_to_moderate_when_no_revenue_data(self):
-        assert _grade()["growth_outlook"] == "MODERATE"
+    def test_none_growth_is_unknown(self):
+        result = _grade(current_ratio=2.0, debt_to_equity=0.5, free_cash_flow=1)
+        assert result["growth"] == "UNKNOWN"
+        assert result["growth_score"] is None
+        assert result["fundamental_component"] is None
+        assert result["fundamental_unknown"] is True
 
 
 class TestFundamentalComponent:
 
-    @pytest.mark.parametrize("health,growth,expected", [
-        ("STRONG",   "HIGH",      30),   # 20 + 10
-        ("STRONG",   "MODERATE",  27),   # 20 + 7
-        ("ADEQUATE", "HIGH",      20),   # 10 + 10
-        ("ADEQUATE", "LOW",       13),   # 10 + 3
-        ("WEAK",     "DECLINING",  6),   # 5  + 1
-        ("WEAK",     "MODERATE",  12),   # 5  + 7
-    ])
-    def test_component_sum(self, health, growth, expected):
-        health_pts  = {"STRONG": 20, "ADEQUATE": 10, "WEAK": 5}[health]
-        growth_pts  = {"HIGH": 10, "MODERATE": 7, "LOW": 3, "DECLINING": 1}[growth]
-        assert health_pts + growth_pts == expected
-
     def test_grader_returns_fundamental_component_field(self):
         result = _grade(current_ratio=2.0, debt_to_equity=0.5,
                         free_cash_flow=1_000_000, revenue_growth_yoy=0.20)
-        assert result["fundamental_component"] == 30  # STRONG + HIGH
+        assert result["fundamental_component"] == 30  # High + High Growth
+        assert result["fundamental_unknown"] is False
 
     def test_fundamental_component_never_below_6(self):
-        # Worst case: WEAK + DECLINING = 5 + 1 = 6
+        # Worst case: Low + Declining = 5 + 1 = 6
         result = _grade(current_ratio=0.5, free_cash_flow=-1, revenue_growth_yoy=-0.5)
-        assert result["fundamental_component"] >= 6
+        assert result["fundamental_component"] == 6
+
+    def test_unknown_quality_nulls_the_component(self):
+        result = _grade(revenue_growth_yoy=0.20)
+        assert result["quality"] == "UNKNOWN"
+        assert result["fundamental_component"] is None
+        assert result["fundamental_unknown"] is True
+
+
+class TestDataStatus:
+
+    def test_full_payload_is_ok(self):
+        result = _grade(pe_ratio=20.0, current_ratio=2.0, debt_to_equity=0.5,
+                        free_cash_flow=1, revenue_growth_yoy=0.1)
+        assert result["data_status"] == "ok"
+
+    def test_ps_instead_of_pe_still_ok(self):
+        result = _grade(ps_ratio=2.0, current_ratio=2.0, debt_to_equity=0.5,
+                        free_cash_flow=1, revenue_growth_yoy=0.1)
+        assert result["data_status"] == "ok"
+
+    def test_partial_payload_is_partial(self):
+        assert _grade(pe_ratio=20.0)["data_status"] == "partial"
+        assert _grade()["data_status"] == "partial"
+
+    def test_fetch_error_is_failed(self):
+        result = _grade(error="no data")
+        assert result["data_status"] == "failed"
+        assert result["valuation"] == result["quality"] == result["growth"] == "UNKNOWN"
+        assert result["quality_score"] is None
+        assert result["growth_score"] is None
+        assert result["fundamental_component"] is None
+        assert result["fundamental_unknown"] is True
+
+
+class TestSchemaRoundTrip:
+    """Tracer: raw fetch payload -> real grader -> schema FundamentalRating (CORR-02)."""
+
+    @pytest.mark.parametrize("kwargs,status", [
+        (dict(pe_ratio=20.0, current_ratio=2.0, debt_to_equity=0.5,
+              free_cash_flow=1, revenue_growth_yoy=0.1), "ok"),
+        (dict(pe_ratio=20.0), "partial"),
+        (dict(error="no data"), "failed"),
+    ])
+    def test_grades_validate_against_schema(self, kwargs, status):
+        g = _grade(**kwargs)
+        rating = FundamentalRating(
+            valuation=g["valuation"], quality=g["quality"], growth=g["growth"],
+        )
+        assert rating.valuation == g["valuation"]
+        assert g["data_status"] == status
+        analysis = StockFundamentalAnalysis(
+            ticker=g["ticker"], company_name="Test Corp",
+            valuation_metrics={}, fundamental_rating=rating,
+            key_strengths=["s"], key_risks=["r"], investment_thesis="a thesis text",
+            data_status=g["data_status"],
+        )
+        assert analysis.data_status == status
+
+
+class TestFundamentalsStatusHelper:
+
+    def test_available_when_both_known(self):
+        assert fundamentals_status("Medium", "Stable") == "AVAILABLE"
+
+    def test_unknown_when_either_unknown(self):
+        assert fundamentals_status("UNKNOWN", "Stable") == "UNKNOWN"
+        assert fundamentals_status("High", "UNKNOWN") == "UNKNOWN"
+        assert fundamentals_status("UNKNOWN", "UNKNOWN") == "UNKNOWN"
 
 
 class TestGraderBatch:
@@ -396,9 +466,9 @@ class TestGraderBatch:
         batch = json.dumps({"fundamentals": entries})
         result = json.loads(FundamentalGraderTool()._run(batch))
         grades = {g["ticker"]: g for g in result["grades"]}
-        assert grades["GOOD"]["valuation_grade"] != "UNKNOWN"
+        assert grades["GOOD"]["valuation"] != "UNKNOWN"
         assert grades["BAD"]["fundamental_unknown"] is True
-        assert grades["BAD"]["valuation_grade"] == "UNKNOWN"
+        assert grades["BAD"]["valuation"] == "UNKNOWN"
 
     def test_invalid_json_returns_error(self):
         result = json.loads(FundamentalGraderTool()._run("not-json"))
