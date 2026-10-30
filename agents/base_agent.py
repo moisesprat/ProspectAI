@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from crewai import Agent, LLM
-from agents.caching_llm import make_caching_llm
+from agents.caching_llm import make_caching_llm, THINKING_MODES
 from config.config import Config
 from config.agent_config_loader import AgentConfigLoader
 
@@ -21,7 +21,7 @@ class BaseAgent(ABC):
         self.settings = self.config_loader.get_agent_settings(agent_key)
         self.verbose = self.settings.get('verbose', True)
         self.allow_delegation = self.settings.get('allow_delegation', False)
-        self.temperature = self.settings.get('temperature', 0.1)
+        self.thinking = self._read_thinking()
         self.max_tokens = self.settings.get('max_tokens', None)
         global_settings = self.config_loader.get_global_settings()
         self.max_iter = self.settings.get(
@@ -36,6 +36,16 @@ class BaseAgent(ABC):
 
         self.agent = None
         self.config = Config()
+
+    def _read_thinking(self) -> str:
+        """Per-agent thinking mode from agents.yaml (D-03): 'off' (default) or 'low'."""
+        value = self.settings.get('thinking', 'off')
+        if value not in THINKING_MODES:
+            raise ValueError(
+                f"agents.yaml: {self.agent_key}.thinking must be one of "
+                f"{', '.join(THINKING_MODES)}; got {value!r}"
+            )
+        return value
 
     def use_config(self, config: Config) -> None:
         """Inject the pipeline Config (model/provider/base URL). Must precede get_agent()."""
@@ -53,7 +63,6 @@ class BaseAgent(ABC):
             return LLM(
                 model=f"ollama/{model}",
                 base_url=self.llm_base_url or self.config.OLLAMA_BASE_URL,
-                temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
 
@@ -61,8 +70,8 @@ class BaseAgent(ABC):
         return make_caching_llm(
             model=f"anthropic/{model}",
             api_key=api_key,
-            temperature=self.temperature,
             max_tokens=self.max_tokens or 10000,
+            thinking=self.thinking,
         )
 
     @abstractmethod
@@ -93,4 +102,4 @@ class BaseAgent(ABC):
         self.settings = self.config_loader.get_agent_settings(self.agent_key)
         self.verbose = self.settings.get('verbose', True)
         self.allow_delegation = self.settings.get('allow_delegation', False)
-        self.temperature = self.settings.get('temperature', 0.1)
+        self.thinking = self._read_thinking()
