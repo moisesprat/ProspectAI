@@ -310,11 +310,9 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Claude Haiku 5.5 by default
-- Every agent now runs Claude Haiku 5.5 by default. The model for each agent is set in `config/agents.yaml`, and `AGENT_<NAME>_MODEL` still overrides a single agent.
-- `MODEL` is now optional on the Anthropic provider. Without it each agent uses its model from `config/agents.yaml`; with it, all agents use that model. The `--ollama` provider still needs a model.
-- `config/agents.yaml` no longer has a per-agent sampling setting (`temperature`), because Haiku 5.5 rejects non-default sampling values. It gains `thinking: off|low` per agent: the draft strategy, critic and final strategy steps use low-effort adaptive thinking, the data-gathering steps run with thinking off.
-- A step that is supposed to call its data tools but finishes without calling any now fails the run with a clear error, instead of returning figures the model made up.
+### Unreleased — Now powered by Claude Haiku 5.5
+- Analyses now run on Claude Haiku 5.5, Anthropic's latest model.
+- If a data-gathering step finishes without actually fetching its data, the analysis now stops with a clear error instead of reporting figures the model made up.
 
 ### v1.9.4 — Analyses work again
 - Fixed an issue in 1.9.3 where every analysis failed right after starting, caused by an incompatible version of the AI provider's library.
