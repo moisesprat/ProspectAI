@@ -708,6 +708,19 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                     result[t.ticker.upper()] = status
         return result
 
+    @staticmethod
+    def _stamp_fundamentals_status(output: Dict[str, Any], fundamentals: Dict[str, str]) -> Dict[str, Any]:
+        """Set every position's fundamentals_status from the deterministic map,
+        overwriting whatever the LLM wrote (None for a ticker with no
+        fundamental record). The SPA renders UNKNOWN as "fundamentals unavailable".
+        """
+        stamped = dict(output)
+        stamped["positions"] = [
+            {**pos, "fundamentals_status": fundamentals.get(str(pos.get("ticker", "")).upper())}
+            for pos in output.get("positions", [])
+        ]
+        return stamped
+
     def _finalize_and_validate_portfolio(self, structured: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
         """Flow-authoritative repricing + fail-closed bounds validation.
 
@@ -716,6 +729,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         re-invokes once more; if it still fails, raises BoundsViolationError
         and the caller (run_analysis) does not return a result.
 
+        fundamentals_status is stamped on every position from the deterministic
+        fundamental output before validation (D-08), and the validator's
+        buy_with_unknown_fundamentals rule fails closed on a buy for UNKNOWN.
+
         The CURRENT_ENTRY/WAIT-FOR-ENTRY invariant check is included here even
         though the retry cannot fix it (repricing never changes `action`) --
         the point is that a Final Strategist decision violating this invariant
@@ -723,15 +740,16 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         other check in this validator.
         """
         zone_status = self._entry_zone_status_by_ticker()
-        repriced = self._reprice_final_output(structured, risk_profile)
-        violations = validate_bounds(repriced, risk_profile, zone_status)
+        fundamentals = self._fundamentals_status_by_ticker()
+        repriced = self._stamp_fundamentals_status(self._reprice_final_output(structured, risk_profile), fundamentals)
+        violations = validate_bounds(repriced, risk_profile, zone_status, fundamentals)
         if violations:
             logger.warning(
                 "Final output failed PortfolioBoundsValidator on first pass (%s); re-invoking allocator",
                 violations,
             )
-            repriced = self._reprice_final_output(structured, risk_profile)
-            violations = validate_bounds(repriced, risk_profile, zone_status)
+            repriced = self._stamp_fundamentals_status(self._reprice_final_output(structured, risk_profile), fundamentals)
+            violations = validate_bounds(repriced, risk_profile, zone_status, fundamentals)
             if violations:
                 raise BoundsViolationError(violations)
         return repriced
