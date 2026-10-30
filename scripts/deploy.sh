@@ -10,7 +10,12 @@
 #   2. Updates the README.md version badge and releases the hand-written
 #      "### Unreleased — <title>" notes as the new version (preflight refuses
 #      when they are missing)
-#   3. Builds wheel + sdist, uploads to PyPI via twine, polls PyPI until live
+#   3. Builds wheel + sdist and runs `twine check`
+#   3b. Pre-upload backend gate: resolves the backend's requirements with the
+#      pin set to the freshly built local wheel, installs that set into a fresh
+#      venv and runs the backend offline suite against it. A failure uploads
+#      nothing, reverts the bump and removes dist/ (D-05, review WR-01)
+#   3c. Uploads to PyPI via twine, polls PyPI until live
 #   4. Rewrites the prospectai pin in prospectai-backend/requirements-serve.txt,
 #      recompiles requirements-serve.lock and re-runs check_pin
 #   5. Deploys to Modal with BACKEND_SHA / DEPLOYED_AT baked into the image
@@ -379,6 +384,44 @@ print(f"    README.md updated — Unreleased notes released as v{new_version}, l
 PYEOF
 }
 
+# Pre-upload backend gate (D-05, review WR-01). Both offline suites above ran
+# against the previously published prospectai from the lock, so a conflict between
+# the new version's dependency metadata and the backend's constraints would first
+# show after `twine upload`, burning the version number (the 1.9.3 incident). This
+# resolves the backend with the pin set to the built local wheel (--find-links),
+# installs that set into a fresh venv and runs the backend suite against it. Every
+# step ends in `|| return 1`: the function runs inside an `if`, where `set -e` is
+# suspended. It needs the network (it resolves every other dependency from PyPI),
+# which a real release already requires.
+pre_upload_backend_gate() {
+  log "Pre-upload backend gate (prospectai $NEW_VERSION wheel)"
+  local wg="$TMP_VENVS/wheelgate" installed
+  mkdir -p "$wg" || return 1
+
+  log "Gate: resolving backend requirements against the local wheel"
+  cp "$BACKEND_ROOT/requirements-serve.txt" "$wg/requirements-serve.txt" || return 1
+  rewrite_one_line "$wg/requirements-serve.txt" '^prospectai==[0-9]+\.[0-9]+\.[0-9]+$' "prospectai==$NEW_VERSION" || return 1
+  uv pip compile "$wg/requirements-serve.txt" --universal --python-version 3.11 \
+    --override "$BACKEND_ROOT/lock-overrides.txt" --find-links "$DIST_DIR" \
+    -o "$wg/requirements-serve.lock" || return 1
+
+  log "Gate: installing the resolved set into a fresh venv"
+  uv venv --quiet --python 3.11 "$wg/venv" || return 1
+  uv pip sync --quiet --python "$wg/venv/bin/python" --find-links "$DIST_DIR" "$wg/requirements-serve.lock" || return 1
+  cp "$BACKEND_ROOT/requirements-dev.txt" "$wg/requirements-dev.txt" || return 1
+  rewrite_one_line "$wg/requirements-dev.txt" '^-c .*$' "-c $wg/requirements-serve.lock" || return 1
+  uv pip install --quiet --python "$wg/venv/bin/python" -r "$wg/requirements-dev.txt" || return 1
+
+  installed=$("$wg/venv/bin/python" -c "import importlib.metadata as m; print(m.version('prospectai'))") || return 1
+  if [[ "$installed" != "$NEW_VERSION" ]]; then
+    echo "    gate venv has prospectai $installed, expected $NEW_VERSION" >&2
+    return 1
+  fi
+
+  log "Gate: prospectai-backend offline suite against prospectai $NEW_VERSION"
+  (cd "$BACKEND_ROOT" && CREWAI_TRACING_ENABLED=false "$wg/venv/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) || return 1
+}
+
 if [[ "$SKIP_PYPI" != true ]]; then
   log "Bumping pyproject.toml to $NEW_VERSION"
   rewrite_one_line "$PYPROJECT" "^version = \"$CURRENT_VERSION\"\$" "version = \"$NEW_VERSION\""
@@ -388,6 +431,14 @@ if [[ "$SKIP_PYPI" != true ]]; then
   rm -rf "$DIST_DIR"
   (cd "$REPO_ROOT" && uv build --out-dir "$DIST_DIR")
   uv tool run twine check "$DIST_DIR"/*
+
+  # UPLOADED is still 0 here, so a failing gate never prints the post-upload
+  # recovery hint: nothing is on PyPI. Restore the files the bump rewrote.
+  if ! pre_upload_backend_gate; then
+    git -C "$REPO_ROOT" checkout -- pyproject.toml README.md
+    rm -rf "$DIST_DIR"
+    die "REFUSING (pre-upload gate): the backend does not resolve or pass its suite with prospectai $NEW_VERSION; nothing was uploaded and the version bump was reverted"
+  fi
 
   log "Uploading to PyPI"
   uv tool run twine upload "$DIST_DIR"/*
