@@ -310,6 +310,20 @@ def tool_venv_python(args):
                 _log("wheelgate suite fail")
                 print("fake suite: FAILED")
                 return 1
+            # The real backend pin test compares the installed version with
+            # PROSPECTAI_REQ_FILE; the gate must point it at the rewritten pin.
+            req = os.environ.get("PROSPECTAI_REQ_FILE", "")
+            try:
+                with open(os.path.join(venv, "installed_prospectai")) as handle:
+                    want = "prospectai==%s" % handle.read().strip()
+                with open(req) as handle:
+                    pinned = want in handle.read().split()
+            except OSError:
+                pinned = False
+            if not pinned:
+                _log("wheelgate suite fail unpinned")
+                print("fake suite: pin test would compare against the unbumped pin")
+                return 1
             _log("wheelgate suite")
         print("fake suite: passed")
         return 0
