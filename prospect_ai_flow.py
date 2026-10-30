@@ -109,6 +109,7 @@ class ProspectAIFlowState(BaseModel):
     fundamental_output: Optional[FundamentalAnalysisOutput] = None
     draft_output: Optional[InvestorStrategicOutput] = None
     critique_output: Optional[CriticOutput] = None
+    final_output: Optional[InvestorStrategicOutput] = None
     error: str = ""
 
 
@@ -136,7 +137,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._task_callback = task_callback
         self._step_callback = step_callback
         self._progress_callback = progress_callback
-        self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
         # Public: the backend reads pipeline_config.model_id_for_agent(k) for SSE model names.
@@ -565,14 +565,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     async def market_analysis(self):
         self._check_error()
         self._emit_start(0)
-        task = self._factory.build_task("market_analysis", self.state.sector, self.state.today)
-        if self._tracker:
-            self._tracker.start_phase("market_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 0).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("market_analysis", task)
-        self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
+        result, self.state.market_output = await self._run_phase(
+            "market_analysis", 0, MarketAnalysisOutput,
+        )
         kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, self.state.sector)
         if dropped:
             logger.warning("Excluded sector-benchmark/broad-market ETF candidates: %s", dropped)
@@ -596,14 +591,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._check_error()
         self._emit_start(2)
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        task = self._factory.build_task("fundamental_analysis", self.state.sector, self.state.today, ctx)
-        if self._tracker:
-            self._tracker.start_phase("fundamental_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 2).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("fundamental_analysis", task)
-        self.state.fundamental_output = self._extract_pydantic(result, FundamentalAnalysisOutput, "fundamental_analysis")
+        result, self.state.fundamental_output = await self._run_phase(
+            "fundamental_analysis", 2, FundamentalAnalysisOutput, build_args=(ctx,),
+        )
         self._emit_progress(2, result)
         return result.raw or ""
 
@@ -616,14 +606,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Technical Analysis Output", self._slim_technical()),
             self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
         ])
-        task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("draft_strategy", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 3).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("draft_strategy", task)
-        self.state.draft_output = self._extract_pydantic(result, InvestorStrategicOutput, "draft_strategy")
+        result, self.state.draft_output = await self._run_phase(
+            "draft_strategy", 3, InvestorStrategicOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": self.state.risk_profile},
+        )
         self._emit_progress(3, result)
         return result.raw or ""
 
@@ -635,14 +621,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Ticker Reference Table", self._critic_reference_table()),
         ])
-        task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("critique_review", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 4).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("critique_review", task)
-        self.state.critique_output = self._extract_pydantic(result, CriticOutput, "critique_review")
+        result, self.state.critique_output = await self._run_phase(
+            "critique_review", 4, CriticOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": self.state.risk_profile},
+        )
         self._emit_progress(4, result)
         return result.raw or ""
 
@@ -654,14 +636,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Critic Review Output", self._gated_slim_critique()),
         ])
-        task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("final_strategy", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 5).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("final_strategy", task)
-        self._final_crew_result = result
+        # Same schema validation and retry as every other phase; the validated
+        # model is what run_analysis publishes (no lenient parse, D-12).
+        result, self.state.final_output = await self._run_phase(
+            "final_strategy", 5, InvestorStrategicOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": self.state.risk_profile},
+        )
         self._emit_progress(5, result)
         return result.raw or ""
 
@@ -830,7 +810,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         try:
             self.kickoff(inputs={"sector": sector, "today": today, "risk_profile": risk_profile})
 
-            structured = _parse_crew_result(self._final_crew_result)
+            final_output = self.state.final_output
+            if final_output is None:
+                raise RuntimeError("final_strategy completed without a validated output")
+            structured = final_output.model_dump(mode="json")
             structured = self._finalize_and_validate_portfolio(structured, risk_profile)
 
             validation_issues = validate_portfolio(structured)

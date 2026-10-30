@@ -363,6 +363,7 @@ class ExecutionTracker:
                 "cache_creation_tokens": pm.cache_creation_tokens,
                 "total_tokens": pm.total_tokens,
                 "status": status,
+                "attempts": pm.attempts,
                 "tool_call_count": len(calls),
                 "tool_total_sec": tool_total,
                 "tool_wall_sec": tool_wall,
