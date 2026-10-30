@@ -340,3 +340,230 @@ def test_flow_retry_passes_feedback_to_build_task(flow):
     assert "feedback" not in first.kwargs
     assert "trend_strength" in second.kwargs["feedback"]
     assert isinstance(flow.state.technical_output, TechnicalAnalysisOutput)
+
+
+# ── All six phases through run_phase (plan 02-12 task 2) ───────────────────────
+
+from schemas.agent_outputs import (  # noqa: E402
+    CriticOutput,
+    FundamentalAnalysisOutput,
+    InvestorStrategicOutput,
+    MarketAnalysisOutput,
+)
+from tests.test_schemas import _portfolio  # noqa: E402
+from utils.execution_tracker import ExecutionTracker  # noqa: E402
+
+_PHASE_METHODS = [
+    ("market_analysis", MarketAnalysisOutput),
+    ("technical_analysis", TechnicalAnalysisOutput),
+    ("fundamental_analysis", FundamentalAnalysisOutput),
+    ("draft_strategy", InvestorStrategicOutput),
+    ("critique_review", CriticOutput),
+    ("final_strategy", InvestorStrategicOutput),
+]
+
+
+def _stub_result(schema):
+    """Crew result whose pydantic payload is a spec'd stand-in for ``schema``."""
+    model = MagicMock(spec=schema)
+    if schema is MarketAnalysisOutput:
+        model.candidate_stocks = []
+    task_out = SimpleNamespace(pydantic=model, json_dict=None)
+    return SimpleNamespace(raw="{}", tasks_output=[task_out], token_usage=MagicMock())
+
+
+def _patch_context(flow):
+    stack = [
+        patch.object(flow, "_slim_market_for_analysis", return_value=""),
+        patch.object(flow, "_slim_market_for_strategy", return_value=""),
+        patch.object(flow, "_slim_technical", return_value=""),
+        patch.object(flow, "_slim_fundamental", return_value=""),
+        patch.object(flow, "_slim_draft", return_value=""),
+        patch.object(flow, "_critic_reference_table", return_value=""),
+        patch.object(flow, "_gated_slim_critique", return_value=""),
+    ]
+    for p in stack:
+        p.start()
+    return stack
+
+
+@pytest.fixture
+def tracked_flow(flow):
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    flow._factory.build_task.return_value = _task()
+    stack = _patch_context(flow)
+    yield flow
+    for p in stack:
+        p.stop()
+
+
+def _phase_metrics(flow, phase):
+    return next(p for p in flow._tracker.to_dict()["phases"] if p["name"] == phase)
+
+
+@pytest.mark.parametrize("phase,schema", _PHASE_METHODS)
+def test_each_phase_uses_run_phase(tracked_flow, phase, schema):
+    flow = tracked_flow
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=[_bad_trend_error(), _stub_result(schema)])
+        asyncio.run(getattr(flow, phase)())
+    assert mc.return_value.akickoff.await_count == 2
+    assert _phase_metrics(flow, phase)["attempts"] == 2
+    assert _phase_metrics(flow, phase)["status"] == "completed"
+
+
+@pytest.mark.parametrize("phase,schema", _PHASE_METHODS)
+def test_each_phase_fails_after_three_attempts(tracked_flow, phase, schema):
+    flow = tracked_flow
+    bad = _bad_trend_error()
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=[bad, bad, bad, _stub_result(schema)])
+        with pytest.raises(PhaseSchemaError) as info:
+            asyncio.run(getattr(flow, phase)())
+    assert mc.return_value.akickoff.await_count == 3
+    assert info.value.phase == phase
+
+
+def test_final_phase_validated(tracked_flow):
+    """An invalid final payload exhausts retries; there is no lenient parse fallback (D-12)."""
+    flow = tracked_flow
+    payload = _portfolio().model_dump(mode="json")
+    payload["positions"][0]["action"] = "HOLD"
+    task_out = SimpleNamespace(pydantic=None, json_dict=None)
+    invalid = SimpleNamespace(raw=json.dumps(payload), tasks_output=[task_out], token_usage=MagicMock())
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(return_value=invalid)
+        with pytest.raises(PhaseSchemaError) as info:
+            asyncio.run(flow.final_strategy())
+    assert mc.return_value.akickoff.await_count == 3
+    assert "final_strategy" in str(info.value)
+    assert "HOLD" not in str(info.value)
+    assert flow.state.final_output is None
+
+
+def test_final_phase_stores_validated_model_and_run_analysis_uses_it(flow):
+    valid = _portfolio()
+    task_out = SimpleNamespace(pydantic=None, json_dict=None)
+    result = SimpleNamespace(raw=valid.model_dump_json(), tasks_output=[task_out], token_usage=MagicMock())
+    flow._factory.build_task.return_value = _task()
+    seen = {}
+
+    def kickoff(inputs=None):
+        with patch.object(flow, "_make_crew") as mc, \
+             patch.object(flow, "_slim_draft", return_value=""), \
+             patch.object(flow, "_gated_slim_critique", return_value=""):
+            mc.return_value.akickoff = AsyncMock(return_value=result)
+            asyncio.run(flow.final_strategy())
+
+    def finalize(structured, risk_profile):
+        seen["structured"] = structured
+        return structured
+
+    flow.kickoff = kickoff
+    with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=finalize):
+        flow.run_analysis({"sector": "Technology"})
+    assert isinstance(flow.state.final_output, InvestorStrategicOutput)
+    assert seen["structured"] == flow.state.final_output.model_dump(mode="json")
+    assert "parse_error" not in seen["structured"]
+
+
+def test_run_analysis_without_final_output_fails_clearly(flow):
+    flow.kickoff = lambda inputs=None: None
+    with pytest.raises(RuntimeError, match="final_strategy"):
+        flow.run_analysis({"sector": "Technology"})
+
+
+def test_draft_and_final_budgets_independent(tracked_flow):
+    flow = tracked_flow
+    bad = _bad_trend_error()
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=[
+            bad, bad, _stub_result(InvestorStrategicOutput),   # draft: 2 failures, then ok
+            bad, bad, _stub_result(InvestorStrategicOutput),   # final: full budget again
+        ])
+        asyncio.run(flow.draft_strategy())
+        asyncio.run(flow.final_strategy())
+    assert _phase_metrics(flow, "draft_strategy")["attempts"] == 3
+    assert _phase_metrics(flow, "final_strategy")["attempts"] == 3
+
+
+def test_attempts_in_metrics(tracked_flow):
+    flow = tracked_flow
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(return_value=_stub_result(CriticOutput))
+        asyncio.run(flow.critique_review())
+    phases = flow._tracker.to_dict()["phases"]
+    assert all(isinstance(p["attempts"], int) for p in phases)
+    assert _phase_metrics(flow, "critique_review")["attempts"] == 1
+    assert _phase_metrics(flow, "market_analysis")["attempts"] == 0
+
+
+def test_emit_order_unchanged_with_a_retry(flow):
+    events = []
+    flow._progress_callback = events.append
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    task = _task()
+
+    def build_task(*args, **kwargs):
+        events.append({"event": "build_task"})
+        return task
+
+    flow._factory.build_task.side_effect = build_task
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=[_bad_trend_error(), _ok_result()])
+        asyncio.run(flow.technical_analysis())
+    assert [e["event"] for e in events] == ["agent_start", "build_task", "build_task", "task_complete"]
+    assert sum(e["event"] == "agent_start" for e in events) == 1
+    assert sum(e["event"] == "task_complete" for e in events) == 1
+
+
+# ── Tool-call guard through the retry path (plan 02-03 contract) ───────────────
+
+def _tool_task(name="TA"):
+    task = _task()
+    task.tools = [SimpleNamespace(name=name)]
+    return task
+
+
+def test_retry_cannot_pass_on_an_earlier_attempts_tool_calls(flow):
+    """Attempt 1 calls the tool and fails schema; attempt 2 calls nothing -> MissingToolCallError."""
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    flow._factory.build_task.return_value = _tool_task()
+    calls = {"n": 0}
+
+    async def akickoff():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            flow._tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
+            raise _bad_trend_error()
+        return _ok_result()
+
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = akickoff
+        with pytest.raises(MissingToolCallError, match="technical_analysis"):
+            asyncio.run(flow.technical_analysis())
+    assert calls["n"] == 2
+    assert flow.state.technical_output is None
+
+
+def test_retry_with_tool_calls_in_each_attempt_passes(flow):
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    flow._factory.build_task.return_value = _tool_task()
+    calls = {"n": 0}
+
+    async def akickoff():
+        calls["n"] += 1
+        flow._tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
+        if calls["n"] == 1:
+            raise _bad_trend_error()
+        return _ok_result()
+
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = akickoff
+        asyncio.run(flow.technical_analysis())
+    assert calls["n"] == 2
+    assert isinstance(flow.state.technical_output, TechnicalAnalysisOutput)

@@ -38,6 +38,13 @@ def _make_task():
     return task
 
 
+def _final_stub(payload=None):
+    """Stand-in for the validated final output that run_analysis serialises."""
+    stub = MagicMock(spec=InvestorStrategicOutput)
+    stub.model_dump.return_value = payload if payload is not None else {"positions": []}
+    return stub
+
+
 @pytest.fixture
 def flow():
     """ProspectAIFlow with TaskFactory patched out — no live LLM or network calls."""
@@ -245,13 +252,14 @@ class TestCritiqueReviewPhase:
 
 class TestFinalStrategyPhase:
     @pytest.mark.asyncio
-    async def test_stores_final_crew_result(self, flow):
-        crew_result = _make_crew_result(raw="{}")
+    async def test_stores_validated_final_output(self, flow):
+        pydantic_out = MagicMock(spec=InvestorStrategicOutput)
+        crew_result = _make_crew_result(pydantic_out=pydantic_out)
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
             await flow.final_strategy()
-        assert flow._final_crew_result is crew_result
+        assert flow.state.final_output is pydantic_out
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -303,9 +311,12 @@ class TestPartialMetrics:
     def test_post_kickoff_failure_also_carries_partial_metrics(self, flow):
         from utils.portfolio_bounds_validator import BoundsViolationError
 
-        flow.kickoff = lambda inputs=None: flow._tracker.start_phase("final_strategy")
-        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
-             patch.object(
+        def kickoff(inputs=None):
+            flow._tracker.start_phase("final_strategy")
+            flow.state.final_output = _final_stub()
+
+        flow.kickoff = kickoff
+        with patch.object(
                  flow, "_finalize_and_validate_portfolio",
                  side_effect=BoundsViolationError(
                      [{"ticker": "AAA", "rule": "max_allocation", "expected": 10, "actual": 20}]
@@ -338,9 +349,11 @@ class TestPartialMetrics:
             time.sleep(0.05)
             return {"positions": [], "overall_strategy": "ok"}
 
-        flow.kickoff = lambda inputs=None: None
-        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
-             patch.object(flow, "_finalize_and_validate_portfolio", side_effect=slow_finalize):
+        def kickoff(inputs=None):
+            flow.state.final_output = _final_stub()
+
+        flow.kickoff = kickoff
+        with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=slow_finalize):
             out = flow.run_analysis({"sector": "Technology"})
         metrics = out["execution_metrics"]
         assert metrics["partial"] is False
@@ -459,7 +472,7 @@ class TestToolCallGuard:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
             await flow.critique_review()
             await flow.final_strategy()
-        assert flow._final_crew_result is crew_result
+        assert flow.state.final_output is not None
 
     def test_run_analysis_attaches_partial_metrics_to_missing_tool_call(self, flow):
         def kickoff(inputs=None):
