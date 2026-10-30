@@ -211,3 +211,61 @@ def test_yaml_thinking_values_are_closed(clean_env, tmp_path):
     bad.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError, match="market_analyst"):
         MarketAnalystAgent(config_path=str(bad))
+
+
+# ─── First-turn tool forcing (canary finding, MODEL-01) ───────────────────────
+# The first live canary showed Haiku 5.5 answering the market phase straight from
+# the output schema without calling either tool. For the thinking-off tool phases
+# the request now carries tool_choice {"type": "any"} until a tool result is in the
+# conversation; thinking-enabled phases cannot force a tool (API rule).
+
+_TOOL_ROUND_TRIP = [
+    {"role": "user", "content": "hi"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "toolu_1", "type": "function",
+             "function": {"name": "real_tool", "arguments": '{"x": "y"}'}}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "toolu_1", "name": "real_tool", "content": "result"},
+]
+
+
+@pytest.mark.asyncio
+async def test_first_turn_forces_a_tool_when_thinking_is_off(clean_env):
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL])
+    for phase in THINKING_OFF_PHASES:
+        assert captured[phase]["body"].get("tool_choice") == {"type": "any"}, phase
+
+
+@pytest.mark.asyncio
+async def test_thinking_phases_are_not_forced(clean_env):
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL])
+    for phase in THINKING_LOW_PHASES:
+        assert captured[phase]["body"].get("tool_choice") != {"type": "any"}, phase
+
+
+@pytest.mark.asyncio
+async def test_no_forcing_once_a_tool_result_is_in_the_conversation(clean_env):
+    factory = _factory()
+    llm = factory._phase_config["market_analysis"]["agent"].llm
+    transport = install_capture(llm)
+    await llm.acall(list(_TOOL_ROUND_TRIP), tools=[REAL_TOOL], response_model=_Answer)
+    body = transport.requests[0]["body"]
+    assert body.get("tool_choice") != {"type": "any"}
+    assert any(t.get("name") == "real_tool" for t in body["tools"])
+
+
+@pytest.mark.asyncio
+async def test_no_tools_means_no_tool_choice(clean_env):
+    captured = await _capture_phase(_factory(), "market_analysis", tools=None)
+    assert "tool_choice" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_older_model_override_is_not_forced(clean_env):
+    clean_env.setenv("AGENT_MARKET_ANALYST_MODEL", HAIKU_45)
+    captured = await _capture_phase(_factory(), "market_analysis", tools=[REAL_TOOL])
+    assert captured["body"].get("tool_choice") != {"type": "any"}

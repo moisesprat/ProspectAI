@@ -310,6 +310,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Reliable live data on Claude Haiku 5.5
+- Fixed an issue where the market, technical and fundamental analysis steps could skip fetching live data and answer from the model alone. They now always fetch their data first.
+
 ### v1.10.0 — Now powered by Claude Haiku 5.5
 - Analyses now run on Claude Haiku 5.5, Anthropic's latest model.
 - If a data-gathering step finishes without actually fetching its data, the analysis now stops with a clear error instead of reporting figures the model made up.
