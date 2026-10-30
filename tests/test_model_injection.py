@@ -94,6 +94,30 @@ class TestFlowInjection:
         assert isinstance(ProspectAIFlow().pipeline_config, Config)
 
 
+# ─── agent_model_ids (plan 02-03, D-01) ────────────────────────────────────────
+
+class TestAgentModelIds:
+    def test_agent_model_ids_yaml_default(self, clean_env):
+        ids = ProspectAIFlow().agent_model_ids()
+        assert ids == ["claude-haiku-5-5"] * 6
+
+    def test_agent_model_ids_env_override(self, clean_env):
+        clean_env.setenv("AGENT_CRITIC_MODEL", HAIKU)
+        ids = ProspectAIFlow().agent_model_ids()
+        assert ids[4] == HAIKU
+        assert [m for i, m in enumerate(ids) if i != 4] == ["claude-haiku-5-5"] * 5
+
+    def test_global_model_changes_all_six(self, clean_env):
+        clean_env.setenv("MODEL", "claude-x")
+        assert ProspectAIFlow().agent_model_ids() == ["claude-x"] * 6
+
+    def test_provider_prefix_is_stripped(self, clean_env):
+        flow = ProspectAIFlow()
+        for phase in _PHASES:
+            flow._factory._phase_config[phase]["agent"].llm.model = "ollama/qwen3"
+        assert flow.agent_model_ids() == ["qwen3"] * 6
+
+
 # ─── CLI (main.py) ─────────────────────────────────────────────────────────────
 
 def _run_main(monkeypatch, argv):
