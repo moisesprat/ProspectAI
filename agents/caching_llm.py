@@ -98,6 +98,22 @@ def supports_adaptive_thinking(model: str) -> bool:
     return any(m in lowered for m in _ADAPTIVE_THINKING_MODELS)
 
 
+def _conversation_has_tool_turn(messages: Any) -> bool:
+    """True once any message carries a tool call or tool result, in crewai's
+    OpenAI-style shape or Anthropic content blocks."""
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "tool" or message.get("tool_calls"):
+            return True
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in ("tool_use", "tool_result"):
+                    return True
+    return False
+
+
 class _EffortInterceptor(BaseInterceptor[httpx.Request, httpx.Response]):
     """Merge ``output_config.effort`` into outbound Messages request bodies.
 
@@ -189,7 +205,27 @@ class AnthropicCachingCompletion(AnthropicCompletion):
         thinking = params.get("thinking")
         if isinstance(thinking, dict) and "budget_tokens" in thinking:
             params["thinking"] = {k: v for k, v in thinking.items() if k != "budget_tokens"}
+        self._force_first_tool_call(params)
         return params
+
+    def _force_first_tool_call(self, params: dict[str, Any]) -> None:
+        """Require a tool call on the first turn of a thinking-off Haiku 5.5 request.
+
+        Haiku 5.5 given tools plus a native structured-output schema can answer
+        straight from the schema without calling any tool (first live canary,
+        market_analysis: one LLM call, zero tool calls), which yields model-invented
+        numbers. ``tool_choice: any`` is only sent until a tool result is in the
+        conversation, so the model can still finish with its answer afterwards. The
+        API rejects a forced tool choice with thinking enabled, so adaptive-thinking
+        phases are left alone; a ``tool_choice`` crewai already set is kept.
+        """
+        if not supports_adaptive_thinking(self.model) or self._thinking_mode != "off":
+            return
+        if not params.get("tools") or params.get("tool_choice"):
+            return
+        if _conversation_has_tool_turn(params.get("messages")):
+            return
+        params["tool_choice"] = {"type": "any"}
 
     @staticmethod
     def _extract_anthropic_token_usage(response: Any) -> dict[str, Any]:
