@@ -8,6 +8,7 @@ import random
 
 import pytest
 
+from utils.action_policy_gate import ACTION_POLICY_TABLE, FUNDAMENTALS_UNKNOWN_ROW
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool, PROFILE_BOUNDS
 from utils.portfolio_bounds_validator import BoundsViolationError, validate, validate_or_raise
 from tests.fixtures_deterministic_enforcement import PUBLISHED_ENERGY_OUTPUT_BOUNDS_VIOLATION
@@ -238,3 +239,57 @@ def test_allocator_output_always_passes_bounds_validator(risk_profile):
 
         violations = validate(final_output, risk_profile)
         assert violations == [], (payload, result, violations)
+
+
+# ── buy_with_unknown_fundamentals (D-08) ─────────────────────────────────────
+
+def _unknown_rule(violations):
+    return [v for v in violations if v["rule"] == "buy_with_unknown_fundamentals"]
+
+
+def test_buy_with_unknown_fundamentals_violation():
+    row = sorted(ACTION_POLICY_TABLE[(FUNDAMENTALS_UNKNOWN_ROW, "conservative")])
+    long_buy = _output([_position(ticker="XYZ", action="LONG-BUY")])
+    wait = _output([_position(ticker="XYZ", action="WAIT-FOR-ENTRY", alloc=15.0)], deployed=0.0, reserved=15.0,
+                   cash=85.0, reserved_allocations=[{"ticker": "XYZ", "pct": 15.0}])
+    for out in (long_buy, wait):
+        found = _unknown_rule(validate(out, "conservative", None, {"XYZ": "UNKNOWN"}))
+        assert len(found) == 1 and found[0]["ticker"] == "XYZ"
+        assert found[0]["expected"] == row
+
+
+@pytest.mark.parametrize("action", ["MONITOR", "AVOID"])
+def test_monitor_and_avoid_are_allowed_for_unknown_fundamentals(action):
+    out = _output([_position(ticker="XYZ", action=action, alloc=0.0)], deployed=0.0, cash=100.0)
+    assert _unknown_rule(validate(out, "conservative", None, {"XYZ": "UNKNOWN"})) == []
+
+
+def test_available_fundamentals_do_not_trip_the_rule():
+    out = _output([_position(ticker="XYZ", action="LONG-BUY")])
+    assert _unknown_rule(validate(out, "conservative", None, {"XYZ": "AVAILABLE"})) == []
+    assert _unknown_rule(validate(out, "conservative")) == []
+
+
+def test_position_field_is_used_when_map_absent():
+    pos = _position(ticker="XYZ", action="LONG-BUY")
+    pos["fundamentals_status"] = "UNKNOWN"
+    assert len(_unknown_rule(validate(_output([pos]), "conservative"))) == 1
+
+
+def test_map_wins_over_position_field():
+    pos = _position(ticker="XYZ", action="LONG-BUY")
+    pos["fundamentals_status"] = "UNKNOWN"
+    assert _unknown_rule(validate(_output([pos]), "conservative", None, {"XYZ": "AVAILABLE"})) == []
+
+
+def test_rule_reads_the_table_row(monkeypatch):
+    monkeypatch.setitem(ACTION_POLICY_TABLE, (FUNDAMENTALS_UNKNOWN_ROW, "aggressive"), frozenset({"AVOID"}))
+    out = _output([_position(ticker="XYZ", action="MONITOR", alloc=0.0)], deployed=0.0, cash=100.0)
+    assert len(_unknown_rule(validate(out, "aggressive", None, {"XYZ": "UNKNOWN"}))) == 1
+
+
+def test_buy_with_unknown_fundamentals_raises_via_validate_or_raise():
+    out = _output([_position(ticker="XYZ", action="LONG-BUY")])
+    with pytest.raises(BoundsViolationError) as exc_info:
+        validate_or_raise(out, "conservative", None, {"XYZ": "UNKNOWN"})
+    assert any(v["rule"] == "buy_with_unknown_fundamentals" for v in exc_info.value.violations)

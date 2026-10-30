@@ -216,3 +216,73 @@ class TestWaitForEntryAtCurrentEntryCaught:
 
         repriced = flow._finalize_and_validate_portfolio(structured, "conservative")
         assert repriced["positions"][0]["action"] == "WAIT-FOR-ENTRY"
+
+
+# ── D-08: fundamentals_status stamped and buy-on-UNKNOWN fails closed ────────
+
+def _fundamental_output(ticker, quality, growth):
+    from schemas.agent_outputs import (
+        FundamentalAnalysisOutput, FundamentalRating, StockFundamentalAnalysis, ValuationMetrics,
+    )
+    return FundamentalAnalysisOutput(
+        sector="Energy",
+        summary="S" * 100,
+        fundamental_analysis=[StockFundamentalAnalysis(
+            ticker=ticker, company_name=f"{ticker} Inc", valuation_metrics=ValuationMetrics(),
+            fundamental_rating=FundamentalRating(valuation="FAIR", quality=quality, growth=growth),
+            key_strengths=["s"], key_risks=["r"], investment_thesis="T" * 20,
+        )],
+    )
+
+
+def _buy_structured(ticker, action="LONG-BUY", status=None):
+    pos = {
+        "ticker": ticker, "action": action, "composite_score": 80.0, "current_price": 108.0,
+        "trade_setup": {"direction": "LONG-BUY", "entry_zone_low": 100.0, "entry_zone_high": 105.0,
+                        "stop_loss": 97.0, "take_profit": 115.0},
+    }
+    if status is not None:
+        pos["fundamentals_status"] = status
+    return {"positions": [pos], "deployed_pct": 0.0, "reserved_pct": 0.0, "cash_reserve_pct": 100.0}
+
+
+class TestFundamentalsStatusStamped:
+    def test_flow_stamps_fundamentals_status(self, flow):
+        flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
+        flow.state.fundamental_output = _fundamental_output("MRK", "Medium", "Stable")
+
+        # An LLM-written UNKNOWN is overwritten by the deterministic AVAILABLE.
+        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", status="UNKNOWN"), "conservative")
+
+        assert repriced["positions"][0]["fundamentals_status"] == "AVAILABLE"
+
+    def test_ticker_without_fundamental_record_gets_none(self, flow):
+        flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
+        flow.state.fundamental_output = None
+
+        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", status="AVAILABLE"), "conservative")
+
+        assert repriced["positions"][0]["fundamentals_status"] is None
+
+    def test_monitor_on_unknown_publishes_with_unknown_status(self, flow):
+        flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
+        flow.state.fundamental_output = _fundamental_output("MRK", "UNKNOWN", "Stable")
+
+        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", action="MONITOR"), "conservative")
+
+        assert repriced["positions"][0]["fundamentals_status"] == "UNKNOWN"
+
+
+class TestBuyOnUnknownFundamentalsCaught:
+    @pytest.mark.parametrize("action", ["LONG-BUY", "WAIT-FOR-ENTRY"])
+    def test_flow_raises_for_buy_on_unknown(self, flow, action):
+        flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
+        flow.state.fundamental_output = _fundamental_output("MRK", "Low", "UNKNOWN")
+
+        with pytest.raises(BoundsViolationError) as exc_info:
+            flow._finalize_and_validate_portfolio(_buy_structured("MRK", action=action), "conservative")
+
+        assert any(
+            v["rule"] == "buy_with_unknown_fundamentals" and v["ticker"] == "MRK"
+            for v in exc_info.value.violations
+        )
