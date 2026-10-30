@@ -437,16 +437,35 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         return json.dumps({"reference_table": rows})
 
     def _gate_position_context(self) -> Dict[str, Dict[str, Optional[str]]]:
-        """ticker -> {entry_zone_status, risk_profile} for ActionPolicyGate."""
+        """ticker -> position context for ActionPolicyGate: entry_zone_status,
+        risk_profile, fundamentals_status (None when the ticker has no
+        fundamental record, D-08) and price_data_error.
+        """
         to = self.state.technical_output
         if to is None:
             return {}
+        fundamentals = self._fundamentals_status_by_ticker()
         return {
             t.ticker.upper(): {
                 "entry_zone_status": t.momentum_analysis.entry_zone_status,
                 "risk_profile": self.state.risk_profile,
+                "fundamentals_status": fundamentals.get(t.ticker.upper()),
+                "price_data_error": t.price_data_error,
             }
             for t in to.technical_analysis
+        }
+
+    def _fundamentals_status_by_ticker(self) -> Dict[str, str]:
+        """ticker -> AVAILABLE | UNKNOWN from the deterministic fundamental
+        output (UNKNOWN exactly when quality or growth is UNKNOWN). Tickers
+        without a fundamental record are absent.
+        """
+        fo = self.state.fundamental_output
+        if fo is None:
+            return {}
+        return {
+            a.ticker.upper(): fundamentals_status(a.fundamental_rating.quality, a.fundamental_rating.growth)
+            for a in fo.fundamental_analysis
         }
 
     def _gated_slim_critique(self) -> str:
