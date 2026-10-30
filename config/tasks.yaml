@@ -186,13 +186,19 @@ tasks:
       STEP 3 — Grade ALL fundamentals in one call:
         Pass the ENTIRE output string from STEP 2 directly to 'grade_fundamental_data'.
         Example: grade_fundamental_data(fundamentals_batch_json='<exact string from STEP 2>')
-        The tool returns {"grades": [one entry per ticker]} with valuation_grade,
-        financial_health, growth_outlook, and fundamental_component for each ticker.
-        Tickers where fetch failed will have fundamental_unknown=true and all grades="UNKNOWN".
-        Copy all returned values verbatim — do NOT substitute or invent any grade.
+        The tool returns {"grades": [one entry per ticker]} with valuation, quality, growth,
+        data_status, quality_score, growth_score and fundamental_component for each ticker.
+        Labels: valuation CHEAP|FAIR|EXPENSIVE|VERY_EXPENSIVE|UNKNOWN, quality
+        High|Medium|Low|UNKNOWN, growth High Growth|Moderate Growth|Stable|Declining|UNKNOWN,
+        data_status ok|partial|failed.
+        Missing data is never graded: a dimension with no data is "UNKNOWN" with a null score,
+        and a ticker whose fetch failed has data_status="failed" with every label "UNKNOWN".
+        Copy all returned values verbatim, including "UNKNOWN" and data_status — do NOT
+        substitute or invent any grade.
         Write risk_factors, catalysts, and fundamental_summary yourself,
         citing specific numbers from the raw data.
-        When fundamental_unknown=true: set risk_factors=["Fundamental data unavailable"],
+        When data_status="failed" (or quality and growth are both "UNKNOWN"):
+        set risk_factors=["Fundamental data unavailable"],
         catalysts=["Data unavailable"], fundamental_summary="No fundamental data
         available for this ticker."
 
@@ -205,17 +211,18 @@ tasks:
             revenue_growth_yoy(float|null) net_margin(float|null) gross_margin(float|null)
             return_on_equity(float|null) debt_to_equity(float|null) current_ratio(float|null)
             free_cash_flow(float|null) dividend_yield(float|null)
-          assessment: valuation_grade(str) financial_health(str) growth_outlook(str)
-            fundamental_component(int|null) fundamental_unknown(bool)
+          assessment: valuation(str) quality(str) growth(str) data_status(str)
+            fundamental_component(int|null)
             fundamental_summary(str) risk_factors(str[]) catalysts(str[])
         sector_fundamental_summary: str
 
       RULES:
       - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
-      - valuation_grade, financial_health, growth_outlook, fundamental_component must be copied
+      - valuation, quality, growth, data_status, fundamental_component must be copied
         verbatim from the 'grade_fundamental_data' tool result.
-      - When fundamental_unknown=true, do NOT substitute any grade or score — copy the UNKNOWN
-        values verbatim. Downstream agents are designed to handle UNKNOWN without fabricating.
+      - When a label is "UNKNOWN" or data_status is "failed", do NOT substitute any grade or
+        score — copy the UNKNOWN values verbatim. Downstream agents are designed to handle
+        UNKNOWN without fabricating.
       - Include all tickers from technical analysis context.
     expected_output: >
       Python dict with sector='$sector', analysis_date,
@@ -251,8 +258,8 @@ tasks:
         From Technical context:   momentum_score, entry_zone_low, entry_zone_high,
                                   entry_zone_status, regime, risk_level,
                                   overall_signal, key_signals, raw_indicators
-        From Fundamental context: financial_health, growth_outlook, valuation_grade,
-                                  fundamental_component, risk_factors, catalysts
+        From Fundamental context: quality, growth, valuation, data_status,
+                                  fundamentals_status, risk_factors, catalysts
 
         CRITICAL: average_sentiment is a float between -1.0 and 1.0. Extract the EXACT
         value — do NOT use 0.65 or any default.
@@ -263,9 +270,10 @@ tasks:
         CRITICAL: momentum_score is a float between 0 and 10. Extract the EXACT
         value — do NOT default to 8.0 or any other fixed number.
         CRITICAL: Every stock must have a DISTINCT composite_score.
-        CRITICAL: When a stock has fundamental_unknown=true, pass financial_health="UNKNOWN"
-        and growth_outlook="UNKNOWN" to compute_composite_scores. The tool will exclude
-        the fundamental component from that stock's score and flag fundamental_unknown=true.
+        CRITICAL: When a stock has fundamentals_status=UNKNOWN, pass its quality and growth
+        values (including "UNKNOWN") to compute_composite_scores exactly as given. The tool
+        excludes the fundamental component from that stock's score and flags
+        fundamental_unknown=true.
         Copy the returned composite_score verbatim — it already reflects missing data.
         CRITICAL: If a stock has price_data_error set (current_price is null), it means
         live price data could not be retrieved. You MUST cap that stock at MONITOR or AVOID —
@@ -278,12 +286,12 @@ tasks:
               "ticker":            "<TICKER>",
               "average_sentiment": <float>,
               "momentum_score":    <float from Technical interpretation>,
-              "financial_health":  "<STRONG|ADEQUATE|WEAK|UNKNOWN>",
-              "growth_outlook":    "<HIGH|MODERATE|LOW|DECLINING|UNKNOWN>"
+              "quality": "<High|Medium|Low|UNKNOWN>",
+              "growth": "<High Growth|Moderate Growth|Stable|Declining|UNKNOWN>"
             }, ...
           ]')
         Record each stock's composite_score and components verbatim.
-        For tickers with fundamental_unknown=true the tool returns fundamental_component=null —
+        For tickers with fundamentals_status=UNKNOWN the tool returns fundamental_component=null —
         copy it as null, do NOT substitute a number.
 
       STEP 3 — Reason like a market analyst to decide one action per stock. Do NOT
@@ -295,8 +303,8 @@ tasks:
         conditions yourself):
           Technical:   entry_zone_status, overall_signal, momentum_score, regime,
                        risk_level, key_signals, raw_indicators
-          Fundamental: financial_health, growth_outlook, valuation_grade, risk_factors,
-                       catalysts (or fundamental_unknown=true — treat as a genuine
+          Fundamental: quality, growth, valuation, risk_factors, catalysts
+                       (or fundamentals_status=UNKNOWN — treat as a genuine
                        uncertainty to weigh, not an automatic block)
           Market:      average_sentiment (or "no data" when sentiment_available=false —
                        reason from technical/fundamental alone, do not invent a tone)
@@ -421,7 +429,7 @@ tasks:
       STEP 1 — For EACH ticker in the draft, build your data picture:
         From the reference_table: locate the row where "ticker" matches. Available fields:
           rsi, stochastic_status, macd_status, entry_zone_status, momentum_score,
-          average_sentiment, valuation_grade, financial_health.
+          average_sentiment, valuation, quality, fundamentals_status.
         From Draft: action, allocation_pct, composite_score, current_price,
           rationale, monitoring_triggers,
           trade_setup (entry_zone_low, entry_zone_high, stop_loss, take_profit).
@@ -449,14 +457,14 @@ tasks:
         would have.
         ACTION_PROFILE_MISMATCH — LONG-BUY on entry_zone_status=PULLBACK_ENTRY with overall_signal=BEARISH
                                   and no compelling fundamental override cited in rationale (MAJOR)
-        UNCONVINCING_OVERRIDE   — LONG-BUY against weak momentum and weak financial_health with
+        UNCONVINCING_OVERRIDE   — LONG-BUY against weak momentum and quality=Low with
                                   no specific catalyst cited to justify the override (MAJOR)
         FABRICATED_SIGNAL       — rationale claims a signal ("strong momentum", "bullish") that
                                   contradicts the reference-table data for that stock (MAJOR)
         SENTIMENT_CONTRADICTION — average_sentiment < 0.0 with LONG-BUY, no negative caveat (MAJOR)
-        VALUATION_IGNORED       — valuation_grade=VERY_EXPENSIVE with LONG-BUY, no valuation risk mentioned (MAJOR)
+        VALUATION_IGNORED       — valuation=VERY_EXPENSIVE with LONG-BUY, no valuation risk mentioned (MAJOR)
         TRIGGER_CONTRADICTION   — LONG-BUY trigger fires during normal uptrend (MINOR)
-        WEAK_FUNDAMENTALS_BUY   — financial_health=WEAK with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
+        WEAK_FUNDAMENTALS_BUY   — quality=Low with LONG-BUY, no balance-sheet risk acknowledged (MAJOR)
         MISSING_STOP_LOGIC      — stop_loss set at or above entry_zone_high (MAJOR)
         VAGUE_RATIONALE         — claims without citing specific numbers (MINOR)
 

@@ -23,6 +23,7 @@ from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
 from utils.action_policy_gate import filter_directives, filter_critiques
 from utils.candidate_universe_filter import filter_candidates
+from utils.fundamental_grader_tool import fundamentals_status
 from utils import yfinance_cache
 from config.config import Config
 from prospect_ai_crew import TaskFactory
@@ -343,14 +344,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     def _slim_fundamental(self) -> str:
         """Graded fields per ticker mapped to tasks.yaml layout (stock_analyses).
-        fundamental_component and fundamental_unknown are not in FundamentalAnalysisOutput
-        schema — fundamental_unknown defaults to False.
+        Keys and values are the schema vocabulary, copied from the model with no
+        translation (CORR-02, D-10). UNKNOWN labels and data_status pass through
+        verbatim; fundamentals_status is derived from them by the grader helper.
         """
-        _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
-        _growth_map = {
-            "High Growth": "HIGH", "Moderate Growth": "MODERATE",
-            "Stable": "LOW", "Declining": "DECLINING",
-        }
         fo = self.state.fundamental_output
         if fo is None:
             return ""
@@ -360,10 +357,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             slim.append({
                 "ticker": a.ticker,
                 "assessment": {
-                    "valuation_grade": fr.valuation,
-                    "financial_health": _quality_map.get(fr.quality, "UNKNOWN"),
-                    "growth_outlook": _growth_map.get(fr.growth, "UNKNOWN"),
-                    "fundamental_unknown": False,
+                    "valuation": fr.valuation,
+                    "quality": fr.quality,
+                    "growth": fr.growth,
+                    "data_status": a.data_status,
+                    "fundamentals_status": fundamentals_status(fr.quality, fr.growth),
                     "fundamental_summary": a.investment_thesis,
                     "risk_factors": a.key_risks,
                     "catalysts": a.key_strengths,
@@ -412,8 +410,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         if mo is None or to is None or fo is None:
             return json.dumps({"reference_table": []})
 
-        _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
-
         sentiment_by_ticker = {s.ticker: s.average_sentiment for s in mo.candidate_stocks}
         tech_by_ticker      = {a.ticker: a for a in to.technical_analysis}
         fund_by_ticker      = {a.ticker: a for a in fo.fundamental_analysis}
@@ -433,8 +429,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "entry_zone_status": ma.entry_zone_status  if ma else None,
                 "momentum_score":    ma.momentum_score      if ma else None,
                 "average_sentiment": sentiment_by_ticker.get(ticker),
-                "valuation_grade":   fr.valuation          if fr else None,
-                "financial_health":  _quality_map.get(fr.quality, "UNKNOWN") if fr else None,
+                "valuation":         fr.valuation          if fr else None,
+                "quality":           fr.quality            if fr else None,
+                # No fundamental row for this ticker is itself an unknown.
+                "fundamentals_status": fundamentals_status(fr.quality, fr.growth) if fr else "UNKNOWN",
             })
         return json.dumps({"reference_table": rows})
 
