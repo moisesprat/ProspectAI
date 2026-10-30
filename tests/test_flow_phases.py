@@ -101,8 +101,9 @@ class TestExtractPydantic:
         result = MagicMock()
         result.raw = "not json at all"
         result.tasks_output = [task_out]
-        with pytest.raises(RuntimeError, match="Pydantic validation failed"):
+        with pytest.raises(RuntimeError, match="market_analysis: output failed schema validation") as info:
             ProspectAIFlow._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
+        assert "not json at all" not in str(info.value)
 
 
 # ─── _emit_progress ────────────────────────────────────────────────────────────
