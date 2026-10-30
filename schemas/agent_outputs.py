@@ -134,11 +134,25 @@ class ValuationMetrics(BaseModel):
     dividend_yield: Optional[float] = Field(None, ge=0.0)
 
 
+# Single vocabulary for fundamental labels (CORR-02, D-10). The grader, the
+# scoring tables, the composite tool, the Flow's slim context, the Critic's
+# reference table and tasks.yaml all use exactly these names and values.
+# "UNKNOWN" means the underlying data was missing or the fetch failed: absence
+# of data is never turned into a grade (CORR-11, D-07).
+ValuationLabel = Literal["CHEAP", "FAIR", "EXPENSIVE", "VERY_EXPENSIVE", "UNKNOWN"]
+QualityLabel = Literal["Low", "Medium", "High", "UNKNOWN"]
+GrowthLabel = Literal["Declining", "Stable", "Moderate Growth", "High Growth", "UNKNOWN"]
+# ok = every grading input present; partial = some missing; failed = fetch error.
+DataStatus = Literal["ok", "partial", "failed"]
+FundamentalsStatus = Literal["AVAILABLE", "UNKNOWN"]
+
+
 class FundamentalRating(BaseModel):
-    valuation: Literal["CHEAP", "FAIR", "EXPENSIVE", "VERY_EXPENSIVE"]
-    quality: Literal["Low", "Medium", "High"]
-    growth: Literal["Declining", "Stable", "Moderate Growth", "High Growth"]
-    overall: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+    # `overall` was removed (D-09): nothing consumed it. Stored payloads that
+    # still carry it load fine because unknown keys are ignored.
+    valuation: ValuationLabel
+    quality: QualityLabel
+    growth: GrowthLabel
 
 
 class StockFundamentalAnalysis(BaseModel):
@@ -149,6 +163,8 @@ class StockFundamentalAnalysis(BaseModel):
     key_strengths: List[str] = Field(..., min_length=1)
     key_risks: List[str] = Field(..., min_length=1)
     investment_thesis: str = Field(..., min_length=10)
+    # Copied from the grader (failed fetch is representable). None on old payloads.
+    data_status: Optional[DataStatus] = None
 
 
 class FundamentalAnalysisOutput(BaseModel):
@@ -205,6 +221,8 @@ class PositionRecommendation(BaseModel):
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
     review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
+    # Flow-set from plan 02-11 on; absent (None) on reports stored before it.
+    fundamentals_status: Optional[FundamentalsStatus] = None
 
     @field_validator("action", "review_frequency", mode="before")
     @classmethod
