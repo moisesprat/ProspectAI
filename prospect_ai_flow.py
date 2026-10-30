@@ -18,6 +18,7 @@ from schemas.agent_outputs import (
     CriticOutput,
 )
 from utils.execution_tracker import ExecutionTracker
+from utils.phase_runner import extract_model, run_phase
 from utils.recommendation_validator import validate_portfolio
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
@@ -213,12 +214,16 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             ids.append(model.split("/", 1)[1] if "/" in model else model)
         return ids
 
-    def _require_tool_calls(self, phase: str, task) -> None:
-        """Fail the run when a tool phase recorded zero tool calls (no-op without a tracker)."""
+    def _require_tool_calls(self, phase: str, task, since: int = 0) -> None:
+        """Fail the run when a tool phase recorded zero tool calls (no-op without a tracker).
+
+        ``since`` is the phase's tool-call count before the attempt being checked, so
+        a retry cannot pass on the tool calls of an earlier attempt.
+        """
         if self._tracker is None:
             return
         tools = getattr(task, "tools", None) or []
-        if not tools or self._tracker.tool_call_count(phase) > 0:
+        if not tools or self._tracker.tool_call_count(phase) - since > 0:
             return
         names = ", ".join(str(getattr(t, "name", type(t).__name__)) for t in tools)
         raise MissingToolCallError(
@@ -242,27 +247,68 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     @staticmethod
     def _extract_pydantic(result: CrewOutput, model_cls: Type[_M], phase: str) -> _M:
-        """Return validated Pydantic model from mini-Crew result.
+        """Validated Pydantic model from a mini-Crew result (see utils.phase_runner.extract_model).
 
-        Tries result.tasks_output[0].pydantic first (set by CrewAI when
-        output_pydantic validation succeeds), then falls back to parsing
-        result.raw directly via model_validate_json.
+        Kept under this name for existing callers. The error names the phase and the
+        failing fields and never carries the raw model output.
         """
-        pydantic_model = (
-            result.tasks_output[0].pydantic
-            if result.tasks_output
-            else None
+        return extract_model(result, model_cls, phase)
+
+    async def _run_phase(
+        self,
+        phase: str,
+        index: int,
+        model_cls: Type[_M],
+        build_args: tuple = (),
+        build_kwargs: Optional[Dict[str, Any]] = None,
+        validate: Optional[Callable[[_M], None]] = None,
+    ) -> "tuple[CrewOutput, _M]":
+        """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
+
+        Owns the tracker lifecycle: start_phase once before the first attempt,
+        finish_phase once after the accepted attempt (tokens of failed attempts are
+        not added, a known metrics gap). The tool-call guard runs per attempt, so a
+        retry cannot pass on the tool calls of an earlier attempt.
+        """
+        tracker = self._tracker
+        box: Dict[str, Any] = {}
+
+        def build(feedback: str):
+            kwargs = dict(build_kwargs or {})
+            if feedback:
+                kwargs["feedback"] = feedback
+            task = self._factory.build_task(
+                phase, self.state.sector, self.state.today, *build_args, **kwargs,
+            )
+            if tracker and "task" not in box:
+                tracker.start_phase(phase, llm=self._task_llm(task))
+            box["task"] = task
+            return task
+
+        def finish(result: CrewOutput, task) -> None:
+            if tracker:
+                tracker.finish_phase(phase, result.token_usage, self._model_id(task), llm=self._task_llm(task))
+
+        async def kickoff(task) -> CrewOutput:
+            before = tracker.tool_call_count(phase) if tracker else 0
+            result = cast(CrewOutput, await self._make_crew(task, index).akickoff())
+            try:
+                self._require_tool_calls(phase, task, since=before)
+            except MissingToolCallError:
+                finish(result, task)
+                raise
+            return result
+
+        result, model = await run_phase(
+            phase=phase,
+            build_task=build,
+            kickoff=kickoff,
+            model_cls=model_cls,
+            validate=validate,
+            tracker=tracker,
         )
-        if pydantic_model is not None:
-            return cast(_M, pydantic_model)
-        raw = result.raw or ""
-        try:
-            return cast(_M, model_cls.model_validate_json(raw))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Pydantic validation failed for {phase}. "
-                f"raw[:200]={raw[:200]!r}"
-            ) from exc
+        finish(result, box["task"])
+        return result, model
 
     # ── Context slim helpers ──────────────────────────────────────────────────
     # Each helper builds a slimmed JSON string from the typed model stored in
@@ -539,14 +585,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._check_error()
         self._emit_start(1)
         ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        task = self._factory.build_task("technical_analysis", self.state.sector, self.state.today, ctx)
-        if self._tracker:
-            self._tracker.start_phase("technical_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 1).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("technical_analysis", task)
-        self.state.technical_output = self._extract_pydantic(result, TechnicalAnalysisOutput, "technical_analysis")
+        result, self.state.technical_output = await self._run_phase(
+            "technical_analysis", 1, TechnicalAnalysisOutput, build_args=(ctx,),
+        )
         self._emit_progress(1, result)
         return result.raw or ""
 

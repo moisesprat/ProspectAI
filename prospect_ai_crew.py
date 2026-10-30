@@ -52,6 +52,15 @@ class TaskFactory:
         ):
             agent.use_config(self.config)
 
+        # crewai's own retry re-runs the whole task blind and its counter lives on the
+        # Agent, so draft and final (one shared agent) would share a budget. Retries are
+        # counted per phase by utils/phase_runner.run_phase instead (STALL-04).
+        for agent in (
+            self.market_analyst, self.technical_analyst, self.fundamental_analyst,
+            self.investor_strategist, self.critic,
+        ):
+            agent.get_agent().max_retry_limit = 0
+
         # Same instance is shared with the phase config below (now instrumented).
         self.search_tool = instrument_tool(PatientSerperDevTool(), "market_analysis", self._tracker_getter)
 
@@ -93,8 +102,20 @@ class TaskFactory:
         """Instrument every tool in `phase` once (idempotent) with its phase label."""
         return [instrument_tool(t, phase, self._tracker_getter) for t in tools]
 
-    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "", risk_profile: str = "conservative") -> Task:
-        """Build a single Task for `phase`. prior_context is appended to the description."""
+    def build_task(
+        self,
+        phase: str,
+        sector: str,
+        today: str,
+        prior_context: str = "",
+        risk_profile: str = "conservative",
+        feedback: str = "",
+    ) -> Task:
+        """Build a single Task for `phase`.
+
+        prior_context is appended to the description, then feedback (the failing
+        fields of a previous attempt, see utils/phase_runner.py) when non-empty.
+        """
         if phase not in self._phase_config:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
         pc = self._phase_config[phase]
@@ -102,6 +123,8 @@ class TaskFactory:
         description = cfg["description"]
         if prior_context:
             description = description + "\n\n" + prior_context
+        if feedback:
+            description = description + "\n\n" + feedback
         return Task(
             description=description,
             agent=pc["agent"],
