@@ -55,7 +55,9 @@ def load_and_validate_env(provider: str, model, ollama_base_url):
         if not ollama_base_url:
             missing.append("OLLAMA_BASE_URL")
 
-    if not (model or _global_model_configured(provider)):
+    # Ollama has no packaged default, so a model must be named. Anthropic falls
+    # back to the per-agent model in config/agents.yaml when none is configured.
+    if provider == "ollama" and not (model or _global_model_configured(provider)):
         missing.append("MODEL (or legacy ANTHROPIC_MODEL / OLLAMA_MODEL)")
 
     if missing:
@@ -100,7 +102,8 @@ Commands / Options:
   --sector SECTOR    Sector to analyze. Choices: Technology (default), Healthcare,
                      Finance, Energy, Consumer, Industrials, Real Estate, Utilities
   --model MODEL      Override the global MODEL env var for this run (raw model id,
-                     e.g. claude-opus-4-6 or qwen3.5:9b)
+                     e.g. claude-opus-4-6 or qwen3.5:9b). Without it, Anthropic uses
+                     the per-agent model in config/agents.yaml; Ollama requires one
   --ollama           Switch provider to Ollama (local inference)
   --url URL          Ollama base URL; overrides OLLAMA_BASE_URL in .env
   --version          Show version and exit
@@ -178,11 +181,12 @@ def main():
     print("Initializing ProspectAI...")
     prospect_ai = ProspectAIFlow(model=model, provider=provider, ollama_base_url=ollama_base_url)
 
-    effective_model = prospect_ai.pipeline_config.default_model_id()
+    effective_models = prospect_ai.agent_model_ids()
+    shown = effective_models[0] if len(set(effective_models)) == 1 else ", ".join(effective_models)
     if provider == "ollama":
-        print(f"MODEL_PROVIDER=ollama | global model id: {effective_model} @ {ollama_base_url}")
+        print(f"MODEL_PROVIDER=ollama | model id: {shown} @ {ollama_base_url}")
     else:
-        print(f"MODEL_PROVIDER=anthropic | global model id: {effective_model}")
+        print(f"MODEL_PROVIDER=anthropic | model id: {shown}")
 
     print(f"Risk profile: {args.risk_profile}")
     market_criteria = {

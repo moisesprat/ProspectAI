@@ -94,6 +94,30 @@ class TestFlowInjection:
         assert isinstance(ProspectAIFlow().pipeline_config, Config)
 
 
+# ─── agent_model_ids (plan 02-03, D-01) ────────────────────────────────────────
+
+class TestAgentModelIds:
+    def test_agent_model_ids_yaml_default(self, clean_env):
+        ids = ProspectAIFlow().agent_model_ids()
+        assert ids == ["claude-haiku-5-5"] * 6
+
+    def test_agent_model_ids_env_override(self, clean_env):
+        clean_env.setenv("AGENT_CRITIC_MODEL", HAIKU)
+        ids = ProspectAIFlow().agent_model_ids()
+        assert ids[4] == HAIKU
+        assert [m for i, m in enumerate(ids) if i != 4] == ["claude-haiku-5-5"] * 5
+
+    def test_global_model_changes_all_six(self, clean_env):
+        clean_env.setenv("MODEL", "claude-x")
+        assert ProspectAIFlow().agent_model_ids() == ["claude-x"] * 6
+
+    def test_provider_prefix_is_stripped(self, clean_env):
+        flow = ProspectAIFlow()
+        for phase in _PHASES:
+            flow._factory._phase_config[phase]["agent"].llm.model = "ollama/qwen3"
+        assert flow.agent_model_ids() == ["qwen3"] * 6
+
+
 # ─── CLI (main.py) ─────────────────────────────────────────────────────────────
 
 def _run_main(monkeypatch, argv):
@@ -103,6 +127,7 @@ def _run_main(monkeypatch, argv):
 
     flow_cls = MagicMock()
     flow_cls.return_value.run_analysis.return_value = {"summary": "s", "execution_metrics": {}}
+    flow_cls.return_value.agent_model_ids.return_value = ["claude-haiku-5-5"] * 6
     monkeypatch.setattr(prospect_ai_flow, "ProspectAIFlow", flow_cls)
     monkeypatch.setattr(main, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr("sys.argv", ["prospectai", *argv])
@@ -130,10 +155,39 @@ class TestCli:
         assert kwargs["model"] == "qwen"
         assert dict(os.environ) == before
 
-    def test_missing_model_exits_1_env_untouched(self, clean_env, capsys):
+    def test_anthropic_without_model_runs(self, clean_env, capsys):
+        import main
+
+        clean_env.setattr(main, "load_dotenv", lambda *a, **k: None)
+        before = dict(os.environ)
+        main.load_and_validate_env("anthropic", None, None)  # must not exit
+        assert "MODEL" not in capsys.readouterr().out
+        assert dict(os.environ) == before
+
+    def test_anthropic_without_model_still_checks_other_keys(self, clean_env, capsys):
+        import main
+
+        clean_env.setattr(main, "load_dotenv", lambda *a, **k: None)
+        clean_env.delenv("ANTHROPIC_API_KEY")
+        with pytest.raises(SystemExit) as exc:
+            main.load_and_validate_env("anthropic", None, None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "ANTHROPIC_API_KEY" in out
+        assert "MODEL (or legacy" not in out
+
+    def test_cli_anthropic_without_model_prints_yaml_models(self, clean_env, capsys):
+        before = dict(os.environ)
+        flow_cls = _run_main(clean_env, ["--sector", "Technology"])
+        _, kwargs = flow_cls.call_args
+        assert kwargs["model"] is None
+        assert "claude-haiku-5-5" in capsys.readouterr().out
+        assert dict(os.environ) == before
+
+    def test_ollama_without_model_exits_1(self, clean_env, capsys):
         before = dict(os.environ)
         with pytest.raises(SystemExit) as exc:
-            _run_main(clean_env, ["--sector", "Technology"])
+            _run_main(clean_env, ["--ollama", "--url", "http://host:1", "--sector", "Technology"])
         assert exc.value.code == 1
         assert "MODEL (or legacy ANTHROPIC_MODEL / OLLAMA_MODEL)" in capsys.readouterr().out
         assert dict(os.environ) == before

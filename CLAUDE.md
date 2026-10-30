@@ -53,7 +53,7 @@ Custom Claude Code commands available in this project:
 | Variable | Required | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes (default provider) | LLM calls |
-| `MODEL` | Yes | Global model override (e.g. `claude-sonnet-4-6`). Falls back to legacy `ANTHROPIC_MODEL` / `OLLAMA_MODEL` |
+| `MODEL` | No on Anthropic; yes with `--ollama` | Optional global model override (e.g. `claude-sonnet-4-6`). Unset, each agent uses its `config/agents.yaml` model (`claude-haiku-5-5`). Falls back to legacy `ANTHROPIC_MODEL` / `OLLAMA_MODEL` |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | One of these two | Market Analyst Reddit data |
 | `SERPER_API_KEY` | One of these two | Web search fallback when Reddit is unavailable |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | Only with `--ollama` | Local Ollama inference |
@@ -117,7 +117,7 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 | `prospect_ai_crew.py` | `TaskFactory` — agent/task factory used by `ProspectAIFlow` (per-phase agent + tools + schema config, `build_task()`) |
 | `agents/base_agent.py` | `BaseAgent` ABC; loads YAML config, `_get_llm()` returns `crewai.LLM` based on `MODEL_PROVIDER` |
 | `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
-| `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, temperature, model, max_tokens |
+| `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, thinking, model, max_tokens |
 | `config/tasks.yaml` | Task descriptions and expected outputs with `$sector` / `$today` template variables |
 | `config/agent_config_loader.py` | Reads `agents.yaml`, exposes per-agent config dicts |
 | `config/task_config_loader.py` | `TaskConfigLoader.render(task_key, **kwargs)` — substitutes template variables |
@@ -212,7 +212,9 @@ alongside other run failures rather than assume `run_analysis()` always returns 
 
 - **Global**: `MODEL_PROVIDER` env var (`anthropic` or `ollama`) — set by `--ollama` CLI flag.
 - **Per-agent env overrides**: `AGENT_MARKET_ANALYST_MODEL`, `AGENT_TECHNICAL_ANALYST_MODEL`, `AGENT_FUNDAMENTAL_ANALYST_MODEL`, `AGENT_INVESTOR_STRATEGIC_MODEL`, `AGENT_CRITIC_MODEL`.
-- **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): Haiku for data-gathering agents (1–3), Sonnet for reasoning agents (4–6).
+- **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): all agents use `claude-haiku-5-5`. `thinking: off|low` is set per agent (off for data-gathering agents, low-effort adaptive thinking for the draft, critic and final steps). No sampling parameters (`temperature`, `top_p`, `top_k`) are configured or sent, because Haiku 5.5 rejects non-default values.
+- `agents/caching_llm.py` patches crewai's native structured-output allow-list so Haiku 5.5 gets native structured output. A crewai upgrade must keep `tests/test_llm_sdk_compat.py` green.
+- A tool phase that finishes with zero recorded tool calls fails the run with `MissingToolCallError` rather than publishing model-invented numbers.
 - All LLM calls go through `crewai.LLM` (see `agents/base_agent.py::_get_llm()` and `agents/caching_llm.py`) — no direct langchain dependencies. `crewai.LLM(...)` is a factory: for providers in crewai's `SUPPORTED_NATIVE_PROVIDERS` list (includes both `anthropic` and `ollama`), it dispatches to a native completion class (e.g. `AnthropicCompletion`) instead of LiteLLM. Since `litellm` is not a pinned dependency here (only `crewai`/`crewai-tools` are) and isn't installed in `.venv`, **both the default Anthropic path and the `--ollama` path run through crewai's native clients, not LiteLLM** — LiteLLM is only crewai's fallback for providers outside that native list.
 
 ### Related Repositories

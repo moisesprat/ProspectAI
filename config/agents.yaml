@@ -1,5 +1,5 @@
 # ProspectAI Agent Configuration
-# Primary place to change agent behavior (role, goal, backstory, temperature, max_tokens).
+# Primary place to change agent behavior (role, goal, backstory, thinking, max_tokens).
 # Optional per-agent LLM model via env (overrides MODEL for that agent):
 #   AGENT_MARKET_ANALYST_MODEL, AGENT_TECHNICAL_ANALYST_MODEL,
 #   AGENT_FUNDAMENTAL_ANALYST_MODEL, AGENT_INVESTOR_STRATEGIC_MODEL,
@@ -7,9 +7,15 @@
 # Each agent's goal and backstory are tightly coupled to the pipeline's data contract:
 # they tell the LLM exactly what inputs to expect and what output schema to produce.
 #
-# Model strategy:
-#   Agents 1-3 (data gathering): claude-haiku-4-5-20251001  — fast, cost-efficient
-#   Agents 4-6 (strategy/critic): claude-sonnet-4-6         — highest reasoning quality
+# Model strategy (MODEL-01):
+#   All five agents run claude-haiku-5-5 (D-01). AGENT_<NAME>_MODEL still overrides one agent.
+#   thinking: off | low, per agent, default off (D-03).
+#     off -> {"type": "disabled"}; low -> {"type": "adaptive"} with output_config.effort "low".
+#     A model that does not support adaptive thinking (e.g. an override to Haiku 4.5)
+#     is sent neither, so the package stays valid under an older model pin.
+#   No sampling parameters (temperature, top_p, top_k): Haiku 5.5 rejects non-default
+#   values, so none are configured or sent (D-02).
+#   thinking tokens count toward max_tokens, so thinking agents get a larger max_tokens.
 
 agents:
 
@@ -41,13 +47,14 @@ agents:
       search results.
       Set 'analysis_timestamp' to the current UTC datetime in ISO 8601 format.
       Output a clean Python dict — no markdown fences, no text before or after.
+      The JSON output format applies to your final answer only. When you need a tool, call it first, with no text before the call, and write the JSON once you have the results.
     verbose: true
     allow_delegation: false
-    temperature: 0.1
+    thinking: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
-      model: "claude-haiku-4-5-20251001"
+      model: "claude-haiku-5-5"
       api_key: null
       base_url: null
 
@@ -74,13 +81,14 @@ agents:
       key_signals (3-5 strings) from your reading of the raw indicators.
       If the tool returns an error for a ticker, record it and set other fields to null.
       Output a clean Python dict — no markdown fences, no text before or after.
+      The JSON output format applies to your final answer only. When you need a tool, call it first, with no text before the call, and write the JSON once you have the results.
     verbose: true
     allow_delegation: false
-    temperature: 0.1
+    thinking: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
-      model: "claude-haiku-4-5-20251001"
+      model: "claude-haiku-5-5"
       api_key: null
       base_url: null
 
@@ -107,14 +115,15 @@ agents:
       catalysts (2-3 items), and fundamental_summary, citing specific numbers from
       the raw data.
       Output a clean Python dict — no markdown fences, no text outside the dict.
+      The JSON output format applies to your final answer only. When you need a tool, call it first, with no text before the call, and write the JSON once you have the results.
     verbose: true
     allow_delegation: false
-    temperature: 0.1
+    thinking: "off"
     max_tokens: 10000
     max_iter: 20
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-5-5"
       api_key: null
       base_url: null
 
@@ -143,13 +152,14 @@ agents:
       Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID. HOLD, SHORT-SELL, and
       SCALED-ENTRY are not valid — they cause schema rejection.
       CASH is a valid and disciplined outcome. Never force BUY ratings to deploy capital.
+      The JSON output format applies to your final answer only. When you need a tool, call it first, with no text before the call, and write the JSON once you have the results.
     verbose: true
     allow_delegation: false
-    temperature: 0.1
-    max_tokens: 10000
+    thinking: "low"
+    max_tokens: 16000
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-5-5"
       api_key: null
       base_url: null
 
@@ -185,11 +195,11 @@ agents:
       You do not praise. Every sentence must identify a risk or mandate a correction.
     verbose: true
     allow_delegation: false
-    temperature: 0.2
-    max_tokens: 12000
+    thinking: "low"
+    max_tokens: 16000
     llm:
       provider: "anthropic"
-      model: "claude-sonnet-4-6"
+      model: "claude-haiku-5-5"
       api_key: null
       base_url: null
 
@@ -204,7 +214,6 @@ agents:
 # Global agent settings (used as defaults when per-agent values are absent)
 # ─────────────────────────────────────────────────────────────────────────────
 global_settings:
-  default_temperature: 0.1
   default_verbose: true
   default_allow_delegation: false
   max_iterations: 5

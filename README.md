@@ -19,7 +19,7 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 ## Features
 
 - **Multi-Agent System**: Five specialized AI agents across a six-task pipeline for rigorous investment analysis
-- **Anthropic Claude**: Powered by Claude models (Sonnet, Opus) by default
+- **Anthropic Claude**: Powered by Claude models (Haiku 5.5 by default; Sonnet and Opus supported)
 - **Ollama Support**: Run fully locally with Ollama models
 - **Real Reddit Integration**: Live Reddit sentiment analysis using public JSON endpoints — no credentials required
 - **Sector Analysis**: Analyze 5 major sectors (Technology, Healthcare, Finance, Energy, Consumer)
@@ -106,14 +106,15 @@ Create a `.env` file in the directory where you'll run `prospectai` (see `env.ex
 # LLM backend: anthropic | ollama
 MODEL_PROVIDER=anthropic
 
-# Global default model id for all agents (raw id, no provider prefix)
-MODEL=claude-sonnet-4-6
+# Optional on Anthropic: a global model id for all agents (raw id, no provider prefix).
+# Unset, each agent uses its model from config/agents.yaml (claude-haiku-5-5).
+# MODEL=claude-sonnet-4-6
 
 # Required when MODEL_PROVIDER=anthropic
 ANTHROPIC_API_KEY=your_key_here
 
 # Optional: override MODEL for a specific agent only
-# AGENT_MARKET_ANALYST_MODEL=claude-3-5-haiku-20241022
+# AGENT_MARKET_ANALYST_MODEL=claude-sonnet-4-6
 # AGENT_TECHNICAL_ANALYST_MODEL=
 # AGENT_FUNDAMENTAL_ANALYST_MODEL=
 # AGENT_INVESTOR_STRATEGIC_MODEL=
@@ -181,7 +182,7 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 | Variable | Required | Description |
 |---|---|---|
 | `MODEL_PROVIDER` | Yes | `anthropic` or `ollama` (CLI `--ollama` sets `ollama`) |
-| `MODEL` | Yes* | Global default model id for all agents (raw id, e.g. `claude-sonnet-4-6` or `qwen3.5:9b`) |
+| `MODEL` | Ollama only | Optional on Anthropic (each agent defaults to its `config/agents.yaml` model, `claude-haiku-5-5`); a global override for all agents when set. Required with `--ollama` (e.g. `qwen3.5:9b`) |
 | `ANTHROPIC_API_KEY` | If `MODEL_PROVIDER=anthropic` | Anthropic API key |
 | `OLLAMA_BASE_URL` | If `MODEL_PROVIDER=ollama` | Ollama server URL |
 | `AGENT_MARKET_ANALYST_MODEL` | No | Overrides `MODEL` for the Market Analyst agent only |
@@ -191,7 +192,7 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 | `ANTHROPIC_MODEL` | No | Legacy fallback if `MODEL` is unset (Anthropic path) |
 | `OLLAMA_MODEL` | No | Legacy fallback if `MODEL` is unset (Ollama path) |
 
-\*Or set a legacy model var above instead of `MODEL`.
+\*For Ollama, set `MODEL` or the legacy `OLLAMA_MODEL`.
 
 ### Other environment variables
 
@@ -206,9 +207,9 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 
 | Model | Use Case |
 |---|---|
-| `claude-sonnet-4-6` | Best balance of quality and speed (default) |
+| `claude-haiku-5-5` | Default for every agent (set in `config/agents.yaml`) |
+| `claude-sonnet-4-6` | Higher quality, slower and costlier |
 | `claude-opus-4-6` | Highest quality, deeper reasoning |
-| `claude-haiku-4-5-20251001` | Fastest, lowest cost |
 
 ### Ollama Models
 
@@ -253,7 +254,7 @@ ProspectAI/
 │   ├── investor_strategic_agent.py
 │   └── critic_agent.py                 # Adversarial reviewer (v1.5.0+)
 ├── config/
-│   ├── agents.yaml                     # Agent behavior (role, goal, model, temperature)
+│   ├── agents.yaml                     # Agent behavior (role, goal, model, thinking)
 │   ├── tasks.yaml                      # Task definitions (descriptions, output schemas)
 │   ├── agent_config_loader.py
 │   ├── task_config_loader.py
@@ -308,6 +309,12 @@ twine upload dist/*
 | No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
 
 ## Release Notes
+
+### Unreleased — Claude Haiku 5.5 by default
+- Every agent now runs Claude Haiku 5.5 by default. The model for each agent is set in `config/agents.yaml`, and `AGENT_<NAME>_MODEL` still overrides a single agent.
+- `MODEL` is now optional on the Anthropic provider. Without it each agent uses its model from `config/agents.yaml`; with it, all agents use that model. The `--ollama` provider still needs a model.
+- `config/agents.yaml` no longer has a per-agent sampling setting (`temperature`), because Haiku 5.5 rejects non-default sampling values. It gains `thinking: off|low` per agent: the draft strategy, critic and final strategy steps use low-effort adaptive thinking, the data-gathering steps run with thinking off.
+- A step that is supposed to call its data tools but finishes without calling any now fails the run with a clear error, instead of returning figures the model made up.
 
 ### v1.9.4 — Analyses work again
 - Fixed an issue in 1.9.3 where every analysis failed right after starting, caused by an incompatible version of the AI provider's library.

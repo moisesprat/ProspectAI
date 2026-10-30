@@ -3,7 +3,8 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prospect_ai_flow import ProspectAIFlow, _parse_crew_result
+from prospect_ai_flow import MissingToolCallError, ProspectAIFlow, _parse_crew_result
+from utils.execution_tracker import ExecutionTracker
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
@@ -343,3 +344,128 @@ class TestPartialMetrics:
         metrics = out["execution_metrics"]
         assert metrics["partial"] is False
         assert metrics["pipeline_elapsed_sec"] >= 0.05
+
+
+# ─── Tool-call guard (plan 02-03, RESEARCH Pitfall 1 and 2d) ──────────────────
+
+def _tool(name):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name)
+
+
+def _task_with_tools(*names):
+    task = _make_task()
+    task.tools = [_tool(n) for n in names]
+    return task
+
+
+class TestToolCallCount:
+    def test_counts_per_phase_and_zero_when_none(self):
+        tracker = ExecutionTracker()
+        tracker.record_tool_call("market_analysis", "Search", 0.0, 1.0, True)
+        tracker.record_tool_call("market_analysis", "Reddit", 0.0, 1.0, False, "TimeoutError")
+        tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
+        assert tracker.tool_call_count("market_analysis") == 2
+        assert tracker.tool_call_count("technical_analysis") == 1
+        assert tracker.tool_call_count("draft_strategy") == 0
+
+
+class TestToolCallGuard:
+    def test_tool_phase_without_tool_calls_fails(self, flow):
+        flow._tracker = ExecutionTracker()
+        task = _task_with_tools("Reddit Sentiment", "Search")
+        with pytest.raises(MissingToolCallError) as info:
+            flow._require_tool_calls("market_analysis", task)
+        msg = str(info.value)
+        assert "market_analysis" in msg
+        assert "Reddit Sentiment" in msg and "Search" in msg
+        assert isinstance(info.value, RuntimeError)
+
+    def test_tool_phase_with_tool_calls_passes(self, flow):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.record_tool_call("market_analysis", "Search", 0.0, 1.0, True)
+        flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
+
+    def test_failed_tool_call_still_counts_as_a_call(self, flow):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.record_tool_call("market_analysis", "Search", 0.0, 1.0, False, "TimeoutError")
+        flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
+
+    def test_toolless_phase_not_checked(self, flow):
+        flow._tracker = ExecutionTracker()
+        task = _make_task()
+        task.tools = []
+        flow._require_tool_calls("critique_review", task)
+        flow._require_tool_calls("final_strategy", task)
+
+    def test_none_tracker_skips_guard(self, flow):
+        flow._tracker = None
+        flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
+
+    def test_other_phase_calls_do_not_satisfy_the_guard(self, flow):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
+        with pytest.raises(MissingToolCallError):
+            flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
+
+    @pytest.mark.asyncio
+    async def test_market_phase_body_raises_before_extracting(self, flow):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.start()
+        flow._factory.build_task.return_value = _task_with_tools("Search")
+        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=MarketAnalysisOutput))
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            with pytest.raises(MissingToolCallError, match="market_analysis"):
+                await flow.market_analysis()
+        assert flow.state.market_output is None
+
+    @pytest.mark.parametrize(
+        "phase,schema",
+        [
+            ("technical_analysis", TechnicalAnalysisOutput),
+            ("fundamental_analysis", FundamentalAnalysisOutput),
+            ("draft_strategy", InvestorStrategicOutput),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_every_tool_phase_body_is_guarded(self, flow, phase, schema):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.start()
+        flow._factory.build_task.return_value = _task_with_tools("Tool")
+        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=schema))
+        with patch.object(flow, "_make_crew") as mc, \
+             patch.object(flow, "_slim_market_for_analysis", return_value=""), \
+             patch.object(flow, "_slim_market_for_strategy", return_value=""), \
+             patch.object(flow, "_slim_technical", return_value=""), \
+             patch.object(flow, "_slim_fundamental", return_value=""):
+            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            with pytest.raises(MissingToolCallError, match=phase):
+                await getattr(flow, phase)()
+
+    @pytest.mark.asyncio
+    async def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):
+        flow._tracker = ExecutionTracker()
+        flow._tracker.start()
+        task = _make_task()
+        task.tools = []
+        flow._factory.build_task.return_value = task
+        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=CriticOutput), raw="{}")
+        with patch.object(flow, "_make_crew") as mc, \
+             patch.object(flow, "_slim_draft", return_value=""), \
+             patch.object(flow, "_critic_reference_table", return_value=""), \
+             patch.object(flow, "_gated_slim_critique", return_value=""):
+            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            await flow.critique_review()
+            await flow.final_strategy()
+        assert flow._final_crew_result is crew_result
+
+    def test_run_analysis_attaches_partial_metrics_to_missing_tool_call(self, flow):
+        def kickoff(inputs=None):
+            flow._tracker.start_phase("market_analysis")
+            raise MissingToolCallError("market_analysis: the agent finished without calling any of its tools (Search)")
+
+        flow.kickoff = kickoff
+        with pytest.raises(MissingToolCallError) as info:
+            flow.run_analysis({"sector": "Technology"})
+        assert info.value.partial_metrics["partial"] is True

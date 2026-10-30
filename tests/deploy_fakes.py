@@ -25,15 +25,19 @@ Control directory contract:
         lock_failures        (0) lock compiles that still fail
         modal_failures       (0) modal deploys that still fail
         modal_stale          (0) modal deploys that exit 0 but change nothing
+    text knob file (plan 02-04, pre-upload backend gate):
+        wheel_gate_failure   "compile" or "suite" makes that gate step fail;
+                             absent or "0" = the gate passes
     events.log               append-only, one line per event
     api_version.json         what the "deployed" backend reports
 
 Tools:
-    uv           venv / pip sync / pip install / build / tool run twine
+    uv           venv / pip compile / pip sync / pip install / build / tool run twine
     modal        deploy serve.py
     lock         the fake lock.sh compile (cwd is the backend root)
-    venv-python  the preflight venv interpreter: fake pytest, and check_pin.py
-                 run with urlopen and the clock replaced inside its process
+    venv-python  the preflight venv interpreter: fake pytest, the installed-version
+                 probe (-c), and check_pin.py run with urlopen and the clock
+                 replaced inside its process
 
 Every unexpected call exits 97, so a deploy.sh change that starts using a new
 tool fails loudly instead of silently reaching a real one.
@@ -60,6 +64,14 @@ def _knob(name, default=0):
         with open(_path(name)) as handle:
             return int(handle.read().strip())
     except (OSError, ValueError):
+        return default
+
+
+def _text_knob(name, default=""):
+    try:
+        with open(_path(name)) as handle:
+            return handle.read().strip() or default
+    except OSError:
         return default
 
 
@@ -99,7 +111,42 @@ def _requirement_version(path):
 
 # ── uv ───────────────────────────────────────────────────────────────────────
 
-_VENV_WRAPPER = '#!/bin/sh\nexec "$DEPLOY_HARNESS_PY" -I "$DEPLOY_HARNESS_TOOLS" venv-python "$@"\n'
+_VENV_WRAPPER = (
+    '#!/bin/sh\n'
+    'DEPLOY_HARNESS_VENV="$(cd "$(dirname "$0")/.." && pwd)" '
+    'exec "$DEPLOY_HARNESS_PY" -I "$DEPLOY_HARNESS_TOOLS" venv-python "$@"\n'
+)
+
+
+def _lock_version(path):
+    """The prospectai version a compiled lock pins, or None."""
+    try:
+        return _requirement_version(path)
+    except OSError:
+        return None
+
+
+def _gate_compile(args):
+    """Fake `uv pip compile` for the pre-upload backend gate.
+
+    Resolves prospectai only from --find-links, like the real gate: the wheel for
+    the pinned version must be in that directory, otherwise there is no solution.
+    """
+    requirements = args[2]
+    version = _requirement_version(requirements)
+    out = args[args.index("-o") + 1] if "-o" in args else None
+    find_links = args[args.index("--find-links") + 1] if "--find-links" in args else None
+    if version is None or out is None or find_links is None:
+        return _unexpected("uv", ["pip", "compile"] + args[2:])
+    wheel = os.path.join(find_links, "prospectai-%s-py3-none-any.whl" % version)
+    if _text_knob("wheel_gate_failure") == "compile" or not os.path.exists(wheel):
+        _log("wheelgate compile fail %s" % version)
+        sys.stderr.write("fake uv: No solution found when resolving dependencies (prospectai %s)\n" % version)
+        return 1
+    with open(out, "w") as handle:
+        handle.write("prospectai==%s\n    # via -r requirements-serve.txt\n" % version)
+    _log("wheelgate compile %s" % version)
+    return 0
 
 
 def tool_uv(args):
@@ -111,7 +158,20 @@ def tool_uv(args):
             handle.write(_VENV_WRAPPER)
         os.chmod(python, 0o755)
         return 0
-    if args[:2] in (["pip", "sync"], ["pip", "install"]):
+    if args[:2] == ["pip", "compile"]:
+        return _gate_compile(args)
+    if args[:2] == ["pip", "sync"]:
+        # Record which prospectai a venv received, for the version probe.
+        python = args[args.index("--python") + 1] if "--python" in args else None
+        version = _lock_version(args[-1])
+        if python and version:
+            venv = os.path.dirname(os.path.dirname(python))
+            with open(os.path.join(venv, "installed_prospectai"), "w") as handle:
+                handle.write(version)
+            if os.path.basename(os.path.dirname(venv)) == "wheelgate":
+                _log("wheelgate sync %s" % version)
+        return 0
+    if args[:2] == ["pip", "install"]:
         return 0
     if args[:1] == ["build"] and "--out-dir" in args:
         out_dir = args[args.index("--out-dir") + 1]
@@ -234,7 +294,23 @@ def _fake_urlopen(url, data=None, timeout=None, **kwargs):
 
 
 def tool_venv_python(args):
+    venv = os.environ.get("DEPLOY_HARNESS_VENV", "")
+    if args[:1] == ["-c"]:
+        # importlib.metadata.version("prospectai") probe in the gate venv
+        try:
+            with open(os.path.join(venv, "installed_prospectai")) as handle:
+                print(handle.read().strip())
+            return 0
+        except OSError:
+            sys.stderr.write("fake venv: prospectai is not installed\n")
+            return 1
     if args[:2] == ["-m", "pytest"]:
+        if os.path.basename(os.path.dirname(venv)) == "wheelgate":
+            if _text_knob("wheel_gate_failure") == "suite":
+                _log("wheelgate suite fail")
+                print("fake suite: FAILED")
+                return 1
+            _log("wheelgate suite")
         print("fake suite: passed")
         return 0
     if args and args[0].endswith("check_pin.py"):
