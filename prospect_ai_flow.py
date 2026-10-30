@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional, Type, TypeVar, cast
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, cast
 
 _M = TypeVar("_M", bound="BaseModel")
 
@@ -87,6 +87,15 @@ def _parse_crew_result(crew_result) -> Dict[str, Any]:
 
 
 _VALID_PROFILES = frozenset({"conservative", "aggressive"})
+
+
+class MissingToolCallError(RuntimeError):
+    """A phase whose task carries tools finished without calling any of them.
+
+    With thinking off, the model may skip a needed tool call when JSON output is
+    also requested. Until a phase's tools move into the Flow, a skipped call
+    would publish indicators or grades the model invented, so the run fails.
+    """
 
 
 class ProspectAIFlowState(BaseModel):
@@ -189,6 +198,32 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             return task.agent.llm.model
         except Exception:
             return "unknown"
+
+    def agent_model_ids(self) -> List[str]:
+        """Raw model id each phase LLM actually uses, in PHASES order.
+
+        Read from the built agents, so AGENT_*_MODEL / MODEL overrides and the
+        agents.yaml defaults are already resolved. A provider prefix
+        (``ollama/qwen3``) is stripped.
+        """
+        ids: List[str] = []
+        for phase in PHASES:
+            model = str(self._factory._phase_config[phase]["agent"].llm.model)
+            ids.append(model.split("/", 1)[1] if "/" in model else model)
+        return ids
+
+    def _require_tool_calls(self, phase: str, task) -> None:
+        """Fail the run when a tool phase recorded zero tool calls (no-op without a tracker)."""
+        if self._tracker is None:
+            return
+        tools = getattr(task, "tools", None) or []
+        if not tools or self._tracker.tool_call_count(phase) > 0:
+            return
+        names = ", ".join(str(getattr(t, "name", type(t).__name__)) for t in tools)
+        raise MissingToolCallError(
+            f"{phase}: the agent finished without calling any of its tools ({names}); "
+            "refusing to use model-invented data"
+        )
 
     @staticmethod
     def _task_llm(task) -> Any:
@@ -473,6 +508,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 0).akickoff())
         if self._tracker:
             self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("market_analysis", task)
         self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
         kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, self.state.sector)
         if dropped:
@@ -492,6 +528,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 1).akickoff())
         if self._tracker:
             self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("technical_analysis", task)
         self.state.technical_output = self._extract_pydantic(result, TechnicalAnalysisOutput, "technical_analysis")
         self._emit_progress(1, result)
         return result.raw or ""
@@ -507,6 +544,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 2).akickoff())
         if self._tracker:
             self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("fundamental_analysis", task)
         self.state.fundamental_output = self._extract_pydantic(result, FundamentalAnalysisOutput, "fundamental_analysis")
         self._emit_progress(2, result)
         return result.raw or ""
@@ -526,6 +564,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 3).akickoff())
         if self._tracker:
             self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("draft_strategy", task)
         self.state.draft_output = self._extract_pydantic(result, InvestorStrategicOutput, "draft_strategy")
         self._emit_progress(3, result)
         return result.raw or ""
@@ -544,6 +583,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 4).akickoff())
         if self._tracker:
             self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("critique_review", task)
         self.state.critique_output = self._extract_pydantic(result, CriticOutput, "critique_review")
         self._emit_progress(4, result)
         return result.raw or ""
@@ -562,6 +602,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         result = cast(CrewOutput, await self._make_crew(task, 5).akickoff())
         if self._tracker:
             self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
+        self._require_tool_calls("final_strategy", task)
         self._final_crew_result = result
         self._emit_progress(5, result)
         return result.raw or ""

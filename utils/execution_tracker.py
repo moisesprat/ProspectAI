@@ -144,6 +144,11 @@ class ExecutionTracker:
         with self._lock:
             self._tool_calls.append(record)
 
+    def tool_call_count(self, phase: str) -> int:
+        """Number of tool calls recorded for ``phase`` (failed calls count; 0 when none)."""
+        with self._lock:
+            return sum(1 for c in self._tool_calls if c.phase == phase)
+
     def _tool_call_dicts(self) -> List[Dict[str, Any]]:
         with self._lock:
             calls = list(self._tool_calls)
