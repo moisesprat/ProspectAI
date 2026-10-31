@@ -26,6 +26,20 @@ from schemas.agent_outputs import (
     CriticOutput,
 )
 
+# phase -> the model the LLM is asked to produce. The single source for each Task's
+# output_pydantic, for the $allowed_values in its prompt, and for the output_example
+# contract test (tests/test_task_output_specs.py): the schema is the source of truth
+# (D-10). For fundamental_analysis that is the narrative model; the Flow merges it
+# into FundamentalAnalysisOutput.
+PHASE_OUTPUT_MODELS = {
+    "market_analysis":      MarketAnalysisOutput,
+    "technical_analysis":   TechnicalAnalysisOutput,
+    "fundamental_analysis": FundamentalNarrativeOutput,
+    "draft_strategy":       InvestorStrategicOutput,
+    "critique_review":      CriticOutput,
+    "final_strategy":       InvestorStrategicOutput,
+}
+
 
 class TaskFactory:
     """Agent and task factory used by ProspectAIFlow."""
@@ -68,20 +82,17 @@ class TaskFactory:
         #   agent_tools: handed to the crewai Task, so the LLM calls them.
         #   flow_tools:  name -> instrumented instance the Flow calls itself through
         #                utils.flow_tools.call_tool (CORR-10). The LLM never sees them.
-        # `schema` is what the LLM answers; for fundamental_analysis that is the
-        # narrative model, and the Flow merges it into FundamentalAnalysisOutput.
+        # What the LLM answers is PHASE_OUTPUT_MODELS[phase], not stored here.
         self._phase_config = {
             "market_analysis": {
                 "agent":       self.market_analyst.get_agent(),
                 "agent_tools": self._timed("market_analysis", [RedditSentimentTool(), self.search_tool]),
                 "flow_tools":  {},
-                "schema":      MarketAnalysisOutput,
             },
             "technical_analysis": {
                 "agent":       self.technical_analyst.get_agent(),
                 "agent_tools": self._timed("technical_analysis", [TechnicalAnalysisTool()]),
                 "flow_tools":  {},
-                "schema":      TechnicalAnalysisOutput,
             },
             "fundamental_analysis": {
                 "agent":       self.fundamental_analyst.get_agent(),
@@ -89,25 +100,21 @@ class TaskFactory:
                 "flow_tools":  self._timed_by_name(
                     "fundamental_analysis", [FundamentalDataTool(), FundamentalGraderTool()],
                 ),
-                "schema":      FundamentalNarrativeOutput,
             },
             "draft_strategy": {
                 "agent":       self.investor_strategist.get_agent(),
                 "agent_tools": self._timed("draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()]),
                 "flow_tools":  {},
-                "schema":      InvestorStrategicOutput,
             },
             "critique_review": {
                 "agent":       self.critic.get_agent(),
                 "agent_tools": [],
                 "flow_tools":  {},
-                "schema":      CriticOutput,
             },
             "final_strategy": {
                 "agent":       self.investor_strategist.get_agent(),
                 "agent_tools": [],
                 "flow_tools":  {},
-                "schema":      InvestorStrategicOutput,
             },
         }
 
@@ -140,7 +147,10 @@ class TaskFactory:
         if phase not in self._phase_config:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
         pc = self._phase_config[phase]
-        cfg = TaskConfigLoader().render(phase, sector=sector, today=today, risk_profile=risk_profile)
+        output_model = PHASE_OUTPUT_MODELS[phase]
+        cfg = TaskConfigLoader().render(
+            phase, output_model=output_model, sector=sector, today=today, risk_profile=risk_profile,
+        )
         description = cfg["description"]
         if prior_context:
             description = description + "\n\n" + prior_context
@@ -151,5 +161,5 @@ class TaskFactory:
             agent=pc["agent"],
             tools=pc["agent_tools"],
             expected_output=cfg["expected_output"],
-            output_pydantic=pc["schema"],
+            output_pydantic=output_model,
         )

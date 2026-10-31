@@ -2,6 +2,19 @@
 # Primary place to change task behavior (instructions, output schema, expected_output).
 # Use $sector and $today as template variables — they are substituted at runtime.
 # Context wiring (which prior tasks each task receives) is defined in prospect_ai_crew.py.
+#
+# output_example (TEST-01, D-11): a task may declare one JSON example of the answer the
+# LLM must give, as a YAML mapping. It is the single source for the prompt and for the
+# contract test (tests/test_task_output_specs.py), which validates it against the model in
+# prospect_ai_crew.PHASE_OUTPUT_MODELS, so an example that drifts from the schema fails CI.
+# Two variables are filled in by TaskConfigLoader.render:
+#   $output_example  the example as indented JSON
+#   $allowed_values  the exact values of every Literal field of the task's output model,
+#                    one line per field (or "(none)")
+# A literal dollar sign in any description must be written $$ (e.g. $$150): the text is a
+# string.Template, and a stray $ breaks rendering for that task. The exception is an
+# output_example: its text is inserted as one value and never re-templated, so a dollar
+# sign inside an example is written as a plain $.
 
 tasks:
 
@@ -202,19 +215,10 @@ tasks:
         catalysts=["Data unavailable"], fundamental_summary="No fundamental data
         available for this ticker."
 
-      STEP 4 — Output a pure Python dict (no markdown wrapper):
-        sector: str
-        analysis_date: str — "$today"
-        stock_analyses[]: ticker(str) error(str|null)
-          raw_fundamentals: pe_ratio(float|null) forward_pe(float|null) pb_ratio(float|null)
-            ps_ratio(float|null) ev_ebitda(float|null) market_cap(float|null)
-            revenue_growth_yoy(float|null) net_margin(float|null) gross_margin(float|null)
-            return_on_equity(float|null) debt_to_equity(float|null) current_ratio(float|null)
-            free_cash_flow(float|null) dividend_yield(float|null)
-          assessment: valuation(str) quality(str) growth(str) data_status(str)
-            fundamental_component(int|null)
-            fundamental_summary(str) risk_factors(str[]) catalysts(str[])
-        sector_fundamental_summary: str
+      STEP 4 — Output JSON only, shaped exactly like this example (no markdown wrapper):
+      $output_example
+        Allowed values:
+      $allowed_values
 
       RULES:
       - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
@@ -228,6 +232,23 @@ tasks:
       Python dict with sector='$sector', analysis_date,
       stock_analyses (one entry per ticker with raw_fundamentals and
       assessment), and sector_fundamental_summary string.
+    output_example:
+      analyses:
+        - ticker: "AAPL"
+          key_strengths:
+            - "Net margin of 25.3% and return on equity of 147% show durable profitability."
+            - "Free cash flow of $99B funds buybacks without leaning on debt."
+          key_risks:
+            - "Forward P/E of 28.4 leaves little room for an earnings miss."
+            - "Revenue growth of 2.0% year over year is slowing."
+          investment_thesis: "Quality compounder priced fairly; returns depend on services growth offsetting flat hardware."
+        - ticker: "XOM"
+          key_strengths:
+            - "Debt to equity of 0.14 gives a strong balance sheet through the commodity cycle."
+          key_risks:
+            - "Revenue fell 6.5% year over year, so earnings track the oil price."
+          investment_thesis: "Cheap on earnings with a safe balance sheet, but growth is negative and cyclical."
+      summary: "Across the names fundamentals are mixed: profitability and balance sheets are generally sound, while growth is uneven and valuations are stretched for the quality leaders. Read the pipeline's grades together with the cited metrics."
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 4: Draft Strategy
