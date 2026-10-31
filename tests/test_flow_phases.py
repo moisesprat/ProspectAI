@@ -256,13 +256,24 @@ class TestFundamentalAnalysisPhase:
 class TestDraftStrategyPhase:
     @pytest.mark.asyncio
     async def test_updates_draft_output(self, flow):
-        pydantic_out = MagicMock(spec=InvestorStrategicOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            draft_entry, draft_payload, narrative_result, prime_draft, wire_tools,
+        )
+        wire_tools(flow, prime_draft(flow), phase="draft_strategy")
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+            )
             await flow.draft_strategy()
-        assert flow.state.draft_output is pydantic_out
+        assert isinstance(flow.state.draft_output, InvestorStrategicOutput)
+        assert [p.ticker for p in flow.state.draft_output.positions] == ["AAA", "BBB"]
+
+    @pytest.mark.asyncio
+    async def test_aborts_on_error_state(self, flow):
+        flow.state.error = "upstream failure"
+        with pytest.raises(RuntimeError, match="upstream failure"):
+            await flow.draft_strategy()
 
 
 class TestCritiqueReviewPhase:
@@ -449,26 +460,28 @@ class TestToolCallGuard:
         with pytest.raises(MissingToolCallError):
             flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
 
-    @pytest.mark.parametrize(
-        "phase,schema",
-        [
-            ("draft_strategy", InvestorStrategicOutput),
-        ],
-    )
     @pytest.mark.asyncio
-    async def test_every_tool_phase_body_is_guarded(self, flow, phase, schema):
+    async def test_the_guard_runs_for_any_phase_whose_task_carries_tools(self, flow):
+        """No phase gives its agent tools any more (CORR-10), but _run_phase still enforces the guard."""
         flow._tracker = ExecutionTracker()
         flow._tracker.start()
         flow._factory.build_task.return_value = _task_with_tools("Tool")
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=schema))
-        with patch.object(flow, "_make_crew") as mc, \
-             patch.object(flow, "_slim_market_for_analysis", return_value=""), \
-             patch.object(flow, "_slim_market_for_strategy", return_value=""), \
-             patch.object(flow, "_slim_technical", return_value=""), \
-             patch.object(flow, "_slim_fundamental", return_value=""):
+        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=CriticOutput))
+        with patch.object(flow, "_make_crew") as mc:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            with pytest.raises(MissingToolCallError, match=phase):
-                await getattr(flow, phase)()
+            with pytest.raises(MissingToolCallError, match="critique_review"):
+                await flow._run_phase("critique_review", 4, CriticOutput)
+
+    def test_no_phase_gives_its_agent_tools(self, monkeypatch):
+        """Every phase is Flow-owned or tool-less: the LLM never calls a tool, so it cannot skip one."""
+        monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+        monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+        from prospect_ai_crew import TaskFactory
+
+        factory = TaskFactory()
+        for phase, cfg in factory._phase_config.items():
+            assert cfg["agent_tools"] == [], phase
 
     @pytest.mark.asyncio
     async def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):

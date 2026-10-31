@@ -22,6 +22,7 @@ from schemas.agent_outputs import (
     MarketNarrativeOutput,
     TechnicalNarrativeOutput,
     FundamentalNarrativeOutput,
+    StrategyNarrativeOutput,
     InvestorStrategicOutput,
     CriticOutput,
 )
@@ -31,12 +32,13 @@ from schemas.agent_outputs import (
 # contract test (tests/test_task_output_specs.py): the schema is the source of truth
 # (D-10). For market_analysis, technical_analysis and fundamental_analysis that is the
 # narrative model; the Flow merges it into MarketAnalysisOutput / TechnicalAnalysisOutput /
-# FundamentalAnalysisOutput.
+# FundamentalAnalysisOutput. For draft_strategy it is StrategyNarrativeOutput; the Flow scores
+# before the LLM and allocates after it and assembles the published InvestorStrategicOutput.
 PHASE_OUTPUT_MODELS = {
     "market_analysis":      MarketNarrativeOutput,
     "technical_analysis":   TechnicalNarrativeOutput,
     "fundamental_analysis": FundamentalNarrativeOutput,
-    "draft_strategy":       InvestorStrategicOutput,
+    "draft_strategy":       StrategyNarrativeOutput,
     "critique_review":      CriticOutput,
     "final_strategy":       InvestorStrategicOutput,
 }
@@ -104,8 +106,10 @@ class TaskFactory:
             },
             "draft_strategy": {
                 "agent":       self.investor_strategist.get_agent(),
-                "agent_tools": self._timed("draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()]),
-                "flow_tools":  {},
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name(
+                    "draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()],
+                ),
             },
             "critique_review": {
                 "agent":       self.critic.get_agent(),

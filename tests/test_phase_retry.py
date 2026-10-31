@@ -365,15 +365,19 @@ from schemas.agent_outputs import (  # noqa: E402
     FundamentalNarrativeOutput,
     InvestorStrategicOutput,
     MarketNarrativeOutput,
+    StrategyNarrativeOutput,
     TechnicalNarrativeOutput,
 )
 from tests.test_llm_role_audit import (  # noqa: E402
+    draft_entry,
+    draft_payload,
     market_output,
     market_tools,
     mkt_entry,
     mkt_payload,
     narrative_entry,
     narrative_payload,
+    prime_draft,
     stub_tools,
     tech_narrative_entry,
     tech_payload,
@@ -387,7 +391,7 @@ _PHASE_METHODS = [
     ("market_analysis", MarketNarrativeOutput),
     ("technical_analysis", TechnicalNarrativeOutput),
     ("fundamental_analysis", FundamentalNarrativeOutput),
-    ("draft_strategy", InvestorStrategicOutput),
+    ("draft_strategy", StrategyNarrativeOutput),
     ("critique_review", CriticOutput),
     ("final_strategy", InvestorStrategicOutput),
 ]
@@ -404,6 +408,9 @@ def _stub_result(schema):
     elif schema is TechnicalNarrativeOutput:
         # A real model: the Flow-owned technical phase checks narrative coverage.
         model = TechnicalNarrativeOutput.model_validate(tech_payload(tech_narrative_entry("AAA")))
+    elif schema is StrategyNarrativeOutput:
+        # A real model: the Flow-owned draft phase checks position coverage (tracked_flow primes AAA and BBB).
+        model = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
     else:
         model = MagicMock(spec=schema)
     task_out = SimpleNamespace(pydantic=model, json_dict=None)
@@ -430,10 +437,11 @@ def tracked_flow(flow):
     flow._tracker = ExecutionTracker()
     flow._tracker.start()
     flow._factory.build_task.return_value = _task()
-    # The market, fundamental and technical phases are Flow-owned (plans 02-16, 02-13, 02-15):
-    # they need flow tools, and the later two need candidates.
+    # The market, fundamental, technical and draft phases are Flow-owned (plans 02-16, 02-13,
+    # 02-15, 02-17): they need flow tools, and the later ones need candidates and prior outputs.
     flow.state.market_output = market_output()
-    wire_tools(flow, {**stub_tools(), **tech_tools(), **market_tools()})
+    draft = prime_draft(flow)
+    wire_tools(flow, {**stub_tools(), **tech_tools(), **market_tools(), **draft})
     stack = _patch_context(flow)
     yield flow
     for p in stack:
@@ -521,7 +529,7 @@ def test_draft_and_final_budgets_independent(tracked_flow):
     bad = _bad_trend_error()
     with patch.object(flow, "_make_crew") as mc:
         mc.return_value.akickoff = AsyncMock(side_effect=[
-            bad, bad, _stub_result(InvestorStrategicOutput),   # draft: 2 failures, then ok
+            bad, bad, _stub_result(StrategyNarrativeOutput),   # draft: 2 failures, then ok
             bad, bad, _stub_result(InvestorStrategicOutput),   # final: full budget again
         ])
         asyncio.run(flow.draft_strategy())
@@ -570,20 +578,23 @@ def _tool_task(name="TA"):
     return task
 
 
-def _draft_ok_result():
-    model = _portfolio()
+def _critic_ok_result():
+    model = CriticOutput(
+        sector="Technology", draft_assessment="d" * 60, portfolio_level_issues=[], approved_positions=[],
+    )
     task_out = SimpleNamespace(pydantic=model, json_dict=None)
     return SimpleNamespace(raw=model.model_dump_json(), tasks_output=[task_out], token_usage=MagicMock())
 
 
-def _run_draft(flow, akickoff):
-    """draft_strategy keeps agent tools; technical and fundamental no longer have any (CORR-10)."""
-    with patch.object(flow, "_make_crew") as mc, \
-         patch.object(flow, "_slim_market_for_strategy", return_value=""), \
-         patch.object(flow, "_slim_technical", return_value=""), \
-         patch.object(flow, "_slim_fundamental", return_value=""):
+def _run_tool_phase(flow, akickoff):
+    """The per-attempt tool-call guard lives in _run_phase, so it applies to any task that carries tools.
+
+    No phase gives its agent tools any more (CORR-10): the guard is exercised on a phase body that
+    calls _run_phase directly with a tool-carrying task.
+    """
+    with patch.object(flow, "_make_crew") as mc:
         mc.return_value.akickoff = akickoff
-        asyncio.run(flow.draft_strategy())
+        return asyncio.run(flow._run_phase("critique_review", 4, CriticOutput))
 
 
 def test_retry_cannot_pass_on_an_earlier_attempts_tool_calls(flow):
@@ -596,14 +607,13 @@ def test_retry_cannot_pass_on_an_earlier_attempts_tool_calls(flow):
     async def akickoff():
         calls["n"] += 1
         if calls["n"] == 1:
-            flow._tracker.record_tool_call("draft_strategy", "TA", 0.0, 1.0, True)
+            flow._tracker.record_tool_call("critique_review", "TA", 0.0, 1.0, True)
             raise _bad_trend_error()
-        return _draft_ok_result()
+        return _critic_ok_result()
 
-    with pytest.raises(MissingToolCallError, match="draft_strategy"):
-        _run_draft(flow, akickoff)
+    with pytest.raises(MissingToolCallError, match="critique_review"):
+        _run_tool_phase(flow, akickoff)
     assert calls["n"] == 2
-    assert flow.state.draft_output is None
 
 
 def test_retry_with_tool_calls_in_each_attempt_passes(flow):
@@ -614,11 +624,11 @@ def test_retry_with_tool_calls_in_each_attempt_passes(flow):
 
     async def akickoff():
         calls["n"] += 1
-        flow._tracker.record_tool_call("draft_strategy", "TA", 0.0, 1.0, True)
+        flow._tracker.record_tool_call("critique_review", "TA", 0.0, 1.0, True)
         if calls["n"] == 1:
             raise _bad_trend_error()
-        return _draft_ok_result()
+        return _critic_ok_result()
 
-    _run_draft(flow, akickoff)
+    _result, model = _run_tool_phase(flow, akickoff)
     assert calls["n"] == 2
-    assert isinstance(flow.state.draft_output, InvestorStrategicOutput)
+    assert isinstance(model, CriticOutput)

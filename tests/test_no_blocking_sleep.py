@@ -24,6 +24,9 @@ from tests.test_llm_role_audit import (
     ANTHROPIC_ENV,
     REDDIT_TOOL,
     SERPER_TOOL,
+    draft_entry,
+    draft_payload,
+    draft_tools,
     make_task,
     mkt_entry,
     mkt_payload,
@@ -125,7 +128,10 @@ def flow(monkeypatch):
         f._tracker = ExecutionTracker()
         f._tracker.start()
         f._factory.build_task.return_value = make_task()
-        tools = {**stub_tools(), **tech_tools(), REDDIT_TOOL: RedditSentimentTool(), SERPER_TOOL: PatientSerperDevTool()}
+        tools = {
+            **stub_tools(), **tech_tools(), **draft_tools(),
+            REDDIT_TOOL: RedditSentimentTool(), SERPER_TOOL: PatientSerperDevTool(),
+        }
         wire_tools(f, tools, phase="market_analysis")
         yield f
 
@@ -139,7 +145,7 @@ def test_no_sleep_on_loop_full_run(flow):
         0: narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))),
         1: narrative_result(tech_payload(tech_narrative_entry("AAA"))),
         2: narrative_result(narrative_payload(narrative_entry("AAA"))),
-        3: _json_result(_portfolio()),
+        3: narrative_result(draft_payload(draft_entry("AAA"))),
         4: _json_result(_critic()),
         5: _json_result(_portfolio()),
     }

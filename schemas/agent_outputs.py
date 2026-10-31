@@ -236,17 +236,19 @@ class FundamentalNarrativeOutput(BaseModel):
 # INVESTOR STRATEGIC OUTPUT (used for final report validation)
 # ---------------------------------------------------------------------------
 
+# Closed vocabularies of the strategy phases (D-11). The LLM chooses an action and a review
+# frequency as exactly one of these values; there is no case or whitespace normaliser, so a
+# variant is a validation error that spends the retry budget.
+Action = Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+ReviewFrequency = Literal["DAILY", "WEEKLY", "MONTHLY"]
+
+
 class TradeSetup(BaseModel):
     direction: Literal["LONG-BUY"]
     entry_zone_low: float = Field(..., gt=0)
     entry_zone_high: float = Field(..., gt=0)
     stop_loss: float = Field(..., gt=0)
     take_profit: float = Field(..., gt=0)
-
-    @field_validator("direction", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper().replace(" ", "") if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def validate_long_trade_structure(self) -> TradeSetup:
@@ -272,21 +274,16 @@ class TradeSetup(BaseModel):
 
 class PositionRecommendation(BaseModel):
     ticker: str
-    action: Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+    action: Action
     composite_score: float = Field(..., ge=0.0, le=100.0)
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
-    review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
+    review_frequency: ReviewFrequency
     # Flow-set from plan 02-11 on; absent (None) on reports stored before it.
     fundamentals_status: Optional[FundamentalsStatus] = None
-
-    @field_validator("action", "review_frequency", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper().replace(" ", "") if isinstance(v, str) else v
 
     @model_validator(mode="before")
     @classmethod
@@ -331,6 +328,25 @@ class PositionRecommendation(BaseModel):
                         take_profit=tp,
                     )
         return self
+
+
+# What the draft-strategy LLM is allowed to write (CORR-10, D-14, D-15): per ticker only the
+# action it chooses, its rationale, its monitoring triggers and a review cadence, plus the
+# overall strategy text. The Flow computes the composite scores before the LLM and the
+# allocation, trade setups, totals and portfolio risk_level after it
+# (utils/strategy_assembly.py), then assembles the published InvestorStrategicOutput.
+# pydantic ignores any extra key an answer adds, so the LLM cannot set a number or a grade.
+class PositionNarrative(BaseModel):
+    ticker: str
+    action: Action
+    rationale: str = Field(..., min_length=50)
+    monitoring_triggers: List[str] = Field(..., min_length=1)
+    review_frequency: ReviewFrequency
+
+
+class StrategyNarrativeOutput(BaseModel):
+    positions: List[PositionNarrative] = Field(..., min_length=1)
+    overall_strategy: str = Field(..., min_length=100)
 
 
 class InvestorStrategicOutput(BaseModel):
