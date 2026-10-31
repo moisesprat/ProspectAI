@@ -29,7 +29,7 @@ def _phase_output_models():
 
 
 def _declared_examples():
-    """Tasks whose tasks.yaml entry declares output_example (grows as plans 02-15 to 02-18 land)."""
+    """Tasks whose tasks.yaml entry declares output_example (all six since plan 02-18)."""
     loader = TaskConfigLoader()
     return [k for k in TASK_KEYS if "output_example" in loader.get_task_config(k)]
 
@@ -473,7 +473,129 @@ def test_investor_agent_text_has_no_tool_calls_and_no_number_copying():
     cfg = agent["agents"]["investor_strategic"]
     text = f"{cfg['goal']} {cfg['backstory']}"
     for forbidden in ("When you need a tool", "call it first", "Python dict", "compute_composite_scores",
-                      "allocate_portfolio"):
+                      "allocate_portfolio", "copy a numeric", "copy it verbatim", "verbatim"):
         assert forbidden not in text, f"investor_strategic text still says {forbidden!r}"
+    # One text serves the draft and the final prompt: both write no number, so it never asks for one.
+    assert "never compute, copy or invent one" in " ".join(text.split())
     assert "Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID" in text
+    assert cfg["thinking"] == "low" and cfg["max_tokens"] == 16000
+
+
+# ── All six tasks declare a validated example (TEST-01, plan 02-18) ────────────
+
+def test_all_tasks_declare_output_example():
+    assert _declared_examples() == TASK_KEYS
+
+
+def test_every_prompt_embeds_its_example_and_lists_every_allowed_value():
+    for task in TASK_KEYS:
+        description = render_task(task)["description"]
+        assert "$output_example" not in description and "$allowed_values" not in description
+        example = TaskConfigLoader().get_task_config(task)["output_example"]
+        assert f'"{next(iter(example))}"' in description, task
+        for path, values in literal_fields(_phase_output_models()[task]):
+            for value in values:
+                assert f'"{value}"' in description, f"{task}: {path} value {value!r} missing from the prompt"
+
+
+# ── Critique prompt (reasoning only, compliant by design, D-14, D-15, plan 02-18) ──
+
+def test_critique_prompt_lists_severity_and_profile_values_and_keeps_the_checklist():
+    description = render_task("critique_review")["description"]
+    for value in ("CRITICAL", "MAJOR", "MINOR", "conservative", "aggressive"):
+        assert f'"{value}"' in description
+    for forbidden in ("Python dict", "pure Python dict"):
+        assert forbidden not in description, f"critique prompt still says {forbidden!r}"
+    for wanted in (
+        "RISK PROFILE: conservative",
+        "SENTIMENT AVAILABILITY",
+        "PRICE_IN_ZONE_WAIT",
+        "COMMON INVERSION TO AVOID",
+        "VAGUE_RATIONALE",
+        "revision_directives",
+        "approved_positions",
+        "A completely clean draft is a valid outcome",
+        "Output JSON only",
+    ):
+        assert wanted in description, f"critique prompt lost {wanted!r}"
+
+
+def test_critique_example_has_every_critic_field_and_a_finding_per_severity_style():
+    example = TaskConfigLoader().get_task_config("critique_review")["output_example"]
+    from schemas.agent_outputs import CriticOutput
+
+    assert set(example) == set(CriticOutput.model_fields)
+    for item in example["per_ticker_critiques"]:
+        assert set(item) == {"ticker", "severity", "issue_type", "finding", "instruction"}
+    assert example["per_ticker_critiques"], "the example must show a finding, not only the empty list"
+
+
+def test_critique_expected_output_names_json():
+    expected = render_task("critique_review")["expected_output"]
+    assert "Python dict" not in expected and "JSON" in expected
+
+
+# ── Final prompt (action and narrative only, D-14, CORR-10, plan 02-18) ────────
+
+def test_final_declares_an_example_and_lists_the_actions_and_frequencies():
+    assert "final_strategy" in _declared_examples()
+    description = render_task("final_strategy")["description"]
+    for value in ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID", "DAILY", "WEEKLY", "MONTHLY"):
+        assert f'"{value}"' in description
+
+
+def test_final_prompt_is_narrative_only_and_keeps_the_critic_handling():
+    description = render_task("final_strategy")["description"]
+    for forbidden in (
+        "placeholders",
+        "verbatim",
+        "allocate_portfolio",
+        "composite_score(float)",
+        "allocation_pct(float)",
+        "trade_setup(obj",
+        "deployed_pct: float",
+        "risk_level: str",
+        "STEP 4",
+        "Copy the draft",
+        "numeric fields must",
+    ):
+        assert forbidden not in description, f"final prompt still mentions {forbidden}"
+    flat = " ".join(description.split())
+    for wanted in (
+        "RISK PROFILE: conservative",
+        "counter-argument",                                 # STEP 1 kept
+        "every CRITICAL and MAJOR critique MUST be explicitly addressed",
+        "Scores and eligible actions (computed by the pipeline)",
+        "eligible_actions",
+        "RSI < 50",                                         # the trigger rules are kept
+        "monitoring_triggers",
+        "review_frequency",
+        "overall_strategy",
+        "recomputed after you answer",                      # the numbers are the Flow's
+        "write none",
+        "replaced by MONITOR",                              # the clamp is stated
+    ):
+        assert wanted in flat, f"final prompt lost {wanted!r}"
+
+
+def test_final_example_is_the_narrative_shape_and_has_no_number_fields():
+    example = TaskConfigLoader().get_task_config("final_strategy")["output_example"]
+    assert set(example) == {"positions", "overall_strategy"}
+    for entry in example["positions"]:
+        assert set(entry) == {"ticker", "action", "rationale", "monitoring_triggers", "review_frequency"}
+
+
+def test_final_expected_output_matches_the_narrative_shape():
+    expected = render_task("final_strategy")["expected_output"]
+    assert "positions" in expected and "overall_strategy" in expected
+    for forbidden in ("allocation_pct", "trade_setup", "deployed_pct", "risk_level", "total_allocated_pct",
+                      "scaled_entry_setups", "current_price"):
+        assert forbidden not in expected
+
+
+def test_critic_agent_text_asks_for_json_and_no_number_copying():
+    agent = yaml.safe_load(open(TaskConfigLoader().config_path.parent / "agents.yaml", encoding="utf-8"))
+    cfg = agent["agents"]["critic"]
+    text = f"{cfg['goal']} {cfg['backstory']}"
+    assert "Python dict" not in text and "JSON" in text
     assert cfg["thinking"] == "low" and cfg["max_tokens"] == 16000

@@ -39,7 +39,6 @@ from tests.test_llm_role_audit import (
     tech_tools,
     wire_tools,
 )
-from tests.test_schemas import _portfolio
 from utils.execution_tracker import ExecutionTracker
 from utils.patient_serper_tool import PatientSerperDevTool
 from utils.reddit_sentiment_tool import RedditSentimentTool
