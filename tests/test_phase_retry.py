@@ -364,11 +364,14 @@ from schemas.agent_outputs import (  # noqa: E402
     CriticOutput,
     FundamentalNarrativeOutput,
     InvestorStrategicOutput,
-    MarketAnalysisOutput,
+    MarketNarrativeOutput,
     TechnicalNarrativeOutput,
 )
 from tests.test_llm_role_audit import (  # noqa: E402
     market_output,
+    market_tools,
+    mkt_entry,
+    mkt_payload,
     narrative_entry,
     narrative_payload,
     stub_tools,
@@ -381,7 +384,7 @@ from tests.test_schemas import _portfolio  # noqa: E402
 from utils.execution_tracker import ExecutionTracker  # noqa: E402
 
 _PHASE_METHODS = [
-    ("market_analysis", MarketAnalysisOutput),
+    ("market_analysis", MarketNarrativeOutput),
     ("technical_analysis", TechnicalNarrativeOutput),
     ("fundamental_analysis", FundamentalNarrativeOutput),
     ("draft_strategy", InvestorStrategicOutput),
@@ -392,7 +395,10 @@ _PHASE_METHODS = [
 
 def _stub_result(schema):
     """Crew result whose pydantic payload is a spec'd stand-in for ``schema``."""
-    if schema is FundamentalNarrativeOutput:
+    if schema is MarketNarrativeOutput:
+        # A real model: the Flow-owned market phase checks the pick against the Reddit corpus.
+        model = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA")))
+    elif schema is FundamentalNarrativeOutput:
         # A real model: the Flow-owned fundamental phase checks narrative coverage.
         model = FundamentalNarrativeOutput.model_validate(narrative_payload(narrative_entry("AAA")))
     elif schema is TechnicalNarrativeOutput:
@@ -400,8 +406,6 @@ def _stub_result(schema):
         model = TechnicalNarrativeOutput.model_validate(tech_payload(tech_narrative_entry("AAA")))
     else:
         model = MagicMock(spec=schema)
-    if schema is MarketAnalysisOutput:
-        model.candidate_stocks = []
     task_out = SimpleNamespace(pydantic=model, json_dict=None)
     return SimpleNamespace(raw="{}", tasks_output=[task_out], token_usage=MagicMock())
 
@@ -426,10 +430,10 @@ def tracked_flow(flow):
     flow._tracker = ExecutionTracker()
     flow._tracker.start()
     flow._factory.build_task.return_value = _task()
-    # The fundamental and technical phases are Flow-owned (plans 02-13, 02-15): they need
-    # candidates and flow tools.
+    # The market, fundamental and technical phases are Flow-owned (plans 02-16, 02-13, 02-15):
+    # they need flow tools, and the later two need candidates.
     flow.state.market_output = market_output()
-    wire_tools(flow, {**stub_tools(), **tech_tools()})
+    wire_tools(flow, {**stub_tools(), **tech_tools(), **market_tools()})
     stack = _patch_context(flow)
     yield flow
     for p in stack:

@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, cast
 
 _M = TypeVar("_M", bound="BaseModel")
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
+    MarketNarrativeOutput,
     TechnicalAnalysisOutput,
     TechnicalNarrativeOutput,
     FundamentalAnalysisOutput,
@@ -26,6 +27,16 @@ from utils.fundamental_records import (
     merge_fundamental,
     narrative_context,
     require_narrative_coverage,
+)
+from utils.market_records import (
+    REDDIT_TOOL_NAME,
+    SERPER_TOOL_NAME,
+    build_market_corpus,
+    market_narrative_context,
+    merge_market,
+    reddit_fallback_required,
+    require_market_picks,
+    serper_query,
 )
 from utils.phase_runner import extract_model, run_phase
 from utils.technical_records import (
@@ -608,16 +619,61 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     @start()
     async def market_analysis(self):
+        """Flow-owned phase (CORR-10, D-14): the Flow calls Reddit and, when Reddit asks for
+        fallback, Serper; the LLM only chooses up to 5 tickers from that corpus and writes
+        their rationales and the summary.
+
+        Both tools run off the event loop (call_tool, STALL-02), so their bounded sleeps never
+        block it. Every number, the sentiment flag and the timestamp are built by
+        utils.market_records.merge_market, never taken from the LLM. A tool that raises is
+        logged by exception class and treated as no data, never as invented data.
+        """
         self._check_error()
         self._emit_start(0)
-        result, self.state.market_output = await self._run_phase(
-            "market_analysis", 0, MarketAnalysisOutput,
+        phase = "market_analysis"
+        sector, today = self.state.sector, self.state.today
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        try:
+            reddit = await call_tool(
+                self._factory.flow_tool(phase, REDDIT_TOOL_NAME),
+                phase_index=0, step_callback=self._step_callback,
+                thought=f"Reading Reddit discussion for {sector}",
+                sector=sector,
+            )
+        except Exception as exc:
+            logger.warning("%s: Reddit tool failed (%s); using the Serper fallback", phase, type(exc).__name__)
+            reddit = None
+
+        serper = None
+        fallback_required = reddit_fallback_required(reddit)
+        if fallback_required:
+            try:
+                serper = await call_tool(
+                    self._factory.flow_tool(phase, SERPER_TOOL_NAME),
+                    phase_index=0, step_callback=self._step_callback,
+                    thought=f"Searching the web for {sector} sector stocks",
+                    search_query=serper_query(sector, today),
+                )
+            except Exception as exc:
+                logger.warning("%s: Serper search failed (%s); no market data this run", phase, type(exc).__name__)
+
+        corpus = build_market_corpus(reddit, serper, sector)
+        logger.info("%s: corpus source=%s", phase, corpus["source"])
+        ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
+        result, narrative = await self._run_phase(
+            phase, 0, MarketNarrativeOutput, build_args=(ctx,),
+            validate=lambda n: require_market_picks(n, corpus),
+            start_tracker=False,
         )
-        kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, self.state.sector)
+        self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
+        kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, sector)
         if dropped:
             logger.warning("Excluded sector-benchmark/broad-market ETF candidates: %s", dropped)
             self.state.market_output.candidate_stocks = kept
-        self._emit_progress(0, result)
+        self._emit_progress_model(0, self.state.market_output, result)
         return result.raw or ""
 
     @listen(market_analysis)

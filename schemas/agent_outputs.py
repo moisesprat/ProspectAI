@@ -16,12 +16,28 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class CandidateStock(BaseModel):
     ticker: str = Field(..., description="Stock ticker symbol, e.g. AAPL")
-    mention_count: int = Field(..., ge=0)
+    # mention_count and relevance_score are measured by the Flow (utils/market_records.py,
+    # CORR-10). None means no source measured them (Reddit and Serper both unavailable):
+    # absence of data is null, never 0 and never 0.5.
+    mention_count: Optional[int] = Field(None, ge=0)
     # None means sentiment could not be measured (all sources failed) -- see
     # sentiment_available on MarketAnalysisOutput. Never a fabricated 0.0.
     average_sentiment: Optional[float] = Field(None, ge=-1.0, le=1.0)
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    relevance_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     rationale: str = Field(..., min_length=50)
+
+
+# What the LLM writes in the market phase (CORR-10, D-14): which tickers, and why. It
+# has no number field; the Flow merges these picks with the numbers it measured into
+# MarketAnalysisOutput (utils/market_records.merge_market).
+class MarketCandidateNarrative(BaseModel):
+    ticker: str = Field(..., description="Ticker chosen from the supplied corpus")
+    rationale: str = Field(..., min_length=50)
+
+
+class MarketNarrativeOutput(BaseModel):
+    candidates: List[MarketCandidateNarrative] = Field(..., min_length=1, max_length=5)
+    summary: str = Field(..., min_length=100)
 
 
 class MarketAnalysisOutput(BaseModel):

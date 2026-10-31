@@ -114,7 +114,9 @@ class TestTaskFactoryWiring:
                 assert tool._prospectai_timed_phase == phase
                 assert instrument_tool(tool, phase, lambda: tracker) is tool
         assert seen == 7
-        assert factory.search_tool in factory._phase_config["market_analysis"]["agent_tools"]
+        # The market phase is Flow-owned (plan 02-16): its tools are called by the Flow.
+        assert factory._phase_config["market_analysis"]["agent_tools"] == []
+        assert factory.search_tool in factory._phase_config["market_analysis"]["flow_tools"].values()
 
     def test_wrapping_twice_records_one_call_per_invocation(self):
         tracker = ExecutionTracker()

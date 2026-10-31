@@ -179,17 +179,21 @@ class TestParsCrewResult:
 class TestMarketAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_market_output(self, flow):
-        pydantic_out = MagicMock(spec=MarketAnalysisOutput)
-        pydantic_out.candidate_stocks = []
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            market_tools, mkt_entry, mkt_payload, narrative_result, wire_tools,
+        )
+
+        wire_tools(flow, market_tools(), phase="market_analysis")
         flow._factory.build_task.return_value = _make_task()
+        crew_result = narrative_result(mkt_payload(mkt_entry("AAA")))
         with patch.object(flow, "_make_crew") as mc:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
             await flow.market_analysis()
-        assert flow.state.market_output is pydantic_out
-        flow._factory.build_task.assert_called_once_with(
-            "market_analysis", "Technology", "2026-04-29"
-        )
+        assert isinstance(flow.state.market_output, MarketAnalysisOutput)
+        assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+        args = flow._factory.build_task.call_args
+        assert args.args[:3] == ("market_analysis", "Technology", "2026-04-29")
+        assert "Market Data (collected by the pipeline)" in args.args[3]
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -444,18 +448,6 @@ class TestToolCallGuard:
         flow._tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
         with pytest.raises(MissingToolCallError):
             flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
-
-    @pytest.mark.asyncio
-    async def test_market_phase_body_raises_before_extracting(self, flow):
-        flow._tracker = ExecutionTracker()
-        flow._tracker.start()
-        flow._factory.build_task.return_value = _task_with_tools("Search")
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=MarketAnalysisOutput))
-        with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            with pytest.raises(MissingToolCallError, match="market_analysis"):
-                await flow.market_analysis()
-        assert flow.state.market_output is None
 
     @pytest.mark.parametrize(
         "phase,schema",
