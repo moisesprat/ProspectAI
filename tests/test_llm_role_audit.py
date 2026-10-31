@@ -1212,3 +1212,529 @@ class TestMarketSchema:
         for bad in ({"mention_count": -1}, {"relevance_score": 1.5}):
             with pytest.raises(ValidationError):
                 CandidateStock(ticker="AAA", rationale="r" * 60, **bad)
+
+
+# ─── draft_strategy (plan 02-17) ───────────────────────────────────────────────
+
+DRAFT_PHASE = "draft_strategy"
+COMPOSITE_TOOL = "compute_composite_scores"
+ALLOCATOR_TOOL = "allocate_portfolio"
+DRAFT_TAIL = " Action set to MONITOR by policy: "
+
+
+class RecordingTool(StubTool):
+    """Wraps a real deterministic tool: records the calling thread and kwargs, returns its real output."""
+
+    def __init__(self, real):
+        super().__init__(real.name, None)
+        self.real = real
+
+    def _run(self, **kwargs):
+        self.idents.append(threading.get_ident())
+        self.calls.append(kwargs)
+        return self.real._run(**kwargs)
+
+
+def draft_tools(composite=None, allocator=None):
+    """The two real deterministic tools the Flow calls itself in the draft phase."""
+    from utils.composite_score_tool import CompositeScoreTool
+    from utils.portfolio_allocator_tool import PortfolioAllocatorTool
+
+    return {
+        COMPOSITE_TOOL: composite or RecordingTool(CompositeScoreTool()),
+        ALLOCATOR_TOOL: allocator or RecordingTool(PortfolioAllocatorTool()),
+    }
+
+
+def draft_entry(ticker, action="MONITOR", **extra):
+    entry = {
+        "ticker": ticker,
+        "action": action,
+        "rationale": f"{ticker} rationale written by the model, citing RSI and momentum. " * 2,
+        "monitoring_triggers": [f"{ticker} RSI above 75"],
+        "review_frequency": "WEEKLY",
+    }
+    entry.update(extra)
+    return entry
+
+
+def draft_payload(*entries, **extra):
+    payload = {"positions": list(entries), "overall_strategy": "o" * 120}
+    payload.update(extra)
+    return payload
+
+
+def run_draft(flow, *results):
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+        asyncio.run(flow.draft_strategy())
+    return mc.return_value.akickoff
+
+
+def prime_draft(flow, *, sentiment=True, zones=None, fund_json=FETCH_JSON, grades_json=GRADES_JSON,
+                risk_profile="conservative", market_tickers=("AAA", "BBB"), tech_entries=None):
+    """Fill market, technical and fundamental state from the real record builders.
+
+    AAA: price 99, momentum 7.1, risk High, quality High and growth Moderate Growth (AVAILABLE).
+    BBB: price 50, momentum 5.0, risk Medium, fundamentals failed (UNKNOWN) unless overridden.
+    """
+    from schemas.agent_outputs import TechnicalNarrativeOutput
+    from utils.technical_records import build_technical_records, merge_technical
+
+    zones = {"AAA": "CURRENT_ENTRY", "BBB": "PULLBACK_ENTRY", **(zones or {})}
+    entries = tech_entries if tech_entries is not None else [
+        tech_entry("AAA", price=99.0, entry_zone_status=zones["AAA"], momentum_score=7.1, risk_level="High"),
+        tech_entry("BBB", price=50.0, entry_zone_low=48.0, entry_zone_high=52.0,
+                   entry_zone_status=zones["BBB"], momentum_score=5.0, risk_level="Medium"),
+    ]
+    tickers = [e["ticker"] for e in entries]
+    records, failed = build_technical_records({"technical_analysis": entries}, tickers)
+    flow.state.technical_output = merge_technical(
+        "Technology", tickers, records,
+        TechnicalNarrativeOutput.model_validate(tech_payload(*[tech_narrative_entry(t) for t in tickers])),
+        failed,
+    )
+    frecords = build_fundamental_records(fund_json, grades_json)
+    flow.state.fundamental_output = merge_fundamental(
+        "Technology", tickers, frecords,
+        FundamentalNarrativeOutput.model_validate(narrative_payload(*[narrative_entry(t) for t in tickers])),
+    )
+    if sentiment:
+        flow.state.market_output = market_output(*market_tickers)
+    else:
+        flow.state.market_output = MarketAnalysisOutput(
+            sector="Technology",
+            candidate_stocks=[CandidateStock(ticker=t, mention_count=None, average_sentiment=None,
+                                             relevance_score=None, rationale="r" * 60) for t in market_tickers],
+            summary="s" * 120, sentiment_available=False,
+        )
+    flow.state.risk_profile = risk_profile
+    return draft_tools()
+
+
+def _positions(output):
+    return {p.ticker: p for p in output.positions}
+
+
+def test_draft_llm_numbers_overwritten(flow):
+    """D-15: a hostile answer cannot set a score, allocation, setup, total or the risk level."""
+    from schemas.agent_outputs import InvestorStrategicOutput
+    from utils.composite_score_tool import CompositeScoreTool
+
+    tools = prime_draft(flow)
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    hostile = {
+        "composite_score": 99.0, "allocation_pct": 50.0, "current_price": 1.0,
+        "fundamentals_status": "AVAILABLE",
+        "trade_setup": {"direction": "LONG-BUY", "entry_zone_low": 1.0, "entry_zone_high": 2.0,
+                        "stop_loss": 0.5, "take_profit": 9.0},
+    }
+    payload = draft_payload(
+        draft_entry("AAA", "LONG-BUY", **hostile),
+        draft_entry("BBB", "MONITOR", **hostile),
+        deployed_pct=80.0, reserved_pct=10.0, cash_reserve_pct=10.0, total_allocated_pct=90.0, risk_level="Low",
+    )
+    run_draft(flow, narrative_result(payload))
+
+    out = flow.state.draft_output
+    assert isinstance(out, InvestorStrategicOutput)
+    assert [p.ticker for p in out.positions] == ["AAA", "BBB"]
+    by = _positions(out)
+    # Composite scores are the tool's: AAA 18.0 + 28.4 + 27 = 73.4, BBB 18.0 + 20.0 (fundamentals unknown) = 38.0.
+    expected = json.loads(CompositeScoreTool()._run(json.dumps([
+        {"ticker": "AAA", "average_sentiment": 0.2, "momentum_score": 7.1, "quality": "High", "growth": "Moderate Growth"},
+        {"ticker": "BBB", "average_sentiment": 0.2, "momentum_score": 5.0, "quality": "UNKNOWN", "growth": "UNKNOWN"},
+    ])))["scores"]
+    assert (by["AAA"].composite_score, by["BBB"].composite_score) == (73.4, 38.0)
+    assert [e["composite_score"] for e in expected] == [73.4, 38.0]
+    # Allocation and setup are the allocator's: AAA is the only deployed position, capped at 15 percent.
+    assert by["AAA"].allocation_pct == 15.0 and by["BBB"].allocation_pct == 0.0
+    setup = by["AAA"].trade_setup
+    assert setup is not None and (setup.entry_zone_low, setup.entry_zone_high) == (99.0, 99.0)
+    assert setup.stop_loss == 96.03
+    assert by["BBB"].trade_setup is None
+    assert (out.deployed_pct, out.reserved_pct, out.cash_reserve_pct, out.total_allocated_pct) == (15.0, 0.0, 85.0, 15.0)
+    # Prices and fundamentals_status come from the technical and fundamental records.
+    assert (by["AAA"].current_price, by["BBB"].current_price) == (99.0, 50.0)
+    assert (by["AAA"].fundamentals_status, by["BBB"].fundamentals_status) == ("AVAILABLE", "UNKNOWN")
+    # The risk level is rule-derived: one deployed position whose technical risk is High (3.0 > 2.6).
+    assert out.risk_level == "Very High"
+    # What the LLM does own.
+    assert by["AAA"].action == "LONG-BUY" and by["BBB"].action == "MONITOR"
+    assert by["AAA"].review_frequency == "WEEKLY"
+    assert by["AAA"].monitoring_triggers == ["AAA RSI above 75"]
+    assert "AAA rationale written by the model" in by["AAA"].rationale
+    assert out.overall_strategy == "o" * 120
+    assert out.sector == "Technology" and out.risk_profile == "conservative"
+    assert flow.state.policy_clamps == []
+    assert flow.state.composite_scores["AAA"]["composite_score"] == 73.4
+
+
+def test_draft_composite_called_before_the_llm_and_allocator_after(flow):
+    tools = prime_draft(flow)
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    order = []
+    for name, tool in tools.items():
+        real = tool._run
+        tool._run = (lambda n, r: (lambda **kw: (order.append(n), r(**kw))[1]))(name, real)
+    with patch.object(flow, "_make_crew") as mc:
+        async def answer():
+            order.append("llm")
+            return narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB")))
+        mc.return_value.akickoff = answer
+        asyncio.run(flow.draft_strategy())
+    assert order == [COMPOSITE_TOOL, "llm", ALLOCATOR_TOOL]
+
+
+def test_clamp_unknown_fundamentals(flow):
+    """D-08: LONG-BUY on a ticker whose quality is UNKNOWN becomes MONITOR, visibly."""
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB", "LONG-BUY"))))
+
+    by = _positions(flow.state.draft_output)
+    assert by["BBB"].action == "MONITOR"
+    assert by["BBB"].allocation_pct == 0.0 and by["BBB"].trade_setup is None
+    assert by["BBB"].rationale.endswith(".") and DRAFT_TAIL in by["BBB"].rationale
+    assert "FUNDAMENTALS_UNKNOWN" in by["BBB"].rationale.split(DRAFT_TAIL)[1]
+    assert by["AAA"].action == "LONG-BUY" and DRAFT_TAIL not in by["AAA"].rationale
+    [clamp] = flow.state.policy_clamps
+    assert clamp["ticker"] == "BBB" and clamp["from_action"] == "LONG-BUY" and clamp["to_action"] == "MONITOR"
+    assert "FUNDAMENTALS_UNKNOWN" in clamp["rule"]
+
+
+def test_clamp_wait_at_current_entry(flow):
+    """Failure B class: WAIT-FOR-ENTRY at CURRENT_ENTRY becomes MONITOR before it can reach the validator."""
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA", "WAIT-FOR-ENTRY"), draft_entry("BBB"))))
+
+    aaa = _positions(flow.state.draft_output)["AAA"]
+    assert aaa.action == "MONITOR" and aaa.allocation_pct == 0.0 and aaa.trade_setup is None
+    [clamp] = flow.state.policy_clamps
+    assert clamp["ticker"] == "AAA" and clamp["from_action"] == "WAIT-FOR-ENTRY"
+    assert "CURRENT_ENTRY" in clamp["rule"]
+    assert "CURRENT_ENTRY" in aaa.rationale.split(DRAFT_TAIL)[1]
+
+
+def test_allowed_action_untouched(flow):
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    aaa_entry, bbb_entry = draft_entry("AAA", "LONG-BUY"), draft_entry("BBB", "AVOID")
+    run_draft(flow, narrative_result(draft_payload(aaa_entry, bbb_entry)))
+    by = _positions(flow.state.draft_output)
+    assert (by["AAA"].action, by["BBB"].action) == ("LONG-BUY", "AVOID")
+    assert by["AAA"].rationale == aaa_entry["rationale"] and by["BBB"].rationale == bbb_entry["rationale"]
+    assert flow.state.policy_clamps == []
+
+
+def test_aggressive_profile_reaches_the_allocator_and_the_clamp(flow):
+    tools = prime_draft(flow, risk_profile="aggressive", zones={"BBB": "PULLBACK_ENTRY"},
+                        grades_json=json.dumps({"grades": [
+                            {"ticker": "AAA", "valuation": "FAIR", "quality": "High", "growth": "Moderate Growth",
+                             "data_status": "ok"},
+                            {"ticker": "BBB", "valuation": "FAIR", "quality": "Medium", "growth": "Stable",
+                             "data_status": "ok"},
+                        ]}), fund_json=json.dumps({"fundamentals": [FETCH_AAA, dict(FETCH_AAA, ticker="BBB")]}))
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB", "WAIT-FOR-ENTRY"))))
+    sent = json.loads(tools[ALLOCATOR_TOOL].calls[0]["stocks_json"])
+    assert sent["risk_profile"] == "aggressive"
+    by = _positions(flow.state.draft_output)
+    assert by["BBB"].action == "WAIT-FOR-ENTRY"            # PULLBACK_ENTRY, fundamentals known: eligible
+    assert by["AAA"].allocation_pct > 15.0 and by["BBB"].allocation_pct > 0.0   # aggressive cap is 30
+    assert flow.state.draft_output.reserved_pct == by["BBB"].allocation_pct
+
+
+def test_serper_path_composite_renormalises_over_technical_and_fundamental(flow):
+    """02-16 decision A: sentiment null and sentiment_available false on every candidate."""
+    tools = prime_draft(flow, sentiment=False)
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))))
+
+    sent = json.loads(tools[COMPOSITE_TOOL].calls[0]["stocks_json"])
+    assert [s["average_sentiment"] for s in sent] == [None, None]
+    by = _positions(flow.state.draft_output)
+    # AAA: (28.4 + 27) * 100 / 70 = 79.1; BBB (fundamentals unknown): 20.0 * 100 / 40 = 50.0. Never 0 or 15 for sentiment.
+    assert (by["AAA"].composite_score, by["BBB"].composite_score) == (79.1, 50.0)
+    scores = flow.state.composite_scores
+    assert scores["AAA"]["sentiment_unavailable"] is True and scores["AAA"]["sentiment_component"] is None
+    prompt_context = flow._factory.build_task.call_args.args[3]
+    assert '"sentiment": "no data"' in prompt_context
+
+
+def test_partial_sentiment_is_not_mixed_into_the_scores(flow):
+    """sentiment_available false: no ticker gets a sentiment term, so scores stay comparable."""
+    from utils.strategy_assembly import composite_inputs
+
+    prime_draft(flow, sentiment=False)
+    flow.state.market_output.candidate_stocks[0].average_sentiment = 0.9
+    inputs = composite_inputs(flow.state.market_output, flow.state.technical_output, flow.state.fundamental_output)
+    assert [i["average_sentiment"] for i in inputs] == [None, None]
+
+
+def test_context_shows_scores_eligible_actions_and_excluded_tickers(flow):
+    prime_draft(flow, market_tickers=("AAA", "BBB", "CCC"))   # CCC failed technically: not in the technical output
+    wire_tools(flow, draft_tools(), phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))))
+    ctx = flow._factory.build_task.call_args.args[3]
+    section = ctx.split("=== Scores and eligible actions (computed by the pipeline) ===")[1]
+    data = json.loads(section.strip().split("\n\n=== ")[0])
+    rows = {r["ticker"]: r for r in data["tickers"]}
+    assert rows["AAA"]["composite_score"] == 73.4
+    assert rows["AAA"]["eligible_actions"] == ["LONG-BUY", "MONITOR", "AVOID"]          # CURRENT_ENTRY: no WAIT-FOR-ENTRY
+    assert rows["BBB"]["eligible_actions"] == ["MONITOR", "AVOID"]                       # fundamentals UNKNOWN
+    assert rows["AAA"]["sentiment"] == 0.2
+    assert [e["ticker"] for e in data["excluded"]] == ["CCC"]
+    assert flow._factory.build_task.call_args.kwargs["risk_profile"] == "conservative"
+
+
+def test_position_coverage_missing_and_duplicate_tickers_are_named():
+    from schemas.agent_outputs import StrategyNarrativeOutput
+    from utils.strategy_assembly import require_position_coverage
+
+    missing = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA")))
+    with pytest.raises(PhaseOutputError) as info:
+        require_position_coverage(missing, ["AAA", "BBB"])
+    assert info.value.fields == ["positions[BBB]"] and "BBB" in str(info.value) and "draft_strategy" in str(info.value)
+    twice = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA"), draft_entry("aaa"), draft_entry("BBB")))
+    with pytest.raises(PhaseOutputError) as info:
+        require_position_coverage(twice, ["AAA", "BBB"])
+    assert info.value.fields == ["positions[AAA]"] and "AAA" in str(info.value)
+    ok = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("aaa"), draft_entry("BBB"), draft_entry("ZZZ")))
+    require_position_coverage(ok, ["AAA", "BBB"])      # an extra ticker is not an error here
+
+
+def test_missing_position_is_retried_and_exhausts_the_budget(flow):
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    short = narrative_result(draft_payload(draft_entry("AAA")))
+    full = narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+    kickoff = run_draft(flow, short, full)
+    assert kickoff.await_count == 2
+    assert [p.ticker for p in flow.state.draft_output.positions] == ["AAA", "BBB"]
+    assert "positions[BBB]" in flow._factory.build_task.call_args_list[1].kwargs["feedback"]
+
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    with pytest.raises(PhaseSchemaError) as info:
+        run_draft(flow, short, short, short)
+    assert info.value.phase == DRAFT_PHASE and "positions[BBB]" in str(info.value)
+
+
+def test_narrative_for_an_unknown_ticker_is_ignored(flow, caplog):
+    wire_tools(flow, prime_draft(flow), phase=DRAFT_PHASE)
+    with caplog.at_level("INFO"):
+        run_draft(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"), draft_entry("ZZZ", "LONG-BUY"))))
+    assert [p.ticker for p in flow.state.draft_output.positions] == ["AAA", "BBB"]
+    assert "ZZZ" in caplog.text
+
+
+def test_composite_tool_error_raises_naming_the_phase(flow):
+    tools = prime_draft(flow)
+    tools[COMPOSITE_TOOL] = StubTool(COMPOSITE_TOOL, json.dumps({"error": "missing momentum_score for AAA"}))
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock()
+        with pytest.raises(RuntimeError, match="draft_strategy") as info:
+            asyncio.run(flow.draft_strategy())
+    assert "missing momentum_score" in str(info.value)
+    mc.return_value.akickoff.assert_not_awaited()
+
+
+def test_composite_missing_a_ticker_raises(flow):
+    tools = prime_draft(flow)
+    only_aaa = json.dumps({"scores": [{"ticker": "AAA", "composite_score": 70.0, "sentiment_component": None,
+                                       "technical_component": 28.0, "fundamental_component": 27,
+                                       "sentiment_unavailable": True, "fundamental_unknown": False}]})
+    tools[COMPOSITE_TOOL] = StubTool(COMPOSITE_TOOL, only_aaa)
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    with pytest.raises(RuntimeError, match="BBB"):
+        run_draft(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+
+
+def test_allocator_error_raises_bounds_violation(flow):
+    from utils.portfolio_bounds_validator import BoundsViolationError
+
+    tools = prime_draft(flow)
+    tools[ALLOCATOR_TOOL] = StubTool(ALLOCATOR_TOOL, json.dumps({"error": "Computation error: boom"}))
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    with pytest.raises(BoundsViolationError):
+        run_draft(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+    assert flow.state.draft_output is None
+
+
+def test_no_technical_data_fails_clearly(flow):
+    wire_tools(flow, draft_tools(), phase=DRAFT_PHASE)
+    flow.state.technical_output = None
+    with pytest.raises(RuntimeError, match="draft_strategy"):
+        asyncio.run(flow.draft_strategy())
+
+
+def test_draft_tools_off_loop_and_timed(flow):
+    tools = prime_draft(flow)
+    wire_tools(flow, tools, instrument=True, phase=DRAFT_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    loop_thread = threading.get_ident()
+    run_draft(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+    for tool in tools.values():
+        assert len(tool.idents) == 1 and tool.idents[0] != loop_thread
+    calls = flow._tracker.to_dict()["tool_calls"]
+    assert [(c["phase"], c["tool"]) for c in calls] == [(DRAFT_PHASE, COMPOSITE_TOOL), (DRAFT_PHASE, ALLOCATOR_TOOL)]
+
+
+def test_draft_agent_has_no_tools_and_the_flow_holds_both(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+    from prospect_ai_crew import TaskFactory
+    from schemas.agent_outputs import StrategyNarrativeOutput
+
+    factory = TaskFactory()
+    task = factory.build_task(DRAFT_PHASE, "Technology", "2026-04-29", "=== ctx ===")
+    assert list(task.tools or []) == []
+    assert task.output_pydantic is StrategyNarrativeOutput
+    assert factory._phase_config[DRAFT_PHASE]["agent_tools"] == []
+    for name in (COMPOSITE_TOOL, ALLOCATOR_TOOL):
+        assert factory.flow_tool(DRAFT_PHASE, name).name == name
+
+
+def test_run_analysis_adds_one_warning_per_clamp(flow):
+    clamps = [
+        {"ticker": "BBB", "from_action": "LONG-BUY", "to_action": "MONITOR", "rule": "FUNDAMENTALS_UNKNOWN row",
+         "message": "BBB: draft action LONG-BUY set to MONITOR by policy: FUNDAMENTALS_UNKNOWN row"},
+    ]
+
+    def kickoff(inputs=None):
+        flow.state.final_output = MagicMock(model_dump=lambda mode=None: {"positions": [], "overall_strategy": "x"})
+        flow.state.policy_clamps = clamps
+
+    flow.kickoff = kickoff
+    with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=lambda s, p: s):
+        out = flow.run_analysis({"sector": "Technology"})
+    warnings = [w for w in out["validation_warnings"] if w["field"] == "action"]
+    assert warnings == [{"severity": "warning", "ticker": "BBB", "field": "action", "message": clamps[0]["message"]}]
+    assert warnings[0] in out["result"]["validation_warnings"]
+
+
+class TestStrategyAssemblyUnits:
+    @staticmethod
+    def _pos(ticker, action, rationale="x" * 60):
+        from schemas.agent_outputs import PositionNarrative
+
+        return PositionNarrative(ticker=ticker, action=action, rationale=rationale,
+                                 monitoring_triggers=["t"], review_frequency="WEEKLY")
+
+    def test_clamp_changes_only_ineligible_actions(self):
+        from utils.strategy_assembly import clamp_actions
+
+        positions = [self._pos("AAA", "LONG-BUY"), self._pos("BBB", "LONG-BUY")]
+        eligible = {"AAA": frozenset({"LONG-BUY", "MONITOR", "AVOID"}), "BBB": frozenset({"MONITOR", "AVOID"})}
+        context = {"AAA": {"entry_zone_status": "CURRENT_ENTRY", "risk_profile": "conservative", "fundamentals_status": "AVAILABLE"},
+                   "BBB": {"entry_zone_status": "CURRENT_ENTRY", "risk_profile": "conservative", "fundamentals_status": "UNKNOWN"}}
+        out, clamps = clamp_actions(positions, eligible, context)
+        assert [p.action for p in out] == ["LONG-BUY", "MONITOR"]
+        assert out[0] is positions[0] and positions[1].action == "LONG-BUY"     # inputs are not mutated
+        assert out[1].rationale == "x" * 60 + " Action set to MONITOR by policy: " + clamps[0]["rule"] + "."
+        assert [c["ticker"] for c in clamps] == ["BBB"]
+
+    def test_both_rules_are_named_when_both_apply(self):
+        from utils.strategy_assembly import policy_rule
+
+        rule = policy_rule("WAIT-FOR-ENTRY", "CURRENT_ENTRY", "conservative", "UNKNOWN")
+        assert "CURRENT_ENTRY" in rule and "FUNDAMENTALS_UNKNOWN" in rule
+
+    def test_a_ticker_without_an_eligible_set_is_left_alone(self):
+        from utils.strategy_assembly import clamp_actions
+
+        out, clamps = clamp_actions([self._pos("AAA", "LONG-BUY")], {}, {})
+        assert out[0].action == "LONG-BUY" and clamps == []
+
+    def test_eligible_by_ticker_reads_the_policy_table(self):
+        from utils.strategy_assembly import eligible_by_ticker
+
+        prime = SimpleNamespace(state=SimpleNamespace())
+        prime_draft(prime)
+        got = eligible_by_ticker(prime.state.technical_output, {"AAA": "AVAILABLE", "BBB": "UNKNOWN"}, "conservative")
+        assert got == {"AAA": frozenset({"LONG-BUY", "MONITOR", "AVOID"}), "BBB": frozenset({"MONITOR", "AVOID"})}
+        # A missing fundamentals_status is permissive, as in the Critic gate.
+        assert "WAIT-FOR-ENTRY" in eligible_by_ticker(prime.state.technical_output, {}, "conservative")["BBB"]
+
+
+def _risk_position(ticker, action, pct):
+    return SimpleNamespace(ticker=ticker, action=action, allocation_pct=pct)
+
+
+def _risk_technical(**levels):
+    return {t: SimpleNamespace(momentum_analysis=SimpleNamespace(risk_level=level)) for t, level in levels.items()}
+
+
+@pytest.mark.parametrize("positions,levels,expected", [
+    # No deployed capital at all: Low.
+    ([_risk_position("A", "MONITOR", 0.0), _risk_position("B", "AVOID", 0.0)], dict(A="High", B="High"), "Low"),
+    ([_risk_position("A", "LONG-BUY", 0.0)], dict(A="High"), "Low"),
+    # Weighted mean 1.5 -> Low (inclusive).
+    ([_risk_position("A", "LONG-BUY", 10.0), _risk_position("B", "LONG-BUY", 10.0)], dict(A="Low", B="Medium"), "Low"),
+    # 2.0 -> Medium (inclusive); a WAIT-FOR-ENTRY position counts.
+    ([_risk_position("A", "LONG-BUY", 10.0), _risk_position("B", "WAIT-FOR-ENTRY", 10.0)], dict(A="Medium", B="Medium"), "Medium"),
+    ([_risk_position("A", "LONG-BUY", 12.0), _risk_position("B", "LONG-BUY", 8.0)], dict(A="Low", B="High"), "Medium"),   # 1.8
+    # 2.5 -> High; exactly 2.6 -> High (inclusive).
+    ([_risk_position("A", "LONG-BUY", 10.0), _risk_position("B", "LONG-BUY", 10.0)], dict(A="Medium", B="High"), "High"),
+    ([_risk_position("A", "LONG-BUY", 40.0), _risk_position("B", "LONG-BUY", 60.0)], dict(A="Medium", B="High"), "High"),
+    # Above 2.6 -> Very High.
+    ([_risk_position("A", "LONG-BUY", 39.0), _risk_position("B", "LONG-BUY", 61.0)], dict(A="Medium", B="High"), "Very High"),
+    ([_risk_position("A", "LONG-BUY", 15.0)], dict(A="High"), "Very High"),
+    # MONITOR / AVOID never weigh in, whatever their risk.
+    ([_risk_position("A", "LONG-BUY", 15.0), _risk_position("B", "AVOID", 0.0)], dict(A="Low", B="High"), "Low"),
+])
+def test_risk_level_rule(positions, levels, expected):
+    from utils.strategy_assembly import derive_portfolio_risk_level
+
+    assert derive_portfolio_risk_level(positions, _risk_technical(**levels)) == expected
+
+
+def test_risk_level_needs_a_technical_record_for_a_deployed_position():
+    from utils.strategy_assembly import derive_portfolio_risk_level
+
+    with pytest.raises(ValueError, match="A"):
+        derive_portfolio_risk_level([_risk_position("A", "LONG-BUY", 10.0)], {})
+
+
+class TestStrictVocabulary:
+    @pytest.mark.parametrize("field,value", [
+        ("action", "long-buy"), ("action", "Long-Buy"), ("action", "LONG BUY"), ("action", " MONITOR"),
+        ("review_frequency", "weekly"), ("review_frequency", "Weekly"), ("review_frequency", "WEEKLY "),
+    ])
+    def test_position_narrative_rejects_case_and_space_variants(self, field, value):
+        from pydantic import ValidationError
+        from schemas.agent_outputs import PositionNarrative
+
+        entry = draft_entry("AAA")
+        entry[field] = value
+        with pytest.raises(ValidationError):
+            PositionNarrative.model_validate(entry)
+
+    def test_action_strict(self):
+        from pydantic import ValidationError
+        from schemas.agent_outputs import StrategyNarrativeOutput
+
+        with pytest.raises(ValidationError) as info:
+            StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA", "long-buy")))
+        assert "positions.0.action" in str(info.value)
+
+    def test_published_models_lost_their_case_normalisers(self):
+        from pydantic import ValidationError
+        from schemas.agent_outputs import PositionRecommendation, TradeSetup
+
+        with pytest.raises(ValidationError):
+            TradeSetup(direction="long-buy", entry_zone_low=9.0, entry_zone_high=10.0, stop_loss=8.0, take_profit=12.0)
+        base = dict(ticker="AAA", composite_score=50.0, allocation_pct=0.0, rationale="r" * 60,
+                    monitoring_triggers=["t"], review_frequency="WEEKLY")
+        PositionRecommendation(action="MONITOR", **base)
+        for bad in ({"action": "monitor"}, {"action": "Monitor", "review_frequency": "WEEKLY"},
+                    {"action": "MONITOR", "review_frequency": "weekly"}):
+            with pytest.raises(ValidationError):
+                PositionRecommendation(**{**base, **bad})
+
+    def test_narrative_model_has_no_number_field(self):
+        from schemas.agent_outputs import PositionNarrative, StrategyNarrativeOutput
+
+        assert set(PositionNarrative.model_fields) == {
+            "ticker", "action", "rationale", "monitoring_triggers", "review_frequency"}
+        assert set(StrategyNarrativeOutput.model_fields) == {"positions", "overall_strategy"}
