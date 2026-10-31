@@ -1,8 +1,8 @@
 """One test per phase proving LLM-echoed numbers and grades never reach published output (CORR-10, D-15).
 
-Plan 02-13 covers the fundamental phase and plan 02-15 the technical phase. The
-other phases are added by plans 02-16 (market), 02-17 (draft) and 02-18 (critique,
-final);
+Plan 02-13 covers the fundamental phase, plan 02-15 the technical phase and plan
+02-16 the market phase. The other phases are added by plans 02-17 (draft) and 02-18
+(critique, final);
 see .planning/phases/02-stall-elimination-schema-valid-output/02-LLM-ROLE-AUDIT.md.
 """
 import asyncio
@@ -772,3 +772,443 @@ class TestMergeTechnical:
             out = merge_technical("Technology", ["CCC", "AAA"], records, narrative, failed)
         assert [a.ticker for a in out.technical_analysis] == ["CCC", "AAA"]
         assert "ZZZ" in caplog.text
+
+
+# ─── market_analysis (plan 02-16) ──────────────────────────────────────────────
+
+MARKET_PHASE = "market_analysis"
+REDDIT_TOOL = "analyze_sector_reddit_sentiment"
+SERPER_TOOL = "Search the internet with Serper"
+
+REDDIT_OK = {
+    "sector": "Technology",
+    "candidate_stocks": [
+        {"ticker": "AAA", "mention_count": 12, "average_sentiment": 0.31, "relevance_score": 1.0,
+         "sample_posts": ["AAA beats estimates", "Why AAA is a buy"]},
+        {"ticker": "BBB", "mention_count": 7, "average_sentiment": -0.12, "relevance_score": 0.92,
+         "sample_posts": ["BBB guidance cut"]},
+    ],
+    "raw_post_count": 80,
+    "subreddits_searched": ["stocks"],
+    "fallback_required": False,
+}
+REDDIT_FALLBACK = {
+    "sector": "Technology", "candidate_stocks": [], "raw_post_count": 0,
+    "subreddits_searched": [], "fallback_required": True,
+    "error": "All Reddit public endpoint requests failed. Serper fallback required.",
+}
+
+
+def _organic(*texts):
+    return {"organic": [
+        {"title": f"Headline {i}", "link": f"https://news{i}.example.com/a/b?q=1", "snippet": text, "position": i}
+        for i, text in enumerate(texts, 1)
+    ]}
+
+
+SERPER_OK = _organic(
+    "AAA surges while BBB lags", "AAA and AAA again lead the rally",
+    "Analysts like AAA this week", "Nothing about tickers here",
+)
+
+
+class RaisingTool(StubTool):
+    """A StubTool whose call raises ``output`` (an exception instance), recording the thread first."""
+
+    def _run(self, **kwargs):
+        self.idents.append(threading.get_ident())
+        self.calls.append(kwargs)
+        raise self.output
+
+
+def market_tools(reddit=REDDIT_OK, serper=SERPER_OK):
+    maker = lambda name, out: (RaisingTool if isinstance(out, Exception) else StubTool)(name, out)  # noqa: E731
+    return {REDDIT_TOOL: maker(REDDIT_TOOL, reddit), SERPER_TOOL: maker(SERPER_TOOL, serper)}
+
+
+def mkt_entry(ticker, **extra):
+    entry = {"ticker": ticker, "rationale": f"{ticker} is widely discussed this week, with a clear catalyst. " * 2}
+    entry.update(extra)
+    return entry
+
+
+def mkt_payload(*entries, **extra):
+    payload = {"candidates": list(entries), "summary": "m" * 120}
+    payload.update(extra)
+    return payload
+
+
+def run_market(flow, *results):
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+        asyncio.run(flow.market_analysis())
+    return mc.return_value.akickoff
+
+
+def _by_ticker(output):
+    return {c.ticker: c for c in output.candidate_stocks}
+
+
+def test_market_llm_numbers_overwritten(flow, caplog):
+    """D-15: hostile numbers, flags and timestamp in the market answer never reach the output."""
+    from datetime import datetime
+
+    tools = market_tools()
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    hostile = {
+        "mention_count": 999, "average_sentiment": 0.99, "relevance_score": 1.0,
+        "data_source": "reddit", "sentiment_available": False,
+        "analysis_timestamp": "1999-01-01T00:00:00",
+    }
+    payload = mkt_payload(mkt_entry("AAA", **hostile), mkt_entry("ZZZ", **hostile), **hostile)
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(payload))
+
+    out = flow.state.market_output
+    assert isinstance(out, MarketAnalysisOutput)
+    stocks = _by_ticker(out)
+    assert list(stocks) == ["AAA"]
+    aaa = stocks["AAA"]
+    assert (aaa.mention_count, aaa.average_sentiment, aaa.relevance_score) == (12, 0.31, 1.0)
+    assert out.sentiment_available is True
+    assert isinstance(out.analysis_timestamp, datetime) and out.analysis_timestamp.year >= 2026
+    assert out.analysis_timestamp.tzinfo is not None
+    assert "ZZZ" in caplog.text and "market_analysis" in caplog.text
+    # Reddit answered, so Serper was never called.
+    assert tools[SERPER_TOOL].calls == []
+    assert tools[REDDIT_TOOL].calls == [{"sector": "Technology"}]
+
+
+def test_serper_path_counts(flow):
+    tools = market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK)
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+
+    out = flow.state.market_output
+    stocks = _by_ticker(out)
+    assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (4, 1)
+    assert (stocks["AAA"].relevance_score, stocks["BBB"].relevance_score) == (1.0, 0.25)
+    # Option A (operator decision, plan 02-16 task 1): no sentiment on the Serper path.
+    assert all(c.average_sentiment is None for c in out.candidate_stocks)
+    assert out.sentiment_available is False
+    assert tools[SERPER_TOOL].calls == [
+        {"search_query": "Technology sector stocks investors discussing 2026-04-29"}
+    ]
+
+
+def test_serper_counts_are_counts_of_the_symbol_in_titles_and_snippets(flow):
+    """AAA appears in 3 snippets (4 times); BBB once: relevance is count over the largest count."""
+    serper = _organic("AAA up", "AAA down, AAA flat", "AAA and BBB", "other")
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+    stocks = _by_ticker(flow.state.market_output)
+    assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (4, 1)
+    assert stocks["BBB"].relevance_score == 0.25
+    serper = _organic("AAA up", "AAA flat", "AAA and BBB again", "BBB too is up", "CCC")
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+    stocks = _by_ticker(flow.state.market_output)
+    assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (3, 2)
+    assert (stocks["AAA"].relevance_score, stocks["BBB"].relevance_score) == (1.0, 0.67)
+
+
+def test_serper_one_to_three_example_gives_one_and_a_third(flow):
+    serper = _organic("AAA one", "AAA two", "AAA three and BBB")
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+    stocks = _by_ticker(flow.state.market_output)
+    assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (3, 1)
+    assert (stocks["AAA"].relevance_score, stocks["BBB"].relevance_score) == (1.0, 0.33)
+
+
+@pytest.mark.parametrize("serper", [
+    __import__("requests").exceptions.ConnectionError("net down"),
+    {"organic": []},
+    {},
+    None,
+])
+def test_both_sources_down(flow, serper, caplog):
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase=MARKET_PHASE)
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+    out = flow.state.market_output
+    assert [c.ticker for c in out.candidate_stocks] == ["AAA", "BBB"]
+    for c in out.candidate_stocks:
+        assert c.mention_count is None and c.relevance_score is None and c.average_sentiment is None
+    assert out.sentiment_available is False
+    if isinstance(serper, Exception):
+        assert "ConnectionError" in caplog.text and "net down" not in caplog.text
+
+
+def test_reddit_tool_exception_falls_back_to_serper(flow, caplog):
+    tools = market_tools(reddit=RuntimeError("secret detail"), serper=SERPER_OK)
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    assert len(tools[SERPER_TOOL].calls) == 1
+    assert _by_ticker(flow.state.market_output)["AAA"].mention_count == 4
+    assert "RuntimeError" in caplog.text and "secret detail" not in caplog.text
+
+
+def test_no_valid_pick_is_retried(flow):
+    wire_tools(flow, market_tools(), phase=MARKET_PHASE)
+    only_unlisted = narrative_result(mkt_payload(mkt_entry("ZZZ"), mkt_entry("YYY")))
+    valid = narrative_result(mkt_payload(mkt_entry("BBB")))
+    kickoff = run_market(flow, only_unlisted, valid)
+    assert kickoff.await_count == 2
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["BBB"]
+
+
+def test_require_market_picks_names_candidates():
+    from schemas.agent_outputs import MarketNarrativeOutput
+    from utils.market_records import build_market_corpus, require_market_picks
+
+    corpus = build_market_corpus(REDDIT_OK, None, "Technology")
+    bad = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("ZZZ")))
+    with pytest.raises(PhaseOutputError) as info:
+        require_market_picks(bad, corpus)
+    assert info.value.fields == ["candidates"]
+    assert "market_analysis" in str(info.value) and "candidates" in str(info.value)
+    require_market_picks(MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("aaa"))), corpus)
+    # Only the Reddit path restricts the picks.
+    serper_corpus = build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+    require_market_picks(bad, serper_corpus)
+    require_market_picks(bad, build_market_corpus(REDDIT_FALLBACK, None, "Technology"))
+
+
+def test_market_tools_off_loop_and_timed(flow):
+    tools = market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK)
+    wire_tools(flow, tools, instrument=True, phase=MARKET_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    loop_thread = threading.get_ident()
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    for tool in tools.values():
+        assert len(tool.idents) == 1 and tool.idents[0] != loop_thread
+    calls = flow._tracker.to_dict()["tool_calls"]
+    assert [(c["phase"], c["tool"]) for c in calls] == [(MARKET_PHASE, REDDIT_TOOL), (MARKET_PHASE, SERPER_TOOL)]
+    assert flow._tracker.tool_call_count(MARKET_PHASE) == 2
+
+
+def test_market_emits_steps_start_and_one_task_complete(flow):
+    events, steps = [], []
+    flow._progress_callback = events.append
+    flow._step_callback = lambda idx, step: steps.append((idx, step.tool, step.log))
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK), phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    assert [s[:2] for s in steps] == [(0, REDDIT_TOOL), (0, SERPER_TOOL)]
+    assert steps[0][2] == "Reading Reddit discussion for Technology"
+    kinds = [e["event"] for e in events]
+    assert kinds.count("agent_start") == 1 and kinds.count("task_complete") == 1
+    assert kinds.index("agent_start") < kinds.index("task_complete")
+
+
+def test_market_agent_has_no_tools(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+    from prospect_ai_crew import TaskFactory
+    from schemas.agent_outputs import MarketNarrativeOutput
+
+    factory = TaskFactory()
+    task = factory.build_task(MARKET_PHASE, "Technology", "2026-04-29", "=== ctx ===")
+    assert list(task.tools or []) == []
+    assert task.output_pydantic is MarketNarrativeOutput
+    assert factory._phase_config[MARKET_PHASE]["agent_tools"] == []
+    for name in (REDDIT_TOOL, SERPER_TOOL):
+        assert factory.flow_tool(MARKET_PHASE, name).name == name
+
+
+# ─── Serper-path sentiment seam (operator decision A, plug-in for SEED-261030-nun) ──
+
+class TestSerperSentimentSeam:
+    def test_returns_none_for_every_ticker_today(self):
+        from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
+
+        corpus = build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+        assert corpus["source"] == "serper"
+        assert serper_sentiment_by_ticker(corpus, ["AAA", "BBB"]) == {"AAA": None, "BBB": None}
+        assert serper_sentiment_by_ticker(corpus, []) == {}
+
+    def test_never_returns_zero_for_unmeasured(self):
+        from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
+
+        corpus = build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+        assert all(v is None for v in serper_sentiment_by_ticker(corpus, ["AAA"]).values())
+
+    def test_merge_uses_the_seam_so_a_classifier_can_plug_in(self, monkeypatch):
+        """A function returning scores flips sentiment_available with no other change."""
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+
+        monkeypatch.setattr(mr, "serper_sentiment_by_ticker", lambda corpus, tickers: {t: 0.4 for t in tickers})
+        corpus = mr.build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB")))
+        from datetime import datetime, timezone
+
+        out = mr.merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+        assert [c.average_sentiment for c in out.candidate_stocks] == [0.4, 0.4]
+        assert out.sentiment_available is True
+        assert [c.mention_count for c in out.candidate_stocks] == [4, 1]
+
+    def test_partial_sentiment_is_not_available(self, monkeypatch):
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+        from datetime import datetime, timezone
+
+        monkeypatch.setattr(mr, "serper_sentiment_by_ticker", lambda corpus, tickers: {"AAA": 0.4, "BBB": None})
+        corpus = mr.build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB")))
+        out = mr.merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+        assert out.sentiment_available is False
+
+    def test_no_network_or_classifier_dependency(self):
+        import inspect
+        import utils.market_records as mr
+
+        source = inspect.getsource(mr.serper_sentiment_by_ticker)
+        for forbidden in ("requests", "http", "anthropic", "api_key", "socket"):
+            assert forbidden not in source
+
+
+# ─── market records (plan 02-16) ───────────────────────────────────────────────
+
+class TestSymbolMentionCounts:
+    def test_counts_symbol_not_substring(self):
+        from utils.market_records import symbol_mention_counts
+
+        counts = symbol_mention_counts(["AAA", "AA"], ["AAA rises", "AAAB is not AAA", "AA, AA and $AA"])
+        assert counts == {"AAA": 2, "AA": 3}
+
+    def test_cashtag_and_dotted_ticker(self):
+        from utils.market_records import symbol_mention_counts
+
+        counts = symbol_mention_counts(["BRK.B", "NVDA"], ["Buy BRK.B now", "$nvda moons", "BRKXB is not it"])
+        assert counts == {"BRK.B": 1, "NVDA": 1}
+
+    def test_bare_lowercase_word_is_not_a_symbol(self):
+        """A one-letter ticker must not match the article 'a' (deviation from the Reddit regex)."""
+        from utils.market_records import symbol_mention_counts
+
+        assert symbol_mention_counts(["A"], ["a stock a day", "Shares of A rose", "$a too"]) == {"A": 2}
+
+    def test_no_snippets_gives_zero_counts(self):
+        from utils.market_records import symbol_mention_counts
+
+        assert symbol_mention_counts(["AAA"], []) == {"AAA": 0}
+
+
+class TestBuildMarketCorpus:
+    def test_reddit_source(self):
+        from utils.market_records import build_market_corpus
+
+        corpus = build_market_corpus(REDDIT_OK, SERPER_OK, "Technology")
+        assert corpus["source"] == "reddit"
+        assert [c["ticker"] for c in corpus["candidates"]] == ["AAA", "BBB"]
+
+    def test_serper_source_keeps_title_snippet_and_link_host_only(self):
+        from utils.market_records import build_market_corpus
+
+        corpus = build_market_corpus(REDDIT_FALLBACK, SERPER_OK, "Technology")
+        assert corpus["source"] == "serper"
+        first = corpus["snippets"][0]
+        assert first == {"text": "Headline 1 AAA surges while BBB lags", "host": "news1.example.com"}
+        assert "https://" not in json.dumps(corpus)
+
+    def test_unavailable_source_carries_the_static_universe_when_known(self):
+        from utils.market_records import build_market_corpus
+
+        known = build_market_corpus(REDDIT_FALLBACK, None, "Semiconductors")
+        assert known["source"] == "unavailable" and "NVDA" in known["universe"]
+        unknown = build_market_corpus(REDDIT_FALLBACK, None, "Financials")
+        assert unknown["source"] == "unavailable" and unknown["universe"] == []
+
+    @pytest.mark.parametrize("serper", [None, {}, {"organic": []}, {"organic": [{"title": "", "snippet": ""}]},
+                                        {"organic": "oops"}, "text"])
+    def test_unusable_serper_is_unavailable(self, serper):
+        from utils.market_records import build_market_corpus
+
+        assert build_market_corpus(REDDIT_FALLBACK, serper, "Technology")["source"] == "unavailable"
+
+    def test_snippets_are_capped(self):
+        from utils.market_records import build_market_corpus
+
+        serper = _organic(*(["x" * 5000] * 50))
+        corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Technology")
+        assert len(corpus["snippets"]) <= 10
+        assert all(len(s["text"]) <= 500 for s in corpus["snippets"])
+
+    def test_reddit_flagged_fallback_is_not_used_even_with_candidates(self):
+        from utils.market_records import build_market_corpus
+
+        flagged = dict(REDDIT_OK, fallback_required=True)
+        assert build_market_corpus(flagged, None, "Technology")["source"] == "unavailable"
+
+
+class TestMergeMarket:
+    def _merge(self, picks, reddit=REDDIT_OK, serper=None):
+        from datetime import datetime, timezone
+
+        from schemas.agent_outputs import MarketNarrativeOutput
+        from utils.market_records import build_market_corpus, merge_market
+
+        corpus = build_market_corpus(reddit, serper, "Technology")
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(*[mkt_entry(t) for t in picks]))
+        return merge_market("Technology", corpus, narrative, datetime(2026, 4, 29, tzinfo=timezone.utc))
+
+    def test_timestamp_is_the_one_passed_by_the_flow(self):
+        out = self._merge(["AAA"])
+        assert out.analysis_timestamp.isoformat() == "2026-04-29T00:00:00+00:00"
+
+    def test_order_follows_the_llm_picks_and_duplicates_collapse(self):
+        out = self._merge(["bbb", "AAA", "BBB"])
+        assert [c.ticker for c in out.candidate_stocks] == ["BBB", "AAA"]
+
+    def test_bad_reddit_numbers_become_null_never_clamped_or_zeroed(self):
+        bad = {**REDDIT_OK, "candidate_stocks": [
+            {"ticker": "AAA", "mention_count": -3, "average_sentiment": 7.0, "relevance_score": "high",
+             "sample_posts": []},
+        ]}
+        out = self._merge(["AAA"], reddit=bad)
+        c = out.candidate_stocks[0]
+        assert (c.mention_count, c.average_sentiment, c.relevance_score) == (None, None, None)
+        assert out.sentiment_available is False
+
+    def test_all_picks_with_zero_mentions_have_null_relevance(self):
+        serper = _organic("nothing relevant", "still nothing")
+        out = self._merge(["AAA"], reddit=REDDIT_FALLBACK, serper=serper)
+        c = out.candidate_stocks[0]
+        assert c.mention_count == 0 and c.relevance_score is None
+
+    def test_nothing_valid_left_raises(self):
+        with pytest.raises(PhaseOutputError):
+            self._merge(["ZZZ"])
+
+
+# ─── market schema (plan 02-16) ────────────────────────────────────────────────
+
+class TestMarketSchema:
+    def test_narrative_model_has_no_number_field(self):
+        from schemas.agent_outputs import MarketCandidateNarrative, MarketNarrativeOutput
+
+        assert set(MarketCandidateNarrative.model_fields) == {"ticker", "rationale"}
+        assert set(MarketNarrativeOutput.model_fields) == {"candidates", "summary"}
+
+    def test_narrative_caps_picks_at_five(self):
+        from pydantic import ValidationError
+        from schemas.agent_outputs import MarketNarrativeOutput
+
+        six = mkt_payload(*[mkt_entry(t) for t in ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF")])
+        with pytest.raises(ValidationError):
+            MarketNarrativeOutput.model_validate(six)
+        MarketNarrativeOutput.model_validate(mkt_payload(*[mkt_entry(t) for t in ("AAA", "BBB", "CCC", "DDD", "EEE")]))
+
+    def test_candidate_counts_are_optional_but_bounded(self):
+        from pydantic import ValidationError
+
+        c = CandidateStock(ticker="AAA", mention_count=None, average_sentiment=None, relevance_score=None,
+                           rationale="r" * 60)
+        assert c.mention_count is None and c.relevance_score is None
+        for bad in ({"mention_count": -1}, {"relevance_score": 1.5}):
+            with pytest.raises(ValidationError):
+                CandidateStock(ticker="AAA", rationale="r" * 60, **bad)
