@@ -350,3 +350,56 @@ def test_technical_agent_text_has_no_tool_calls():
     for forbidden in ("calculate_technical_indicators", "call it first", "batch call", "Python dict"):
         assert forbidden not in text, f"technical_analyst text still says {forbidden!r}"
     assert cfg.get("thinking", "off") == "off"
+
+
+# ── Market prompt (narrative-only role, D-14, CORR-10, plan 02-16) ─────────────
+
+def test_market_declares_an_example():
+    assert "market_analysis" in _declared_examples()
+
+
+def test_market_prompt_is_narrative_only():
+    description = render_task("market_analysis")["description"]
+    for forbidden in (
+        "analyze_sector_reddit_sentiment",
+        "search_internet",
+        "SerperDevTool",
+        "STEP 1",
+        "data_source",
+        "analysis_timestamp",
+        "fallback_required",
+        "mention_count = 0",
+        "relevance_score = 0.5",
+        "assign a float",
+        "candidate_stocks[]",
+    ):
+        assert forbidden not in description, f"market prompt still mentions {forbidden}"
+    for wanted in ("Market Data (collected by the pipeline)", "candidates", "rationale", "summary",
+                   "untrusted", "ETF"):
+        assert wanted in description
+
+
+def test_market_example_has_no_number_or_flag_fields():
+    example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
+    assert set(example) == {"candidates", "summary"}
+    for entry in example["candidates"]:
+        assert set(entry) == {"ticker", "rationale"}
+    assert len(example["candidates"]) <= 5
+
+
+def test_market_expected_output_matches_the_narrative_shape():
+    expected = render_task("market_analysis")["expected_output"]
+    assert "candidates" in expected and "summary" in expected
+    for forbidden in ("candidate_stocks", "mention_count", "average_sentiment", "data_source", "analysis_timestamp"):
+        assert forbidden not in expected
+
+
+def test_market_agent_text_has_no_tool_calls_and_keeps_the_ticker_rule():
+    agent = yaml.safe_load(open(TaskConfigLoader().config_path.parent / "agents.yaml", encoding="utf-8"))
+    cfg = agent["agents"]["market_analyst"]
+    text = f"{cfg['goal']} {cfg['backstory']}"
+    for forbidden in ("When you need a tool", "call it first", "analysis_timestamp", "data_source",
+                      "Python dict", "mention_count", "average_sentiment"):
+        assert forbidden not in text, f"market_analyst text still says {forbidden!r}"
+    assert "Never invent ticker symbols" in text
+    assert cfg.get("thinking", "off") == "off"
