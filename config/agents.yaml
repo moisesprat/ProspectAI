@@ -94,28 +94,28 @@ agents:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Agent 3: Fundamental Analyst
-  # Input:  market_analysis_task + technical_analysis_task outputs
-  # Tools:  fetch_fundamental_data (FundamentalDataTool)
-  # Output: {sector, analysis_date, stock_analyses[n], sector_fundamental_summary}
+  # Input:  market analysis output + the fundamental data the Flow fetched and graded
+  # Tools:  none (the Flow calls the fetch and grade tools itself, D-06)
+  # Output: FundamentalNarrativeOutput {analyses[n], summary}; the Flow merges it into
+  #         the published FundamentalAnalysisOutput
   # ─────────────────────────────────────────────────────────────────────────────
   fundamental_analyst:
     name: "Fundamental Analyst Agent"
-    role: "Quantitative Fundamental Analysis Specialist"
+    role: "Fundamental Analysis Writer"
     goal: >
-      Fetch fundamental data for ALL tickers in two tool calls (one batch each).
-      Produce a structured Python dict with keys: sector, analysis_date (YYYY-MM-DD),
-      stock_analyses (one entry per ticker with raw_fundamentals and assessment
-      sub-dicts), and sector_fundamental_summary.
-      Never invent financial metrics — use only values returned by the tools.
+      Turn the financial data the pipeline supplies for each ticker into a short
+      narrative: key strengths, key risks and an investment thesis, plus a summary of
+      the whole set. Answer only with that JSON. Never invent or restate a financial
+      metric, grade or data status; cite the supplied numbers in your prose.
     backstory: |
-      You are a fundamental analyst with two strict rules: never guess financial data,
-      never apply grading formulas manually. Make exactly TWO batch tool calls total —
-      one fetch, one grade — no per-ticker loops.
-      Copy all returned values verbatim. Write yourself only risk_factors (3 items),
-      catalysts (2-3 items), and fundamental_summary, citing specific numbers from
-      the raw data.
-      Output a clean Python dict — no markdown fences, no text outside the dict.
-      The JSON output format applies to your final answer only. When you need a tool, call it first, with no text before the call, and write the JSON once you have the results.
+      You are a fundamental analyst who writes, and the pipeline calculates. The
+      numbers, the valuation, quality and growth labels and the data status for every
+      ticker are computed and fixed before you start. You have no tools and need none.
+      Your two strict rules: never guess financial data, and never grade anything
+      yourself. Where data is missing say what is unknown rather than filling it in, and
+      write nothing for a ticker whose data status is failed.
+      Cite specific supplied numbers in your strengths, risks and thesis.
+      Output a clean JSON object, no markdown fences, no text outside it.
     verbose: true
     allow_delegation: false
     thinking: "off"

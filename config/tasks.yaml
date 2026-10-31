@@ -171,75 +171,57 @@ tasks:
       interpretation), and sector_technical_summary string.
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Task 3: Fundamental Analysis
-  # Agent:   Fundamental Analyst
-  # Context: market_analysis_task, technical_analysis_task
-  # Tools:   fetch_fundamental_data (FundamentalDataTool)
-  # Output:  {sector, analysis_date, stock_analyses[n], sector_fundamental_summary}
+  # Task 3: Fundamental Analysis (narrative only; the Flow owns the data, D-06)
+  # Agent:   Fundamental Analyst (no tools)
+  # Context: market analysis, plus the fundamental data the Flow fetched and graded
+  # Tools:   none for the agent; the Flow calls the fetch and grade tools itself
+  # Output:  FundamentalNarrativeOutput {analyses[{ticker, key_strengths, key_risks,
+  #          investment_thesis}], summary}; the Flow merges it into the published
+  #          FundamentalAnalysisOutput, so no number or label is taken from the LLM
   # ─────────────────────────────────────────────────────────────────────────────
   fundamental_analysis:
     description: |
-      Fetch real financial data for each stock and produce a structured fundamental report.
-      You receive context from Market Analyst (sentiment) and Technical Analyst (indicators).
+      Write the fundamental narrative for the $sector stocks below. The pipeline has
+      already fetched and graded the financial data; it is in the context section named
+      "Fundamental Data (computed by the pipeline)", one entry per ticker with:
+        company_name, data_status, valuation, quality, growth and metrics (the non-null
+        numbers: pe_ratio, pb_ratio, ev_ebitda, price_to_sales, debt_to_equity, roe,
+        revenue_growth_yoy, earnings_growth_yoy, free_cash_flow, dividend_yield).
+      You do not have tools. Do not use training data, memory or prior knowledge for
+      financial numbers: use only what is given.
 
-      MANDATORY: You MUST make exactly TWO tool calls — one batch fetch, one batch grade.
-      The tools loop internally over all tickers. Do NOT call them per ticker.
-      Do NOT use training data, memory, or prior knowledge to fill in financial numbers.
+      The numbers, the valuation, quality and growth labels, and data_status are final.
+      You must not change them, and you must not repeat any of them as a field of your
+      answer: the pipeline publishes its own values. Your job is the words.
 
-      STEP 1 — Extract tickers:
-        Read the technical analysis context. Find 'stock_analyses'. Extract ALL tickers
-        into a JSON array, e.g. ["AAPL","NVDA","MSFT","GOOGL","AMZN"].
+      For each ticker whose data_status is "ok" or "partial" write:
+        key_strengths: 1 to 3 short statements, each citing a specific number from metrics.
+        key_risks: 1 to 3 short statements, each citing a specific number from metrics.
+        investment_thesis: one or two sentences tying the numbers and labels together.
+      A label of "UNKNOWN" means the data was missing: say what is not known, never guess
+      a grade or a figure. When metrics is partial, cite only the values that are present.
 
-      STEP 2 — Fetch ALL fundamentals in one call:
-        Call 'fetch_fundamental_data' ONCE with the full ticker array from STEP 1.
-        Example: fetch_fundamental_data(tickers_json='["AAPL","NVDA","MSFT"]')
-        The tool returns {"fundamentals": [one entry per ticker]}.
-        Save the complete output string — you will pass it to the next tool.
+      Do NOT write an entry for a ticker whose data_status is "failed". The pipeline
+      publishes the "Fundamental data unavailable" text for it.
 
-      STEP 3 — Grade ALL fundamentals in one call:
-        Pass the ENTIRE output string from STEP 2 directly to 'grade_fundamental_data'.
-        Example: grade_fundamental_data(fundamentals_batch_json='<exact string from STEP 2>')
-        The tool returns {"grades": [one entry per ticker]} with valuation, quality, growth,
-        data_status, quality_score, growth_score and fundamental_component for each ticker.
-        Labels: valuation CHEAP|FAIR|EXPENSIVE|VERY_EXPENSIVE|UNKNOWN, quality
-        High|Medium|Low|UNKNOWN, growth High Growth|Moderate Growth|Stable|Declining|UNKNOWN,
-        data_status ok|partial|failed.
-        Missing data is never graded: a dimension with no data is "UNKNOWN" with a null score,
-        and a ticker whose fetch failed has data_status="failed" with every label "UNKNOWN".
-        Copy all returned values verbatim, including "UNKNOWN" and data_status — do NOT
-        substitute or invent any grade.
-        Write risk_factors, catalysts, and fundamental_summary yourself,
-        citing specific numbers from the raw data.
-        When data_status="failed" (or quality and growth are both "UNKNOWN"):
-        set risk_factors=["Fundamental data unavailable"],
-        catalysts=["Data unavailable"], fundamental_summary="No fundamental data
-        available for this ticker."
+      Then write summary: at least 100 characters on how the fundamentals of the whole
+      set compare (valuation versus quality versus growth), citing the figures you used.
 
-      STEP 4 — Output JSON only, shaped exactly like this example (no markdown wrapper):
+      Output JSON only, shaped exactly like this example (no markdown wrapper):
       $output_example
         Allowed values:
       $allowed_values
-
-      RULES:
-      - raw_fundamentals must contain ONLY values from 'fetch_fundamental_data'. No invented numbers.
-      - valuation, quality, growth, data_status, fundamental_component must be copied
-        verbatim from the 'grade_fundamental_data' tool result.
-      - When a label is "UNKNOWN" or data_status is "failed", do NOT substitute any grade or
-        score — copy the UNKNOWN values verbatim. Downstream agents are designed to handle
-        UNKNOWN without fabricating.
-      - Include all tickers from technical analysis context.
     expected_output: >
-      Python dict with sector='$sector', analysis_date,
-      stock_analyses (one entry per ticker with raw_fundamentals and
-      assessment), and sector_fundamental_summary string.
+      JSON object with analyses (one entry per ticker whose data_status is not failed,
+      each with ticker, key_strengths, key_risks, investment_thesis) and a summary string.
     output_example:
       analyses:
         - ticker: "AAPL"
           key_strengths:
-            - "Net margin of 25.3% and return on equity of 147% show durable profitability."
-            - "Free cash flow of $99B funds buybacks without leaning on debt."
+            - "Return on equity of 147% and free cash flow of $99B show durable profitability."
+            - "Debt to equity of 1.9 is manageable given the cash the business generates."
           key_risks:
-            - "Forward P/E of 28.4 leaves little room for an earnings miss."
+            - "A P/E of 28.4 leaves little room for an earnings miss."
             - "Revenue growth of 2.0% year over year is slowing."
           investment_thesis: "Quality compounder priced fairly; returns depend on services growth offsetting flat hardware."
         - ticker: "XOM"
