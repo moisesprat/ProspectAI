@@ -101,74 +101,76 @@ tasks:
       and summary string.
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Task 2: Technical Analysis
-  # Agent:   Technical Analyst
-  # Context: market_analysis_task
-  # Tools:   calculate_technical_indicators (TechnicalAnalysisTool)
-  # Output:  {sector, analysis_date, stock_analyses[n], sector_technical_summary}
+  # Task 2: Technical Analysis (narrative only; the Flow owns the data, D-14)
+  # Agent:   Technical Analyst (no tools)
+  # Context: market analysis, plus the indicator data the Flow calculated
+  # Tools:   none for the agent; the Flow calls calculate_technical_indicators itself
+  # Output:  TechnicalNarrativeOutput {analyses[{ticker, overall_signal, key_signals,
+  #          comprehensive_analysis, investment_recommendation}], summary}; the Flow
+  #          merges it into the published TechnicalAnalysisOutput, so no number or
+  #          label is taken from the LLM (overall_signal is the one label it chooses)
   # ─────────────────────────────────────────────────────────────────────────────
   technical_analysis:
     description: |
-      Run technical analysis on every ticker from the Market Analyst's candidate_stocks
-      list and produce a structured report.
+      Write the technical narrative for the $sector stocks below. The pipeline has
+      already calculated the indicators; they are in the context section named
+      "Technical Data (computed by the pipeline)", one entry per ticker with:
+        current_price, indicators (rsi, stochastic_status, macd_status, ma_status, adx,
+        trend_strength), momentum_score, risk_level, entry_zone (low, high, status) and
+        regime. A value that is null was not available.
+      You do not have tools. Do not use training data, memory or prior knowledge for
+      prices or indicator values: use only what is given.
 
-      STEP 1 — Extract tickers:
-        Read the context. Find the 'candidate_stocks' list. Extract each 'ticker' value.
-        You will typically get 5 tickers.
+      Every number and label in the data is final. You must not change them, and you
+      must not repeat them as fields of your answer: the pipeline publishes its own
+      values. Your job is the reading of them.
 
-      STEP 2 — Fetch ALL technical data in one call:
-        Call 'calculate_technical_indicators' ONCE with the full ticker array from STEP 1.
-        Example: calculate_technical_indicators(tickers_json='["AAPL","NVDA","MSFT"]')
-        The tool loops internally over all tickers. Do NOT call it per ticker.
-        The tool returns {"technical_analysis": [one entry per ticker]}.
-        Entries that contain an 'error' key indicate a failed ticker — record the error
-        and skip that ticker in STEP 3.
+      For each ticker in stock_technicals write:
+        overall_signal: your overall reading of the indicators, exactly one of the
+          allowed values listed below (upper case, exactly as written).
+        key_signals: 3 to 5 short statements, each citing a specific reading from the
+          data, for example "RSI at 63, neutral momentum" or "MACD bullish".
+        comprehensive_analysis: a short paragraph (at least 50 characters) tying the
+          indicators, the momentum score, the risk level and the entry zone together.
+        investment_recommendation: one or two sentences (at least 50 characters) on
+          what the technical picture means for entering the stock, given the entry
+          zone status. State the zone; do not invent a different one.
+      A null reading means the data was missing: say what is not known, never guess.
 
-      STEP 3 — For each ticker entry in the technical_analysis array from STEP 2:
-        Skip entries that contain an 'error' key.
-        Each successful entry already contains an 'interpretation' sub-dict with
-        pre-computed numeric values: entry_zone_low, entry_zone_high, entry_zone_status,
-        momentum_score, risk_level, and regime. Copy these numbers verbatim — do NOT
-        recalculate or modify them.
+      Do NOT write an entry for a ticker listed under no_data. The pipeline reports
+      it separately as having no indicator data.
 
-        Then use your own reasoning to produce:
-        - overall_signal: your assessment of "BULLISH", "BEARISH", "MIXED", or "NEUTRAL"
-          based on MACD status, MA status, RSI level, and other raw indicators.
-        - trend_strength: one of exactly "Very Weak", "Weak", "Neutral", "Strong", "Very Strong"
-          based on ADX level and price action. Use title-case exactly as shown.
-        - key_signals: 3-5 plain-English strings describing the most notable readings
+      Then write summary: at least 100 characters on how the technical picture of
+      the whole set compares (trend, momentum, entry timing), citing the readings
+      you used.
 
-        Examples: "RSI at 63 — neutral momentum", "MACD bullish crossover",
-          "Stochastic at 94 — extreme overbought", "SMA20 > SMA50 > SMA200"
-
-      STEP 4 — Output a pure Python dict (no markdown wrapper):
-        sector: str
-        analysis_date: str — "$today"
-        stock_analyses[]: ticker(str) current_price(float|null) period_analyzed(str)
-          raw_indicators: rsi(float) macd_status(str) ma_status(str) bb_status(str)
-                          adx(float) atr(float) sma_20(float) ema_12(float)
-          interpretation: overall_signal(str) key_signals(str[]) entry_zone_low(float)
-                          entry_zone_high(float) momentum_score(float) risk_level(str)
-                          regime(str) entry_zone_status(str)
-          error: str|null
-        sector_technical_summary: str
-
-      RULES:
-      - raw_indicators must use actual numbers from the tool — never invented values.
-      - entry_zone_low, entry_zone_high, momentum_score, risk_level must be copied
-        verbatim from the 'interpretation' sub-dict in the batch tool result.
-      - overall_signal and key_signals are YOUR reasoned assessment of the raw data.
-      - If the tool returns an error for a ticker, set error to that string and all other
-        fields (current_price, raw_indicators, interpretation) to null.
-      - If current_price cannot be retrieved (tool error or zero value), set current_price
-        to null and populate price_data_error with a short description of the failure
-        (e.g. "yfinance returned no price data for TICKER"). The Investment Strategist
-        will use this field to decide how to handle the position.
-      - Do not skip any ticker from the market analyst output.
+      Output JSON only, shaped exactly like this example (no markdown wrapper):
+      $output_example
+        Allowed values:
+      $allowed_values
     expected_output: >
-      Python dict with sector='$sector', analysis_date,
-      stock_analyses (one entry per ticker with raw_indicators and
-      interpretation), and sector_technical_summary string.
+      JSON object with analyses (one entry per ticker in stock_technicals, each with
+      ticker, overall_signal, key_signals, comprehensive_analysis,
+      investment_recommendation) and a summary string.
+    output_example:
+      analyses:
+        - ticker: "AAPL"
+          overall_signal: "BULLISH"
+          key_signals:
+            - "RSI at 58, neutral momentum with room to run"
+            - "MACD bullish"
+            - "Moving averages in a strong uptrend, ADX at 32"
+          comprehensive_analysis: "AAPL is in an established uptrend: MACD is bullish, the moving averages are stacked upward and ADX at 32 confirms trend strength. Momentum score of 7.1 is healthy, while the high risk level calls for sizing discipline."
+          investment_recommendation: "Constructive setup. Price is inside the entry zone, so the entry is actionable now; keep the position small given the high risk level."
+        - ticker: "XOM"
+          overall_signal: "MIXED"
+          key_signals:
+            - "RSI at 44, below the neutral band"
+            - "MACD mixed"
+            - "Price above the entry zone, status PULLBACK_ENTRY"
+          comprehensive_analysis: "XOM shows no clear direction: MACD is mixed, RSI is soft at 44 and ADX at 17 says the trend is weak. The momentum score of 4.2 reflects that, and the regime is neutral."
+          investment_recommendation: "Not actionable at the current price, which sits above the entry zone. Wait for a pullback into the zone before considering an entry."
+      summary: "The set is mixed: the growth names show confirmed uptrends with healthy momentum, while the cyclical names are range-bound with weak trend strength. Entry timing matters more than direction here, since several names trade above their entry zones."
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 3: Fundamental Analysis (narrative only; the Flow owns the data, D-06)

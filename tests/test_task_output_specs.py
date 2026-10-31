@@ -302,3 +302,51 @@ def test_fundamental_agent_text_has_no_tool_calls():
     for forbidden in ("tool call", "fetch_fundamental", "grade_fundamental", "call it first", "TWO batch"):
         assert forbidden not in text, f"fundamental_analyst text still says {forbidden!r}"
     assert cfg.get("thinking", "off") == "off"
+
+
+# ── Technical prompt (narrative-only role, D-14, CORR-10, plan 02-15) ──────────
+
+def test_technical_declares_an_example_and_lists_the_four_signals():
+    assert "technical_analysis" in _declared_examples()
+    description = render_task("technical_analysis")["description"]
+    for value in ("BULLISH", "BEARISH", "MIXED", "NEUTRAL"):
+        assert f'"{value}"' in description
+
+
+def test_technical_prompt_is_narrative_only():
+    description = render_task("technical_analysis")["description"]
+    for forbidden in (
+        "calculate_technical_indicators",
+        "interpret_technical_indicators",
+        "stock_analyses",
+        "raw_indicators",
+        "sector_technical_summary",
+        "trend_strength: one of",
+        "Copy these numbers",
+    ):
+        assert forbidden not in description, f"technical prompt still mentions {forbidden}"
+    for wanted in ("overall_signal", "key_signals", "comprehensive_analysis", "investment_recommendation",
+                   "no_data"):
+        assert wanted in description
+
+
+def test_technical_example_has_no_number_or_label_fields():
+    example = TaskConfigLoader().get_task_config("technical_analysis")["output_example"]
+    for entry in example["analyses"]:
+        assert set(entry) == {"ticker", "overall_signal", "key_signals",
+                              "comprehensive_analysis", "investment_recommendation"}
+
+
+def test_technical_expected_output_matches_the_narrative_shape():
+    expected = render_task("technical_analysis")["expected_output"]
+    assert "analyses" in expected and "summary" in expected
+    assert "stock_analyses" not in expected and "sector_technical_summary" not in expected
+
+
+def test_technical_agent_text_has_no_tool_calls():
+    agent = yaml.safe_load(open(TaskConfigLoader().config_path.parent / "agents.yaml", encoding="utf-8"))
+    cfg = agent["agents"]["technical_analyst"]
+    text = f"{cfg['goal']} {cfg['backstory']}"
+    for forbidden in ("calculate_technical_indicators", "call it first", "batch call", "Python dict"):
+        assert forbidden not in text, f"technical_analyst text still says {forbidden!r}"
+    assert cfg.get("thinking", "off") == "off"

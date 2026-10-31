@@ -1,6 +1,7 @@
 """Unit tests for individual ProspectAIFlow phase methods (F-08)."""
 import asyncio
 import json
+import threading
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -563,3 +564,83 @@ class TestFlowOwnedStepContract:
         assert kinds.count("task_complete") == 1
         assert kinds.count("step") == 2
         assert kinds[0] == "agent_start" and kinds[-1] == "task_complete"
+
+
+# ─── Technical phase: SSE contract and overlap with fundamental (plan 02-15, D-16, STALL-02) ──
+
+class TestTechnicalFlowOwned:
+    def test_technical_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import (
+            market_output, narrative_result, tech_narrative_entry, tech_payload, tech_tools, wire_tools,
+        )
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        flow.state.market_output = market_output()
+        wire_tools(flow, tech_tools(), phase="technical_analysis")
+        flow._factory.build_task.return_value = _make_task()
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(
+                side_effect=[narrative_result(tech_payload(tech_narrative_entry("AAA")))]
+            )
+            asyncio.run(flow.technical_analysis())
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 1
+        _kind, phase_index, step = events[1]
+        assert phase_index == 1
+        assert step.tool == "calculate_technical_indicators"
+        assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+        assert isinstance(step.log, str) and step.log
+        done = events[-1][1]
+        assert done["task_index"] == 1
+        published = json.dumps(flow.state.technical_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
+    def test_technical_and_fundamental_tools_overlap(self, flow):
+        """STALL-02: both phases' tool calls are in flight at the same time.
+
+        Each stub tool waits on a shared two-party barrier. If the phases (or the
+        tool calls) ran one after the other, the first would time out alone and the
+        barrier would break.
+        """
+        from tests.test_llm_role_audit import (
+            FETCH_JSON, GRADES_JSON, TECH_RESULT, StubTool, market_output, narrative_entry,
+            narrative_payload, narrative_result, tech_narrative_entry, tech_payload, wire_tools,
+        )
+
+        barrier = threading.Barrier(2, timeout=2)
+
+        class BarrierTool(StubTool):
+            def _run(self, **kwargs):
+                barrier.wait()
+                return super()._run(**kwargs)
+
+        tools = {
+            "calculate_technical_indicators": BarrierTool("calculate_technical_indicators", TECH_RESULT),
+            "fetch_fundamental_data": BarrierTool("fetch_fundamental_data", FETCH_JSON),
+            "grade_fundamental_data": StubTool("grade_fundamental_data", GRADES_JSON),
+        }
+        flow.state.market_output = market_output()
+        wire_tools(flow, tools)
+        flow._factory.build_task.return_value = _make_task()
+        answers = {
+            1: narrative_result(tech_payload(tech_narrative_entry("AAA"))),
+            2: narrative_result(narrative_payload(narrative_entry("AAA"))),
+        }
+
+        def make_crew(task, phase_index):
+            crew = MagicMock()
+            crew.akickoff = AsyncMock(return_value=answers[phase_index])
+            return crew
+
+        async def both():
+            return await asyncio.gather(flow.technical_analysis(), flow.fundamental_analysis())
+
+        with patch.object(flow, "_make_crew", side_effect=make_crew):
+            asyncio.run(both())  # BrokenBarrierError would surface here
+        assert barrier.n_waiting == 0
+        assert flow.state.technical_output is not None and flow.state.fundamental_output is not None
