@@ -16,6 +16,7 @@ class PhaseMetrics:
     cache_creation_tokens: int = 0   # cache WRITES (cache_creation_input_tokens)
     cache_creation_snapshot: int = 0  # snapshot of LLM cumulative writes at phase start
     model_token_map: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    attempts: int = 0                # schema attempts run_phase needed (0 = not recorded)
 
     @property
     def elapsed_sec(self) -> float:
@@ -148,6 +149,14 @@ class ExecutionTracker:
         """Number of tool calls recorded for ``phase`` (failed calls count; 0 when none)."""
         with self._lock:
             return sum(1 for c in self._tool_calls if c.phase == phase)
+
+    def record_phase_attempts(self, phase: str, attempts: int) -> None:
+        """Store how many schema attempts ``phase`` needed (1 = first-try success, STALL-04)."""
+        pm = self._phases.get(phase)
+        if pm is None:
+            pm = PhaseMetrics(name=phase)
+            self._phases[phase] = pm
+        pm.attempts = attempts
 
     def _tool_call_dicts(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -354,6 +363,7 @@ class ExecutionTracker:
                 "cache_creation_tokens": pm.cache_creation_tokens,
                 "total_tokens": pm.total_tokens,
                 "status": status,
+                "attempts": pm.attempts,
                 "tool_call_count": len(calls),
                 "tool_total_sec": tool_total,
                 "tool_wall_sec": tool_wall,

@@ -16,12 +16,28 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class CandidateStock(BaseModel):
     ticker: str = Field(..., description="Stock ticker symbol, e.g. AAPL")
-    mention_count: int = Field(..., ge=0)
+    # mention_count and relevance_score are measured by the Flow (utils/market_records.py,
+    # CORR-10). None means no source measured them (Reddit and Serper both unavailable):
+    # absence of data is null, never 0 and never 0.5.
+    mention_count: Optional[int] = Field(None, ge=0)
     # None means sentiment could not be measured (all sources failed) -- see
     # sentiment_available on MarketAnalysisOutput. Never a fabricated 0.0.
     average_sentiment: Optional[float] = Field(None, ge=-1.0, le=1.0)
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    relevance_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     rationale: str = Field(..., min_length=50)
+
+
+# What the LLM writes in the market phase (CORR-10, D-14): which tickers, and why. It
+# has no number field; the Flow merges these picks with the numbers it measured into
+# MarketAnalysisOutput (utils/market_records.merge_market).
+class MarketCandidateNarrative(BaseModel):
+    ticker: str = Field(..., description="Ticker chosen from the supplied corpus")
+    rationale: str = Field(..., min_length=50)
+
+
+class MarketNarrativeOutput(BaseModel):
+    candidates: List[MarketCandidateNarrative] = Field(..., min_length=1, max_length=5)
+    summary: str = Field(..., min_length=100)
 
 
 class MarketAnalysisOutput(BaseModel):
@@ -73,32 +89,35 @@ class RawIndicators(BaseModel):
     adx: Optional[float] = None
 
 
-_RISK_LEVEL_MAP = {v.lower(): v for v in ("Low", "Medium", "High")}
+# Closed vocabularies of the technical phase (D-11). The numeric ones are built by
+# the Flow from tool output (utils/technical_records.py); only overall_signal is
+# written by the LLM, and only as one of these four exact values.
+OverallSignal = Literal["BULLISH", "BEARISH", "MIXED", "NEUTRAL"]
+TrendStrength = Literal["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
+EntryZoneStatus = Literal["PULLBACK_ENTRY", "CURRENT_ENTRY", "BELOW_ZONE"]
+Regime = Literal["TRENDING", "REVERTING", "NEUTRAL"]
 
 
 class MomentumAnalysis(BaseModel):
     momentum_score: float = Field(..., ge=0.0, le=10.0)
     risk_level: Literal["Low", "Medium", "High"]
-    trend_strength: Literal["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
-
-    @field_validator("risk_level", mode="before")
-    @classmethod
-    def normalize_risk_level(cls, v: str) -> str:
-        return _RISK_LEVEL_MAP.get(str(v).lower(), v)
+    # Derived from the ADX value by the Flow; None when ADX is missing (CORR-10, D-14).
+    trend_strength: Optional[TrendStrength] = None
     key_signals: List[str]
-    support_resistance: SupportResistance
+    # No tool computes support/resistance, so it is null (D-14). Old payloads still load.
+    support_resistance: Optional[SupportResistance] = None
     comprehensive_analysis: str = Field(..., min_length=50)
-    overall_signal: Optional[str] = None       # "BULLISH", "BEARISH", "MIXED", "NEUTRAL"
-    entry_zone_status: Optional[str] = None    # "PULLBACK_ENTRY", "CURRENT_ENTRY", "BELOW_ZONE"
-    entry_zone_low: Optional[float] = None     # copied verbatim from interpret_technical_indicators
-    entry_zone_high: Optional[float] = None    # copied verbatim from interpret_technical_indicators
-    regime: Optional[str] = None               # "TRENDING", "REVERTING", "NEUTRAL"
+    overall_signal: Optional[OverallSignal] = None
+    entry_zone_status: Optional[EntryZoneStatus] = None
+    entry_zone_low: Optional[float] = None     # from interpret_technical_indicators, via the Flow
+    entry_zone_high: Optional[float] = None    # from interpret_technical_indicators, via the Flow
+    regime: Optional[Regime] = None
 
 
-class TechnicalScore(BaseModel):
-    percentage: float = Field(..., ge=0.0, le=100.0)
-    grade: str
-    recommendation: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+# TechnicalScore (an LLM-invented percentage, grade and recommendation, read only by
+# the dead enhanced_pdf_generator) and StockTechnicalAnalysis.technical_score were
+# removed in plan 02-15 (D-17, extends D-09). Stored payloads that still carry the
+# key load fine because unknown keys are ignored.
 
 
 class StockTechnicalAnalysis(BaseModel):
@@ -107,13 +126,36 @@ class StockTechnicalAnalysis(BaseModel):
     price_data_error: Optional[str] = None
     raw_indicators: Optional[RawIndicators] = None
     momentum_analysis: MomentumAnalysis
-    technical_score: TechnicalScore
     investment_recommendation: str = Field(..., min_length=50)
+
+
+class FailedTicker(BaseModel):
+    """A ticker whose indicators could not be computed; excluded from later phases."""
+    ticker: str
+    error: str
 
 
 class TechnicalAnalysisOutput(BaseModel):
     sector: str
     technical_analysis: List[StockTechnicalAnalysis] = Field(..., min_length=1)
+    summary: str = Field(..., min_length=100)
+    failed_tickers: List[FailedTicker] = Field(default_factory=list)
+
+
+# What the Technical Analyst LLM is allowed to write (CORR-10, D-14, D-15). The Flow
+# calls the indicator tool and builds every number and label (utils/technical_records.py)
+# and merges these fields into the published TechnicalAnalysisOutput. pydantic ignores
+# any extra key an answer adds, so the LLM cannot set a number or a label here.
+class TechnicalNarrative(BaseModel):
+    ticker: str
+    overall_signal: OverallSignal
+    key_signals: List[str] = Field(..., min_length=1)
+    comprehensive_analysis: str = Field(..., min_length=50)
+    investment_recommendation: str = Field(..., min_length=50)
+
+
+class TechnicalNarrativeOutput(BaseModel):
+    analyses: List[TechnicalNarrative] = Field(..., min_length=1)
     summary: str = Field(..., min_length=100)
 
 
@@ -134,11 +176,25 @@ class ValuationMetrics(BaseModel):
     dividend_yield: Optional[float] = Field(None, ge=0.0)
 
 
+# Single vocabulary for fundamental labels (CORR-02, D-10). The grader, the
+# scoring tables, the composite tool, the Flow's slim context, the Critic's
+# reference table and tasks.yaml all use exactly these names and values.
+# "UNKNOWN" means the underlying data was missing or the fetch failed: absence
+# of data is never turned into a grade (CORR-11, D-07).
+ValuationLabel = Literal["CHEAP", "FAIR", "EXPENSIVE", "VERY_EXPENSIVE", "UNKNOWN"]
+QualityLabel = Literal["Low", "Medium", "High", "UNKNOWN"]
+GrowthLabel = Literal["Declining", "Stable", "Moderate Growth", "High Growth", "UNKNOWN"]
+# ok = every grading input present; partial = some missing; failed = fetch error.
+DataStatus = Literal["ok", "partial", "failed"]
+FundamentalsStatus = Literal["AVAILABLE", "UNKNOWN"]
+
+
 class FundamentalRating(BaseModel):
-    valuation: Literal["CHEAP", "FAIR", "EXPENSIVE", "VERY_EXPENSIVE"]
-    quality: Literal["Low", "Medium", "High"]
-    growth: Literal["Declining", "Stable", "Moderate Growth", "High Growth"]
-    overall: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+    # `overall` was removed (D-09): nothing consumed it. Stored payloads that
+    # still carry it load fine because unknown keys are ignored.
+    valuation: ValuationLabel
+    quality: QualityLabel
+    growth: GrowthLabel
 
 
 class StockFundamentalAnalysis(BaseModel):
@@ -149,6 +205,8 @@ class StockFundamentalAnalysis(BaseModel):
     key_strengths: List[str] = Field(..., min_length=1)
     key_risks: List[str] = Field(..., min_length=1)
     investment_thesis: str = Field(..., min_length=10)
+    # Copied from the grader (failed fetch is representable). None on old payloads.
+    data_status: Optional[DataStatus] = None
 
 
 class FundamentalAnalysisOutput(BaseModel):
@@ -157,9 +215,33 @@ class FundamentalAnalysisOutput(BaseModel):
     summary: str = Field(..., min_length=100)
 
 
+# What the Fundamental Analyst LLM is allowed to write (CORR-10, D-06, D-15).
+# The Flow fetches and grades, builds every number, label and data_status, and
+# merges these four narrative fields into the published FundamentalAnalysisOutput
+# (utils/fundamental_records.py). This model has no number or grade field, and
+# pydantic ignores any extra key an answer adds, so the LLM cannot set one.
+class FundamentalNarrative(BaseModel):
+    ticker: str
+    key_strengths: List[str] = Field(..., min_length=1)
+    key_risks: List[str] = Field(..., min_length=1)
+    investment_thesis: str = Field(..., min_length=10)
+
+
+class FundamentalNarrativeOutput(BaseModel):
+    analyses: List[FundamentalNarrative] = Field(..., min_length=1)
+    summary: str = Field(..., min_length=100)
+
+
 # ---------------------------------------------------------------------------
 # INVESTOR STRATEGIC OUTPUT (used for final report validation)
 # ---------------------------------------------------------------------------
+
+# Closed vocabularies of the strategy phases (D-11). The LLM chooses an action and a review
+# frequency as exactly one of these values; there is no case or whitespace normaliser, so a
+# variant is a validation error that spends the retry budget.
+Action = Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+ReviewFrequency = Literal["DAILY", "WEEKLY", "MONTHLY"]
+
 
 class TradeSetup(BaseModel):
     direction: Literal["LONG-BUY"]
@@ -167,11 +249,6 @@ class TradeSetup(BaseModel):
     entry_zone_high: float = Field(..., gt=0)
     stop_loss: float = Field(..., gt=0)
     take_profit: float = Field(..., gt=0)
-
-    @field_validator("direction", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper().replace(" ", "") if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def validate_long_trade_structure(self) -> TradeSetup:
@@ -197,19 +274,16 @@ class TradeSetup(BaseModel):
 
 class PositionRecommendation(BaseModel):
     ticker: str
-    action: Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]
+    action: Action
     composite_score: float = Field(..., ge=0.0, le=100.0)
     allocation_pct: float = Field(..., ge=0.0, le=100.0)
     current_price: Optional[float] = Field(None, gt=0)
     trade_setup: Optional[TradeSetup] = None
     rationale: str = Field(..., min_length=50)
     monitoring_triggers: List[str] = Field(..., min_length=1)
-    review_frequency: Literal["DAILY", "WEEKLY", "MONTHLY"]
-
-    @field_validator("action", "review_frequency", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper().replace(" ", "") if isinstance(v, str) else v
+    review_frequency: ReviewFrequency
+    # Flow-set from plan 02-11 on; absent (None) on reports stored before it.
+    fundamentals_status: Optional[FundamentalsStatus] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -254,6 +328,25 @@ class PositionRecommendation(BaseModel):
                         take_profit=tp,
                     )
         return self
+
+
+# What the draft-strategy LLM is allowed to write (CORR-10, D-14, D-15): per ticker only the
+# action it chooses, its rationale, its monitoring triggers and a review cadence, plus the
+# overall strategy text. The Flow computes the composite scores before the LLM and the
+# allocation, trade setups, totals and portfolio risk_level after it
+# (utils/strategy_assembly.py), then assembles the published InvestorStrategicOutput.
+# pydantic ignores any extra key an answer adds, so the LLM cannot set a number or a grade.
+class PositionNarrative(BaseModel):
+    ticker: str
+    action: Action
+    rationale: str = Field(..., min_length=50)
+    monitoring_triggers: List[str] = Field(..., min_length=1)
+    review_frequency: ReviewFrequency
+
+
+class StrategyNarrativeOutput(BaseModel):
+    positions: List[PositionNarrative] = Field(..., min_length=1)
+    overall_strategy: str = Field(..., min_length=100)
 
 
 class InvestorStrategicOutput(BaseModel):
@@ -308,11 +401,6 @@ class CritiqueItem(BaseModel):
     issue_type: str = Field(..., min_length=3)
     finding: str = Field(..., min_length=30)
     instruction: str = Field(..., min_length=30)
-
-    @field_validator("severity", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper() if isinstance(v, str) else v
 
 
 class CriticOutput(BaseModel):

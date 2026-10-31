@@ -109,12 +109,14 @@ class TestTaskFactoryWiring:
         factory = TaskFactory(tracker_getter=lambda: tracker)
         seen = 0
         for phase, cfg in factory._phase_config.items():
-            for tool in cfg["tools"]:
+            for tool in [*cfg["agent_tools"], *cfg["flow_tools"].values()]:
                 seen += 1
                 assert tool._prospectai_timed_phase == phase
                 assert instrument_tool(tool, phase, lambda: tracker) is tool
-        assert seen == 7
-        assert factory.search_tool in factory._phase_config["market_analysis"]["tools"]
+        assert seen == 8        # reddit, serper, indicators, fetch, grade, composite, allocator (draft), allocator (final)
+        # The market phase is Flow-owned (plan 02-16): its tools are called by the Flow.
+        assert factory._phase_config["market_analysis"]["agent_tools"] == []
+        assert factory.search_tool in factory._phase_config["market_analysis"]["flow_tools"].values()
 
     def test_wrapping_twice_records_one_call_per_invocation(self):
         tracker = ExecutionTracker()
@@ -131,5 +133,5 @@ class TestTaskFactoryWiring:
         from prospect_ai_crew import TaskFactory
 
         factory = TaskFactory()
-        tool = factory._phase_config["technical_analysis"]["tools"][0]
+        tool = factory.flow_tool("technical_analysis", "calculate_technical_indicators")
         assert tool._prospectai_timed_phase == "technical_analysis"

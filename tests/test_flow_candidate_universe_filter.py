@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from prospect_ai_flow import ProspectAIFlow
-from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput
 
 ANTHROPIC_ENV = {
     "ANTHROPIC_API_KEY": "test-key",
@@ -29,38 +28,24 @@ def flow():
         yield f
 
 
-def _crew_result_with(candidates):
-    market_output = MarketAnalysisOutput(
-        sector="Energy",
-        candidate_stocks=candidates,
-        summary="S" * 150,
-    )
-    task_out = MagicMock()
-    task_out.pydantic = market_output
-    task_out.json_dict = None
-    result = MagicMock()
-    result.raw = "{}"
-    result.tasks_output = [task_out]
-    result.token_usage = MagicMock()
-    return result
+def _narrative_result(*tickers):
+    """Crew result carrying the market narrative as raw JSON (parsed by extract_model)."""
+    from tests.test_llm_role_audit import mkt_entry, mkt_payload, narrative_result
+
+    return narrative_result(mkt_payload(*[mkt_entry(t) for t in tickers]))
 
 
 @pytest.mark.asyncio
 async def test_sector_benchmark_etf_is_excluded_from_serper_fallback_candidates(flow):
-    candidates = [
-        CandidateStock(
-            ticker="XLE", mention_count=0, average_sentiment=0.4, relevance_score=0.5,
-            rationale="XLE tracks the broader energy sector and was mentioned as a proxy in coverage.",
-        ),
-        CandidateStock(
-            ticker="XOM", mention_count=12, average_sentiment=0.3, relevance_score=0.8,
-            rationale="Exxon Mobil is the most-discussed energy stock this week among retail investors.",
-        ),
-    ]
-    crew_result = _crew_result_with(candidates)
+    from tests.test_llm_role_audit import (
+        REDDIT_FALLBACK, _organic, market_tools, wire_tools,
+    )
+
+    serper = _organic("XLE tracks the sector, XOM leads it", "XOM and XLE both rallied", "XOM earnings")
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase="market_analysis")
     flow._factory.build_task.return_value = MagicMock()
     with patch.object(flow, "_make_crew") as mc:
-        mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+        mc.return_value.akickoff = AsyncMock(return_value=_narrative_result("XLE", "XOM"))
         await flow.market_analysis()
 
     tickers = [c.ticker for c in flow.state.market_output.candidate_stocks]

@@ -10,12 +10,15 @@ import pytest
 from prospect_ai_flow import ProspectAIFlow
 from schemas.agent_outputs import (
     CriticOutput,
+    FundamentalAnalysisOutput,
+    FundamentalRating,
+    StockFundamentalAnalysis,
+    ValuationMetrics,
     MomentumAnalysis,
     RawIndicators,
     StockTechnicalAnalysis,
     SupportResistance,
     TechnicalAnalysisOutput,
-    TechnicalScore,
 )
 from tests.fixtures_deterministic_enforcement import (
     CRITIC_OUTPUT_INVERTED_CURRENT_ENTRY_BUG,
@@ -64,7 +67,6 @@ def _technical_output_for(ticker, entry_zone_status):
                     entry_zone_high=200.0,
                     regime="TRENDING",
                 ),
-                technical_score=TechnicalScore(percentage=75.0, grade="B", recommendation="Buy"),
                 investment_recommendation="B" * 60,
             ),
         ],
@@ -106,3 +108,70 @@ def test_inverted_current_entry_bug_is_dropped_from_both_channels(flow):
 
     assert gated_ctx["revision_directives"] == []
     assert gated_ctx["per_ticker_critiques"] == []
+
+
+# ── FUNDAMENTALS_UNKNOWN through the Flow (D-08) ─────────────────────────────
+
+def _fundamental_output_for(ticker, quality, growth):
+    return FundamentalAnalysisOutput(
+        sector="Technology",
+        summary="S" * 100,
+        fundamental_analysis=[
+            StockFundamentalAnalysis(
+                ticker=ticker,
+                company_name=f"{ticker} Inc",
+                valuation_metrics=ValuationMetrics(),
+                fundamental_rating=FundamentalRating(valuation="FAIR", quality=quality, growth=growth),
+                key_strengths=["s"],
+                key_risks=["r"],
+                investment_thesis="T" * 20,
+            ),
+        ],
+    )
+
+
+def test_gate_context_carries_fundamentals_status_and_price_error(flow):
+    flow.state.technical_output = _technical_output_for("XYZ", "PULLBACK_ENTRY")
+    flow.state.technical_output.technical_analysis[0].price_data_error = "no price"
+    flow.state.fundamental_output = _fundamental_output_for("XYZ", "UNKNOWN", "Moderate Growth")
+
+    ctx = flow._gate_position_context()
+
+    assert ctx["XYZ"]["fundamentals_status"] == "UNKNOWN"
+    assert ctx["XYZ"]["price_data_error"] == "no price"
+
+
+def test_gate_context_fundamentals_status_none_without_fundamental_record(flow):
+    flow.state.technical_output = _technical_output_for("XYZ", "PULLBACK_ENTRY")
+    flow.state.fundamental_output = None
+
+    assert flow._gate_position_context()["XYZ"]["fundamentals_status"] is None
+
+
+def test_flow_gate_context_and_drop(flow):
+    flow.state.technical_output = _technical_output_for("XYZ", "PULLBACK_ENTRY")
+    flow.state.fundamental_output = _fundamental_output_for("XYZ", "UNKNOWN", "Moderate Growth")
+    critique = dict(CRITIC_OUTPUT_POLICY_VIOLATING_DIRECTIVE)
+    critique["revision_directives"] = [
+        "XYZ: change action to LONG-BUY because momentum confirms the thesis.",
+        "XYZ: change action to AVOID because fundamentals are unreadable.",
+    ]
+    critique["per_ticker_critiques"] = []
+    flow.state.critique_output = CriticOutput(**critique)
+
+    gated = json.loads(flow._gated_slim_critique())
+
+    assert gated["revision_directives"] == [critique["revision_directives"][1]]
+
+
+def test_flow_keeps_buy_directive_for_known_fundamentals(flow):
+    flow.state.technical_output = _technical_output_for("XYZ", "PULLBACK_ENTRY")
+    flow.state.fundamental_output = _fundamental_output_for("XYZ", "Medium", "Moderate Growth")
+    critique = dict(CRITIC_OUTPUT_POLICY_VIOLATING_DIRECTIVE)
+    critique["revision_directives"] = ["XYZ: change action to LONG-BUY because momentum confirms the thesis."]
+    critique["per_ticker_critiques"] = []
+    flow.state.critique_output = CriticOutput(**critique)
+
+    gated = json.loads(flow._gated_slim_critique())
+
+    assert gated["revision_directives"] == critique["revision_directives"]

@@ -25,10 +25,18 @@ are about to be published satisfy the invariants:
     Final Strategist; it does not constrain what the Final Strategist
     decides on its own, so this check is the last line of defense against
     that specific invariant reaching publication.
+  - no position with UNKNOWN fundamentals (quality or growth could not be
+    graded) is published with an action outside the FUNDAMENTALS_UNKNOWN row
+    of ACTION_POLICY_TABLE -- i.e. never LONG-BUY or WAIT-FOR-ENTRY (rule
+    buy_with_unknown_fundamentals, D-08). The rule imports that row instead of
+    hardcoding the action list, so the table, the Critic gate and this
+    validator cannot drift. It holds even if the Final Strategist chose the
+    action on its own.
 """
 
 from typing import Any, Dict, List, Optional
 
+from utils.action_policy_gate import ACTION_POLICY_TABLE, FUNDAMENTALS_UNKNOWN_ROW
 from utils.portfolio_allocator_tool import PROFILE_BOUNDS
 
 DEPLOYED_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY")
@@ -75,6 +83,7 @@ def validate(
     final_output: Dict[str, Any],
     risk_profile: str,
     entry_zone_status_by_ticker: Optional[Dict[str, str]] = None,
+    fundamentals_status_by_ticker: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Return a list of violation dicts. Empty list means the output is compliant.
 
@@ -82,6 +91,11 @@ def validate(
     deterministic Phase-2 technical output) is optional but should always be
     passed by callers that have it -- without it, the CURRENT_ENTRY/
     WAIT-FOR-ENTRY invariant below cannot be checked.
+
+    `fundamentals_status_by_ticker` (ticker -> AVAILABLE | UNKNOWN, from the
+    deterministic fundamental output) feeds the buy_with_unknown_fundamentals
+    rule; when it has no entry for a ticker, the position's own
+    `fundamentals_status` field is used.
     """
     if risk_profile not in PROFILE_BOUNDS:
         raise ValueError(f"Unknown risk_profile {risk_profile!r}. Valid values: {sorted(PROFILE_BOUNDS)}")
@@ -91,6 +105,11 @@ def validate(
     max_stop_pct = round(1.0 - bounds["stop_multiplier"], 4)
     min_rr_ratio = bounds["rr_ratio"]
     zone_status = entry_zone_status_by_ticker or {}
+    fundamentals = fundamentals_status_by_ticker or {}
+    unknown_row = ACTION_POLICY_TABLE.get(
+        (FUNDAMENTALS_UNKNOWN_ROW, risk_profile),
+        ACTION_POLICY_TABLE[(FUNDAMENTALS_UNKNOWN_ROW, "conservative")],
+    )
 
     violations: List[Dict[str, Any]] = []
     positions = final_output.get("positions", [])
@@ -105,6 +124,13 @@ def validate(
                 "ticker": ticker, "rule": "wait_for_entry_at_current_entry",
                 "expected": "action != WAIT-FOR-ENTRY when entry_zone_status=CURRENT_ENTRY",
                 "actual": "WAIT-FOR-ENTRY",
+            })
+
+        pos_fundamentals = fundamentals.get(str(ticker).upper(), pos.get("fundamentals_status"))
+        if pos_fundamentals == "UNKNOWN" and action not in unknown_row:
+            violations.append({
+                "ticker": ticker, "rule": "buy_with_unknown_fundamentals",
+                "expected": sorted(unknown_row), "actual": action,
             })
 
         if action in DEPLOYED_ACTIONS and alloc > max_alloc_pct + _EPS:
@@ -192,9 +218,10 @@ def validate_or_raise(
     final_output: Dict[str, Any],
     risk_profile: str,
     entry_zone_status_by_ticker: Optional[Dict[str, str]] = None,
+    fundamentals_status_by_ticker: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Convenience wrapper: raises BoundsViolationError if non-compliant, else returns input unchanged."""
-    violations = validate(final_output, risk_profile, entry_zone_status_by_ticker)
+    violations = validate(final_output, risk_profile, entry_zone_status_by_ticker, fundamentals_status_by_ticker)
     if violations:
         raise BoundsViolationError(violations)
     return final_output

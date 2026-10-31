@@ -32,6 +32,20 @@ risk judgment in disguise" analysis. Loosening the gate does not loosen the
 *valid action set*: PositionRecommendation.action stays a closed
 Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"] in
 schemas/agent_outputs.py regardless of what this table allows.
+
+D-08 (phase 02, plan 02-11): the FUNDAMENTALS_UNKNOWN row is the SECOND
+invariant, and it is a different kind from the first. CURRENT_ENTRY excludes
+WAIT-FOR-ENTRY because of what the words mean; FUNDAMENTALS_UNKNOWN restricts a
+ticker to MONITOR / AVOID because of a data gap, not a risk stance: when
+quality or growth could not be graded (fundamentals_status == "UNKNOWN") the
+pipeline cannot justify deploying capital on fundamentals it could not read,
+so LONG-BUY and WAIT-FOR-ENTRY are ineligible. The row is applied on top of
+whichever zone row matched (intersection), never in place of it, and a missing
+fundamentals_status leaves the zone row alone (the gate never blocks on
+missing data). It is the single source of the rule: `eligible_actions()`, the
+action clamp of plans 02-17/02-18 and PortfolioBoundsValidator's
+buy_with_unknown_fundamentals check all read this row rather than re-encoding
+the action list.
 """
 
 import re
@@ -39,7 +53,15 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 VALID_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID")
 
-# entry_zone_status x risk_profile -> allowed actions.
+# First key slot of the data-availability rows in ACTION_POLICY_TABLE (D-08).
+FUNDAMENTALS_UNKNOWN_ROW = "FUNDAMENTALS_UNKNOWN"
+
+# (position condition, risk_profile) -> allowed actions. The first key slot is
+# the position condition: the six zone rows are keyed by entry_zone_status, and
+# the FUNDAMENTALS_UNKNOWN row is a data-availability row applied ON TOP of
+# whichever zone row matched (intersection, see resolve_allowed_actions), never
+# in place of it. FUNDAMENTALS_UNKNOWN is not an entry_zone_status value, so a
+# zone lookup cannot hit it by accident.
 #   CURRENT_ENTRY:  WAIT-FOR-ENTRY is never valid here -- price is already in
 #                   the actionable zone, so "waiting for entry" is a semantic
 #                   contradiction, not a risk-policy preference. This is the
@@ -51,6 +73,9 @@ VALID_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID")
 #                   real analyst could reasonably override, not a logical
 #                   necessity, so it is now open to the Strategist's judgment
 #                   like PULLBACK_ENTRY already was.
+#   FUNDAMENTALS_UNKNOWN: (D-08) quality or growth could not be graded, so the
+#                   position may only be watched or avoided -- never bought and
+#                   never queued for a buy. Identical for both profiles.
 ACTION_POLICY_TABLE: Dict[Tuple[Optional[str], str], frozenset] = {
     ("CURRENT_ENTRY", "conservative"):  frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
     ("CURRENT_ENTRY", "aggressive"):    frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
@@ -58,6 +83,8 @@ ACTION_POLICY_TABLE: Dict[Tuple[Optional[str], str], frozenset] = {
     ("PULLBACK_ENTRY", "aggressive"):   frozenset({"LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"}),
     ("BELOW_ZONE", "conservative"):     frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
     ("BELOW_ZONE", "aggressive"):       frozenset({"LONG-BUY", "MONITOR", "AVOID"}),
+    (FUNDAMENTALS_UNKNOWN_ROW, "conservative"): frozenset({"MONITOR", "AVOID"}),
+    (FUNDAMENTALS_UNKNOWN_ROW, "aggressive"):   frozenset({"MONITOR", "AVOID"}),
 }
 
 
@@ -83,15 +110,78 @@ _ACTION_TO_PATTERN = re.compile(
 )
 
 
-def resolve_allowed_actions(entry_zone_status: Optional[str], risk_profile: str) -> frozenset:
-    """Return the allowed-action set for a given entry_zone_status/risk_profile.
+def resolve_allowed_actions(
+    entry_zone_status: Optional[str],
+    risk_profile: str,
+    fundamentals_status: Optional[str] = None,
+) -> frozenset:
+    """Return the allowed-action set for a position.
+
+    Starts from the entry_zone_status/risk_profile zone row. When
+    fundamentals_status == "UNKNOWN" the zone row is intersected with the
+    FUNDAMENTALS_UNKNOWN row for the profile (D-08; an unrecognised
+    risk_profile uses the conservative row, the two rows are identical).
 
     Unknown or missing entry_zone_status resolves permissively (all valid
-    actions allowed) -- the gate only blocks combinations it has positive
+    actions allowed), and a missing or AVAILABLE fundamentals_status leaves the
+    zone row unchanged -- the gate only blocks combinations it has positive
     knowledge are illegal, it never blocks on missing data.
     """
     key = (entry_zone_status, risk_profile)
-    return ACTION_POLICY_TABLE.get(key, frozenset(VALID_ACTIONS))
+    allowed = ACTION_POLICY_TABLE.get(key, frozenset(VALID_ACTIONS))
+    if fundamentals_status == "UNKNOWN":
+        row_key = (FUNDAMENTALS_UNKNOWN_ROW, risk_profile)
+        if row_key not in ACTION_POLICY_TABLE:
+            row_key = (FUNDAMENTALS_UNKNOWN_ROW, "conservative")
+        allowed = allowed & ACTION_POLICY_TABLE[row_key]
+    return allowed
+
+
+def eligible_actions(
+    entry_zone_status: Optional[str],
+    risk_profile: str,
+    fundamentals_status: Optional[str] = None,
+    price_data_error: Optional[str] = None,
+) -> frozenset:
+    """Flow-side enforcement: the actions a position may take.
+
+    Built on the table: the zone / FUNDAMENTALS_UNKNOWN resolution comes from
+    resolve_allowed_actions() (this function never re-encodes the UNKNOWN rule),
+    then a truthy price_data_error caps the result at {MONITOR, AVOID} -- a
+    position with no usable price cannot be bought. The price cap is not part of
+    D-08 and has no table row; from plan 02-15 on price failures are excluded
+    upstream, so it is a backstop. Permissive when a dimension is missing.
+    """
+    allowed = resolve_allowed_actions(entry_zone_status, risk_profile, fundamentals_status)
+    if price_data_error:
+        allowed = allowed & frozenset({"MONITOR", "AVOID"})
+    return allowed
+
+
+def _allowed_for_context(ctx: Dict[str, Optional[str]]) -> Tuple[frozenset, str]:
+    """Allowed set and a reason fragment for one ticker's position context.
+
+    Reads entry_zone_status, risk_profile, fundamentals_status and
+    price_data_error from `ctx`, resolves through eligible_actions(), and names
+    each dimension that restricted the set (the FUNDAMENTALS_UNKNOWN row by
+    name). Shared by filter_directives() and filter_critiques().
+    """
+    entry_zone_status = ctx.get("entry_zone_status")
+    risk_profile = ctx.get("risk_profile") or "conservative"
+    fundamentals_status = ctx.get("fundamentals_status")
+    price_data_error = ctx.get("price_data_error")
+
+    allowed = eligible_actions(entry_zone_status, risk_profile, fundamentals_status, price_data_error)
+
+    zone_only = resolve_allowed_actions(entry_zone_status, risk_profile)
+    parts = [f"entry_zone_status={entry_zone_status!r} risk_profile={risk_profile!r}"]
+    if resolve_allowed_actions(entry_zone_status, risk_profile, fundamentals_status) != zone_only:
+        parts.append(
+            f"{FUNDAMENTALS_UNKNOWN_ROW} row applies (fundamentals_status={fundamentals_status!r})"
+        )
+    if price_data_error and eligible_actions(entry_zone_status, risk_profile, fundamentals_status) != allowed:
+        parts.append(f"price_data_error={price_data_error!r}")
+    return allowed, ", ".join(parts) + f" (allowed: {sorted(allowed)})"
 
 
 def parse_directive(directive: str) -> Optional[Tuple[str, str]]:
@@ -130,7 +220,9 @@ def filter_directives(
 ) -> Tuple[List[str], List[RejectedDirective]]:
     """Filter revision_directives against the action-policy table.
 
-    `position_context` maps ticker -> {"entry_zone_status": ..., "risk_profile": ...}.
+    `position_context` maps ticker -> {"entry_zone_status", "risk_profile"} plus
+    the optional keys "fundamentals_status" (D-08: "UNKNOWN" restricts the
+    ticker to MONITOR / AVOID) and "price_data_error".
     Returns (kept_directives, rejected). Directives that do not target a
     specific action, or whose ticker is not found in `position_context`, are
     always kept (passed through unfiltered).
@@ -150,20 +242,14 @@ def filter_directives(
             kept.append(directive)
             continue
 
-        entry_zone_status = ctx.get("entry_zone_status")
-        risk_profile = ctx.get("risk_profile") or "conservative"
-        allowed = resolve_allowed_actions(entry_zone_status, risk_profile)
+        allowed, why = _allowed_for_context(ctx)
 
         if requested_action not in allowed:
             rejected.append(RejectedDirective(
                 ticker=ticker,
                 rejected_action=requested_action,
                 directive=directive,
-                reason=(
-                    f"{requested_action} not allowed for entry_zone_status="
-                    f"{entry_zone_status!r} risk_profile={risk_profile!r} "
-                    f"(allowed: {sorted(allowed)})"
-                ),
+                reason=f"{requested_action} not allowed for {why}",
             ))
         else:
             kept.append(directive)
@@ -187,7 +273,9 @@ def filter_critiques(
     to forward, and dropping it (rather than keeping a neutered `finding`)
     keeps this channel's behavior consistent with `filter_directives()`.
 
-    `position_context` maps ticker -> {"entry_zone_status": ..., "risk_profile": ...}.
+    `position_context` maps ticker -> {"entry_zone_status", "risk_profile"} plus
+    the optional keys "fundamentals_status" (D-08: "UNKNOWN" restricts the
+    ticker to MONITOR / AVOID) and "price_data_error".
     Returns (kept_critiques, rejected). Items whose `instruction` does not
     target a specific action, or whose ticker is not found in
     `position_context`, are always kept (passed through unfiltered).
@@ -208,20 +296,14 @@ def filter_critiques(
             kept.append(item)
             continue
 
-        entry_zone_status = ctx.get("entry_zone_status")
-        risk_profile = ctx.get("risk_profile") or "conservative"
-        allowed = resolve_allowed_actions(entry_zone_status, risk_profile)
+        allowed, why = _allowed_for_context(ctx)
 
         if requested_action not in allowed:
             rejected.append(RejectedDirective(
                 ticker=ticker,
                 rejected_action=requested_action,
                 directive=instruction,
-                reason=(
-                    f"{requested_action} not allowed for entry_zone_status="
-                    f"{entry_zone_status!r} risk_profile={risk_profile!r} "
-                    f"(allowed: {sorted(allowed)})"
-                ),
+                reason=f"{requested_action} not allowed for {why}",
             ))
         else:
             kept.append(item)

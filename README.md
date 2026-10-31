@@ -310,6 +310,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — More reliable, grounded analyses
+- Every number and grade in a report is now computed from live data. The AI model only writes the commentary and chooses each stock's action.
+- Stocks whose fundamentals can't be graded are marked unavailable and can only be Monitor or Avoid.
+- A slow Reddit lookup no longer stalls a run.
+- The technical score and overall fundamental grade fields were removed from reports.
+
 ### v1.10.1 — Reliable live data on Claude Haiku 5.5
 - Fixed an issue where the market, technical and fundamental analysis steps could skip fetching live data and answer from the model alone. They now always fetch their data first.
 

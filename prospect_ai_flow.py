@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, cast
 
 _M = TypeVar("_M", bound="BaseModel")
@@ -12,17 +12,62 @@ from pydantic import BaseModel
 
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
+    MarketNarrativeOutput,
     TechnicalAnalysisOutput,
+    TechnicalNarrativeOutput,
     FundamentalAnalysisOutput,
+    FundamentalNarrativeOutput,
     InvestorStrategicOutput,
+    StrategyNarrativeOutput,
     CriticOutput,
 )
 from utils.execution_tracker import ExecutionTracker
+from utils.flow_tools import call_tool
+from utils.fundamental_records import (
+    build_fundamental_records,
+    merge_fundamental,
+    narrative_context,
+    require_narrative_coverage,
+)
+from utils.market_records import (
+    REDDIT_TOOL_NAME,
+    SERPER_TOOL_NAME,
+    build_market_corpus,
+    market_narrative_context,
+    merge_market,
+    reddit_fallback_required,
+    require_market_picks,
+    serper_query,
+)
+from utils.phase_runner import extract_model, run_phase
+from utils.technical_records import (
+    build_technical_records,
+    merge_technical,
+    narrative_context as technical_narrative_context,
+    require_technical_coverage,
+)
+from utils.strategy_assembly import (
+    allocator_payload,
+    assemble_strategy,
+    clamp_actions,
+    clamp_warnings,
+    composite_inputs,
+    eligible_by_ticker,
+    excluded_tickers,
+    ordered_positions,
+    parse_allocation,
+    parse_composite_scores,
+    policy_context_by_ticker,
+    require_composite_scores,
+    require_position_coverage,
+    scores_context,
+)
 from utils.recommendation_validator import validate_portfolio
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
 from utils.action_policy_gate import filter_directives, filter_critiques
 from utils.candidate_universe_filter import filter_candidates
+from utils.fundamental_grader_tool import fundamentals_status
 from utils import yfinance_cache
 from config.config import Config
 from prospect_ai_crew import TaskFactory
@@ -106,7 +151,12 @@ class ProspectAIFlowState(BaseModel):
     technical_output: Optional[TechnicalAnalysisOutput] = None
     fundamental_output: Optional[FundamentalAnalysisOutput] = None
     draft_output: Optional[InvestorStrategicOutput] = None
+    # ticker -> compute_composite_scores entry, set by draft_strategy before the LLM runs (CORR-10).
+    composite_scores: Dict[str, Any] = {}
+    # One record per draft action the policy clamp changed (D-08); run_analysis reports each as a warning.
+    policy_clamps: List[Dict[str, Any]] = []
     critique_output: Optional[CriticOutput] = None
+    final_output: Optional[InvestorStrategicOutput] = None
     error: str = ""
 
 
@@ -134,7 +184,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         self._task_callback = task_callback
         self._step_callback = step_callback
         self._progress_callback = progress_callback
-        self._final_crew_result = None
         self._tracker: Optional[ExecutionTracker] = None
 
         # Public: the backend reads pipeline_config.model_id_for_agent(k) for SSE model names.
@@ -171,6 +220,24 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "task_index": task_index,
                 "agent": _AGENT_NAMES[task_index] if task_index < len(_AGENT_NAMES) else "unknown",
                 "preview": preview,
+                "tokens_est": max(1, len(raw) // 4),
+                "output_len": len(raw),
+            })
+
+    def _emit_progress_model(self, task_index: int, model: BaseModel, result: Optional[CrewOutput]) -> None:
+        """task_complete for a phase whose published output the Flow built itself.
+
+        Same payload keys as _emit_progress, but the preview is the published
+        model rather than the LLM's raw answer. ``result`` may be None when the
+        phase made no LLM call.
+        """
+        if self._progress_callback:
+            raw = (result.raw if result is not None else "") or ""
+            self._progress_callback({
+                "event": "task_complete",
+                "task_index": task_index,
+                "agent": _AGENT_NAMES[task_index] if task_index < len(_AGENT_NAMES) else "unknown",
+                "preview": json.dumps(model.model_dump(mode="json"))[:500],
                 "tokens_est": max(1, len(raw) // 4),
                 "output_len": len(raw),
             })
@@ -212,12 +279,16 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             ids.append(model.split("/", 1)[1] if "/" in model else model)
         return ids
 
-    def _require_tool_calls(self, phase: str, task) -> None:
-        """Fail the run when a tool phase recorded zero tool calls (no-op without a tracker)."""
+    def _require_tool_calls(self, phase: str, task, since: int = 0) -> None:
+        """Fail the run when a tool phase recorded zero tool calls (no-op without a tracker).
+
+        ``since`` is the phase's tool-call count before the attempt being checked, so
+        a retry cannot pass on the tool calls of an earlier attempt.
+        """
         if self._tracker is None:
             return
         tools = getattr(task, "tools", None) or []
-        if not tools or self._tracker.tool_call_count(phase) > 0:
+        if not tools or self._tracker.tool_call_count(phase) - since > 0:
             return
         names = ", ".join(str(getattr(t, "name", type(t).__name__)) for t in tools)
         raise MissingToolCallError(
@@ -232,6 +303,13 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         except Exception:
             return None
 
+    def _phase_llm(self, phase: str) -> Any:
+        """The phase agent's LLM, for phases that start the tracker before building a task."""
+        try:
+            return self._factory._phase_config[phase]["agent"].llm
+        except Exception:
+            return None
+
     def _fmt_ctx(self, label: str, content: str) -> str:
         return f"=== {label} ===\n{content}"
 
@@ -241,27 +319,72 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     @staticmethod
     def _extract_pydantic(result: CrewOutput, model_cls: Type[_M], phase: str) -> _M:
-        """Return validated Pydantic model from mini-Crew result.
+        """Validated Pydantic model from a mini-Crew result (see utils.phase_runner.extract_model).
 
-        Tries result.tasks_output[0].pydantic first (set by CrewAI when
-        output_pydantic validation succeeds), then falls back to parsing
-        result.raw directly via model_validate_json.
+        Kept under this name for existing callers. The error names the phase and the
+        failing fields and never carries the raw model output.
         """
-        pydantic_model = (
-            result.tasks_output[0].pydantic
-            if result.tasks_output
-            else None
+        return extract_model(result, model_cls, phase)
+
+    async def _run_phase(
+        self,
+        phase: str,
+        index: int,
+        model_cls: Type[_M],
+        build_args: tuple = (),
+        build_kwargs: Optional[Dict[str, Any]] = None,
+        validate: Optional[Callable[[_M], None]] = None,
+        start_tracker: bool = True,
+    ) -> "tuple[CrewOutput, _M]":
+        """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
+
+        Owns the tracker lifecycle: start_phase once before the first attempt,
+        finish_phase once after the accepted attempt (tokens of failed attempts are
+        not added, a known metrics gap). The tool-call guard runs per attempt, so a
+        retry cannot pass on the tool calls of an earlier attempt.
+
+        ``start_tracker=False`` is for a phase that already started its tracker
+        phase because the Flow ran tools before the first attempt (CORR-10).
+        """
+        tracker = self._tracker
+        box: Dict[str, Any] = {}
+
+        def build(feedback: str):
+            kwargs = dict(build_kwargs or {})
+            if feedback:
+                kwargs["feedback"] = feedback
+            task = self._factory.build_task(
+                phase, self.state.sector, self.state.today, *build_args, **kwargs,
+            )
+            if tracker and start_tracker and "task" not in box:
+                tracker.start_phase(phase, llm=self._task_llm(task))
+            box["task"] = task
+            return task
+
+        def finish(result: CrewOutput, task) -> None:
+            if tracker:
+                tracker.finish_phase(phase, result.token_usage, self._model_id(task), llm=self._task_llm(task))
+
+        async def kickoff(task) -> CrewOutput:
+            before = tracker.tool_call_count(phase) if tracker else 0
+            result = cast(CrewOutput, await self._make_crew(task, index).akickoff())
+            try:
+                self._require_tool_calls(phase, task, since=before)
+            except MissingToolCallError:
+                finish(result, task)
+                raise
+            return result
+
+        result, model = await run_phase(
+            phase=phase,
+            build_task=build,
+            kickoff=kickoff,
+            model_cls=model_cls,
+            validate=validate,
+            tracker=tracker,
         )
-        if pydantic_model is not None:
-            return cast(_M, pydantic_model)
-        raw = result.raw or ""
-        try:
-            return cast(_M, model_cls.model_validate_json(raw))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Pydantic validation failed for {phase}. "
-                f"raw[:200]={raw[:200]!r}"
-            ) from exc
+        finish(result, box["task"])
+        return result, model
 
     # ── Context slim helpers ──────────────────────────────────────────────────
     # Each helper builds a slimmed JSON string from the typed model stored in
@@ -330,8 +453,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "interpretation": {
                     "overall_signal": ma.overall_signal,
                     "key_signals": ma.key_signals,
-                    "entry_zone_low": ma.entry_zone_low if ma.entry_zone_low is not None else sr.support,
-                    "entry_zone_high": ma.entry_zone_high if ma.entry_zone_high is not None else sr.resistance,
+                    # support_resistance is null in Flow-built output (no tool computes it).
+                    "entry_zone_low": ma.entry_zone_low if ma.entry_zone_low is not None else (sr.support if sr else None),
+                    "entry_zone_high": ma.entry_zone_high if ma.entry_zone_high is not None else (sr.resistance if sr else None),
                     "entry_zone_status": ma.entry_zone_status,
                     "regime": ma.regime,
                     "momentum_score": ma.momentum_score,
@@ -343,14 +467,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     def _slim_fundamental(self) -> str:
         """Graded fields per ticker mapped to tasks.yaml layout (stock_analyses).
-        fundamental_component and fundamental_unknown are not in FundamentalAnalysisOutput
-        schema — fundamental_unknown defaults to False.
+        Keys and values are the schema vocabulary, copied from the model with no
+        translation (CORR-02, D-10). UNKNOWN labels and data_status pass through
+        verbatim; fundamentals_status is derived from them by the grader helper.
         """
-        _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
-        _growth_map = {
-            "High Growth": "HIGH", "Moderate Growth": "MODERATE",
-            "Stable": "LOW", "Declining": "DECLINING",
-        }
         fo = self.state.fundamental_output
         if fo is None:
             return ""
@@ -360,10 +480,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             slim.append({
                 "ticker": a.ticker,
                 "assessment": {
-                    "valuation_grade": fr.valuation,
-                    "financial_health": _quality_map.get(fr.quality, "UNKNOWN"),
-                    "growth_outlook": _growth_map.get(fr.growth, "UNKNOWN"),
-                    "fundamental_unknown": False,
+                    "valuation": fr.valuation,
+                    "quality": fr.quality,
+                    "growth": fr.growth,
+                    "data_status": a.data_status,
+                    "fundamentals_status": fundamentals_status(fr.quality, fr.growth),
                     "fundamental_summary": a.investment_thesis,
                     "risk_factors": a.key_risks,
                     "catalysts": a.key_strengths,
@@ -412,8 +533,6 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         if mo is None or to is None or fo is None:
             return json.dumps({"reference_table": []})
 
-        _quality_map = {"High": "STRONG", "Medium": "ADEQUATE", "Low": "WEAK"}
-
         sentiment_by_ticker = {s.ticker: s.average_sentiment for s in mo.candidate_stocks}
         tech_by_ticker      = {a.ticker: a for a in to.technical_analysis}
         fund_by_ticker      = {a.ticker: a for a in fo.fundamental_analysis}
@@ -433,22 +552,43 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "entry_zone_status": ma.entry_zone_status  if ma else None,
                 "momentum_score":    ma.momentum_score      if ma else None,
                 "average_sentiment": sentiment_by_ticker.get(ticker),
-                "valuation_grade":   fr.valuation          if fr else None,
-                "financial_health":  _quality_map.get(fr.quality, "UNKNOWN") if fr else None,
+                "valuation":         fr.valuation          if fr else None,
+                "quality":           fr.quality            if fr else None,
+                # No fundamental row for this ticker is itself an unknown.
+                "fundamentals_status": fundamentals_status(fr.quality, fr.growth) if fr else "UNKNOWN",
             })
         return json.dumps({"reference_table": rows})
 
     def _gate_position_context(self) -> Dict[str, Dict[str, Optional[str]]]:
-        """ticker -> {entry_zone_status, risk_profile} for ActionPolicyGate."""
+        """ticker -> position context for ActionPolicyGate: entry_zone_status,
+        risk_profile, fundamentals_status (None when the ticker has no
+        fundamental record, D-08) and price_data_error.
+        """
         to = self.state.technical_output
         if to is None:
             return {}
+        fundamentals = self._fundamentals_status_by_ticker()
         return {
             t.ticker.upper(): {
                 "entry_zone_status": t.momentum_analysis.entry_zone_status,
                 "risk_profile": self.state.risk_profile,
+                "fundamentals_status": fundamentals.get(t.ticker.upper()),
+                "price_data_error": t.price_data_error,
             }
             for t in to.technical_analysis
+        }
+
+    def _fundamentals_status_by_ticker(self) -> Dict[str, str]:
+        """ticker -> AVAILABLE | UNKNOWN from the deterministic fundamental
+        output (UNKNOWN exactly when quality or growth is UNKNOWN). Tickers
+        without a fundamental record are absent.
+        """
+        fo = self.state.fundamental_output
+        if fo is None:
+            return {}
+        return {
+            a.ticker.upper(): fundamentals_status(a.fundamental_rating.quality, a.fundamental_rating.growth)
+            for a in fo.fundamental_analysis
         }
 
     def _gated_slim_critique(self) -> str:
@@ -500,74 +640,266 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     @start()
     async def market_analysis(self):
+        """Flow-owned phase (CORR-10, D-14): the Flow calls Reddit and, when Reddit asks for
+        fallback, Serper; the LLM only chooses up to 5 tickers from that corpus and writes
+        their rationales and the summary.
+
+        Both tools run off the event loop (call_tool, STALL-02), so their bounded sleeps never
+        block it. Every number, the sentiment flag and the timestamp are built by
+        utils.market_records.merge_market, never taken from the LLM. A tool that raises is
+        logged by exception class and treated as no data, never as invented data.
+        """
         self._check_error()
         self._emit_start(0)
-        task = self._factory.build_task("market_analysis", self.state.sector, self.state.today)
-        if self._tracker:
-            self._tracker.start_phase("market_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 0).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("market_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("market_analysis", task)
-        self.state.market_output = self._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
-        kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, self.state.sector)
+        phase = "market_analysis"
+        sector, today = self.state.sector, self.state.today
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        try:
+            reddit = await call_tool(
+                self._factory.flow_tool(phase, REDDIT_TOOL_NAME),
+                phase_index=0, step_callback=self._step_callback,
+                thought=f"Reading Reddit discussion for {sector}",
+                sector=sector,
+            )
+        except Exception as exc:
+            logger.warning("%s: Reddit tool failed (%s); using the Serper fallback", phase, type(exc).__name__)
+            reddit = None
+
+        serper = None
+        fallback_required = reddit_fallback_required(reddit)
+        if fallback_required:
+            try:
+                serper = await call_tool(
+                    self._factory.flow_tool(phase, SERPER_TOOL_NAME),
+                    phase_index=0, step_callback=self._step_callback,
+                    thought=f"Searching the web for {sector} sector stocks",
+                    search_query=serper_query(sector, today),
+                )
+            except Exception as exc:
+                logger.warning("%s: Serper search failed (%s); no market data this run", phase, type(exc).__name__)
+
+        corpus = build_market_corpus(reddit, serper, sector)
+        logger.info("%s: corpus source=%s", phase, corpus["source"])
+        ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
+        result, narrative = await self._run_phase(
+            phase, 0, MarketNarrativeOutput, build_args=(ctx,),
+            validate=lambda n: require_market_picks(n, corpus),
+            start_tracker=False,
+        )
+        self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
+        kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, sector)
         if dropped:
             logger.warning("Excluded sector-benchmark/broad-market ETF candidates: %s", dropped)
             self.state.market_output.candidate_stocks = kept
-        self._emit_progress(0, result)
+        self._emit_progress_model(0, self.state.market_output, result)
         return result.raw or ""
 
     @listen(market_analysis)
     async def technical_analysis(self):
+        """Flow-owned phase (CORR-10, D-14): the Flow calls the indicator tool and builds
+        every number and label; the LLM writes only overall_signal, key_signals,
+        comprehensive_analysis, investment_recommendation and the summary.
+
+        The tool runs off the event loop (call_tool), so it overlaps the fundamental
+        phase's tool calls (STALL-02). The agent has no tools, so the per-attempt
+        tool-call guard has nothing to check: the Flow calls the tool unconditionally,
+        and a failed ticker is recorded and excluded, never given invented indicators.
+        """
         self._check_error()
         self._emit_start(1)
-        ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        task = self._factory.build_task("technical_analysis", self.state.sector, self.state.today, ctx)
-        if self._tracker:
-            self._tracker.start_phase("technical_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 1).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("technical_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("technical_analysis", task)
-        self.state.technical_output = self._extract_pydantic(result, TechnicalAnalysisOutput, "technical_analysis")
-        self._emit_progress(1, result)
+        phase = "technical_analysis"
+        mo = self.state.market_output
+        tickers = list(dict.fromkeys(
+            c.ticker.strip().upper() for c in (mo.candidate_stocks if mo else []) if c.ticker.strip()
+        ))
+        if not tickers:
+            raise RuntimeError(f"{phase}: no candidate tickers from market_analysis")
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        tool_result = await call_tool(
+            self._factory.flow_tool(phase, "calculate_technical_indicators"),
+            phase_index=1, step_callback=self._step_callback,
+            thought=f"Calculating indicators for {len(tickers)} tickers",
+            tickers_json=json.dumps(tickers),
+        )
+        records, failed = build_technical_records(tool_result, tickers)
+        if not records:
+            reasons = "; ".join(f"{f.ticker}: {f.error}" for f in failed)[:300]
+            raise RuntimeError(
+                f"{phase}: no ticker has indicator data; refusing to publish invented indicators ({reasons})"
+            )
+        if failed:
+            logger.warning(
+                "%s: indicators failed for %s; excluded from later phases",
+                phase, ", ".join(f.ticker for f in failed),
+            )
+
+        ctx = "\n\n".join([
+            self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis()),
+            self._fmt_ctx("Technical Data (computed by the pipeline)", technical_narrative_context(records, failed)),
+        ])
+        result, narrative = await self._run_phase(
+            phase, 1, TechnicalNarrativeOutput, build_args=(ctx,),
+            validate=lambda n: require_technical_coverage(n, records),
+            start_tracker=False,
+        )
+        self.state.technical_output = merge_technical(self.state.sector, tickers, records, narrative, failed)
+        self._emit_progress_model(1, self.state.technical_output, result)
         return result.raw or ""
 
     @listen(market_analysis)
     async def fundamental_analysis(self):
+        """Flow-owned phase (CORR-10, D-06): the Flow fetches, grades and builds every
+        record; the LLM writes only strengths, risks, thesis and summary.
+
+        The tools run in this method (off the loop, with synthetic SSE steps), so
+        the per-attempt tool-call guard has nothing to check: the agent has no
+        tools, and a missing or failed call becomes a failed record, never a
+        model-invented number.
+        """
         self._check_error()
         self._emit_start(2)
-        ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        task = self._factory.build_task("fundamental_analysis", self.state.sector, self.state.today, ctx)
-        if self._tracker:
-            self._tracker.start_phase("fundamental_analysis", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 2).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("fundamental_analysis", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("fundamental_analysis", task)
-        self.state.fundamental_output = self._extract_pydantic(result, FundamentalAnalysisOutput, "fundamental_analysis")
-        self._emit_progress(2, result)
-        return result.raw or ""
+        phase = "fundamental_analysis"
+        mo = self.state.market_output
+        tickers = list(dict.fromkeys(
+            c.ticker.strip().upper() for c in (mo.candidate_stocks if mo else []) if c.ticker.strip()
+        ))
+        if not tickers:
+            raise RuntimeError(f"{phase}: no candidate tickers from market_analysis")
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        fetch_json = await call_tool(
+            self._factory.flow_tool(phase, "fetch_fundamental_data"),
+            phase_index=2, step_callback=self._step_callback,
+            thought=f"Fetching fundamentals for {len(tickers)} tickers",
+            tickers_json=json.dumps(tickers),
+        )
+        grades_json = await call_tool(
+            self._factory.flow_tool(phase, "grade_fundamental_data"),
+            phase_index=2, step_callback=self._step_callback,
+            thought="Grading fundamentals",
+            fundamentals_batch_json=fetch_json,
+        )
+        records = build_fundamental_records(fetch_json, grades_json)
+        requested = {t: records[t] for t in tickers if t in records}
+
+        result: Optional[CrewOutput] = None
+        narrative: Optional[FundamentalNarrativeOutput] = None
+        if any(r["data_status"] != "failed" for r in requested.values()):
+            ctx = "\n\n".join([
+                self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis()),
+                self._fmt_ctx("Fundamental Data (computed by the pipeline)", narrative_context(tickers, requested)),
+            ])
+            result, narrative = await self._run_phase(
+                phase, 2, FundamentalNarrativeOutput, build_args=(ctx,),
+                validate=lambda n: require_narrative_coverage(n, requested),
+                start_tracker=False,
+            )
+        else:
+            # Nothing to write about: no LLM call, fixed text, every ticker UNKNOWN.
+            logger.warning("%s: no fundamental data for any candidate; skipping the narrative call", phase)
+            if tracker:
+                tracker.finish_phase(phase, None, "none")
+
+        self.state.fundamental_output = merge_fundamental(self.state.sector, tickers, records, narrative)
+        self._emit_progress_model(2, self.state.fundamental_output, result)
+        return (result.raw if result is not None else "") or ""
 
     @listen(and_(technical_analysis, fundamental_analysis))
     async def draft_strategy(self):
+        """Flow-owned phase (CORR-10, D-08, D-14, D-15): the Flow scores before the LLM and
+        allocates after it; the LLM chooses only the action per ticker and writes its rationale,
+        monitoring triggers, review cadence and the overall strategy.
+
+        Order: composite scores (tool, off the loop) -> narrative run_phase with the scores and
+        each ticker's eligible actions in its context -> clamp each action to its eligible set
+        -> allocator (tool, off the loop) -> assembled InvestorStrategicOutput. composite_score,
+        allocation, trade setups, totals, current_price, fundamentals_status and the portfolio
+        risk_level never come from the LLM (utils/strategy_assembly.py). The agent has no tools,
+        so the per-attempt tool-call guard has nothing to check. A ticker whose indicators
+        failed was excluded in the technical phase and never reaches this one.
+        """
         self._check_error()
         self._emit_start(3)
+        phase = "draft_strategy"
+        sector, risk_profile = self.state.sector, self.state.risk_profile
+        mo, to, fo = self.state.market_output, self.state.technical_output, self.state.fundamental_output
+        if to is None or not to.technical_analysis:
+            raise RuntimeError(f"{phase}: no technical analysis to build a strategy from")
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        inputs = composite_inputs(mo, to, fo)
+        tickers = [item["ticker"] for item in inputs]
+        scored = await call_tool(
+            self._factory.flow_tool(phase, "compute_composite_scores"),
+            phase_index=3, step_callback=self._step_callback,
+            thought=f"Scoring {len(tickers)} tickers",
+            stocks_json=json.dumps(inputs),
+        )
+        composite = parse_composite_scores(scored, tickers)
+        self.state.composite_scores = composite
+
+        fundamentals = self._fundamentals_status_by_ticker()
+        eligible = eligible_by_ticker(to, fundamentals, risk_profile)
         ctx = "\n\n".join([
             self._fmt_ctx("Market Analysis Output", self._slim_market_for_strategy()),
             self._fmt_ctx("Technical Analysis Output", self._slim_technical()),
             self._fmt_ctx("Fundamental Analysis Output", self._slim_fundamental()),
+            self._fmt_ctx(
+                "Scores and eligible actions (computed by the pipeline)",
+                scores_context(inputs, composite, eligible, excluded_tickers(mo, to)),
+            ),
         ])
-        task = self._factory.build_task("draft_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("draft_strategy", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 3).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("draft_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("draft_strategy", task)
-        self.state.draft_output = self._extract_pydantic(result, InvestorStrategicOutput, "draft_strategy")
-        self._emit_progress(3, result)
+        result, narrative = await self._run_phase(
+            phase, 3, StrategyNarrativeOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": risk_profile},
+            validate=lambda n: require_position_coverage(n, tickers),
+            start_tracker=False,
+        )
+
+        positions, clamps = clamp_actions(
+            ordered_positions(narrative, tickers), eligible,
+            policy_context_by_ticker(to, fundamentals, risk_profile),
+            phase=phase,
+        )
+        self.state.policy_clamps = clamps
+        self.state.draft_output = await self._allocate_and_assemble(
+            phase, 3, positions, composite, narrative.overall_strategy,
+        )
+        self._emit_progress_model(3, self.state.draft_output, result)
         return result.raw or ""
+
+    async def _allocate_and_assemble(
+        self, phase: str, index: int, positions: List[Any],
+        composite: Dict[str, Dict[str, Any]], overall_strategy: str,
+    ) -> InvestorStrategicOutput:
+        """Allocator (tool, off the loop) on the clamped actions, then the published model.
+
+        Shared by the draft and the final phase: every number comes from ``composite`` (the
+        Flow's scores), the allocator, and the technical and fundamental records.
+        """
+        sector, risk_profile = self.state.sector, self.state.risk_profile
+        to = self.state.technical_output
+        technical_by_ticker = {a.ticker.upper(): a for a in to.technical_analysis}
+        allocation = parse_allocation(await call_tool(
+            self._factory.flow_tool(phase, "allocate_portfolio"),
+            phase_index=index, step_callback=self._step_callback,
+            thought="Allocating capital",
+            stocks_json=json.dumps(allocator_payload(positions, composite, technical_by_ticker, risk_profile)),
+        ))
+        return assemble_strategy(
+            sector, risk_profile, positions, composite, technical_by_ticker,
+            self._fundamentals_status_by_ticker(), allocation, overall_strategy,
+        )
 
     @listen(draft_strategy)
     async def critique_review(self):
@@ -577,34 +909,65 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Ticker Reference Table", self._critic_reference_table()),
         ])
-        task = self._factory.build_task("critique_review", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("critique_review", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 4).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("critique_review", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("critique_review", task)
-        self.state.critique_output = self._extract_pydantic(result, CriticOutput, "critique_review")
+        result, self.state.critique_output = await self._run_phase(
+            "critique_review", 4, CriticOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": self.state.risk_profile},
+        )
         self._emit_progress(4, result)
         return result.raw or ""
 
     @listen(critique_review)
     async def final_strategy(self):
+        """Flow-owned phase (CORR-10, D-08, D-14, D-15): the LLM weighs the Critic and chooses the
+        final action per ticker with its rationale, triggers, cadence and the overall strategy;
+        the Flow clamps, allocates and assembles.
+
+        The context is the Flow-numbered draft, the gated Critic output and each ticker's
+        score and eligible actions. After the answer the Flow clamps every action to its
+        eligible set (records join the draft's in ``state.policy_clamps``), takes
+        composite_score from the draft's Flow scores (a missing one fails closed), runs the
+        allocator and assembles the ``InvestorStrategicOutput`` that ``run_analysis`` then
+        reprices and validates with PortfolioBoundsValidator. Neither this answer nor the
+        Critic's can set a number, a status or the risk level. The agent has no tools.
+        """
         self._check_error()
         self._emit_start(5)
+        phase = "final_strategy"
+        risk_profile = self.state.risk_profile
+        mo, to, fo = self.state.market_output, self.state.technical_output, self.state.fundamental_output
+        if self.state.draft_output is None or to is None or not to.technical_analysis:
+            raise RuntimeError(f"{phase}: no draft strategy to revise")
+
+        inputs = composite_inputs(mo, to, fo)
+        tickers = [item["ticker"] for item in inputs]
+        composite = self.state.composite_scores
+        require_composite_scores(composite, tickers)
+        fundamentals = self._fundamentals_status_by_ticker()
+        eligible = eligible_by_ticker(to, fundamentals, risk_profile)
         ctx = "\n\n".join([
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Critic Review Output", self._gated_slim_critique()),
+            self._fmt_ctx(
+                "Scores and eligible actions (computed by the pipeline)",
+                scores_context(inputs, composite, eligible, excluded_tickers(mo, to)),
+            ),
         ])
-        task = self._factory.build_task("final_strategy", self.state.sector, self.state.today, ctx, risk_profile=self.state.risk_profile)
-        if self._tracker:
-            self._tracker.start_phase("final_strategy", llm=self._task_llm(task))
-        result = cast(CrewOutput, await self._make_crew(task, 5).akickoff())
-        if self._tracker:
-            self._tracker.finish_phase("final_strategy", result.token_usage, self._model_id(task), llm=self._task_llm(task))
-        self._require_tool_calls("final_strategy", task)
-        self._final_crew_result = result
-        self._emit_progress(5, result)
+        result, narrative = await self._run_phase(
+            phase, 5, StrategyNarrativeOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": risk_profile},
+            validate=lambda n: require_position_coverage(n, tickers, phase),
+        )
+
+        positions, clamps = clamp_actions(
+            ordered_positions(narrative, tickers), eligible,
+            policy_context_by_ticker(to, fundamentals, risk_profile),
+            phase=phase,
+        )
+        self.state.policy_clamps = [*self.state.policy_clamps, *clamps]
+        self.state.final_output = await self._allocate_and_assemble(
+            phase, 5, positions, composite, narrative.overall_strategy,
+        )
+        self._emit_progress_model(5, self.state.final_output, result)
         return result.raw or ""
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -614,10 +977,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         """Re-invoke allocate_portfolio against the Final Strategist's decided
         actions and overwrite all numeric allocation/trade-setup fields on the
         final output. Entry zones and current prices are read from the
-        deterministic Phase-2 technical output, never from the LLM's own
-        (possibly fabricated) trade_setup — only `action` and `composite_score`
-        are trusted from the Final Strategist output. Runs unconditionally,
-        even when no action changed relative to the draft.
+        deterministic Phase-2 technical output and the composite score from the
+        Flow's own scores (``state.composite_scores``), never from the LLM or
+        from the dict passed in — only `action` is taken from ``structured``.
+        A ticker with no Flow score raises BoundsViolationError
+        (``composite_score_missing``): fail closed, never a 0.0 default.
+        Runs unconditionally, even when no action changed relative to the draft.
         """
         technical_by_ticker: Dict[str, Any] = {}
         if self.state.technical_output:
@@ -625,6 +990,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 technical_by_ticker[t.ticker.upper()] = t
 
         positions = structured.get("positions", [])
+        require_composite_scores(
+            self.state.composite_scores, [str(pos.get("ticker", "")).upper() for pos in positions],
+        )
         stocks_payload = []
         for pos in positions:
             ticker = str(pos.get("ticker", "")).upper()
@@ -644,7 +1012,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             stocks_payload.append({
                 "ticker":          ticker,
                 "action":          pos.get("action", "MONITOR"),
-                "composite_score": pos.get("composite_score", 0.0),
+                "composite_score": float(self.state.composite_scores[ticker]["composite_score"]),
                 "entry_zone_low":  entry_zone_low,
                 "entry_zone_high": entry_zone_high,
                 "current_price":   current_price,
@@ -691,6 +1059,19 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                     result[t.ticker.upper()] = status
         return result
 
+    @staticmethod
+    def _stamp_fundamentals_status(output: Dict[str, Any], fundamentals: Dict[str, str]) -> Dict[str, Any]:
+        """Set every position's fundamentals_status from the deterministic map,
+        overwriting whatever the LLM wrote (None for a ticker with no
+        fundamental record). The SPA renders UNKNOWN as "fundamentals unavailable".
+        """
+        stamped = dict(output)
+        stamped["positions"] = [
+            {**pos, "fundamentals_status": fundamentals.get(str(pos.get("ticker", "")).upper())}
+            for pos in output.get("positions", [])
+        ]
+        return stamped
+
     def _finalize_and_validate_portfolio(self, structured: Dict[str, Any], risk_profile: str) -> Dict[str, Any]:
         """Flow-authoritative repricing + fail-closed bounds validation.
 
@@ -699,6 +1080,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         re-invokes once more; if it still fails, raises BoundsViolationError
         and the caller (run_analysis) does not return a result.
 
+        fundamentals_status is stamped on every position from the deterministic
+        fundamental output before validation (D-08), and the validator's
+        buy_with_unknown_fundamentals rule fails closed on a buy for UNKNOWN.
+
         The CURRENT_ENTRY/WAIT-FOR-ENTRY invariant check is included here even
         though the retry cannot fix it (repricing never changes `action`) --
         the point is that a Final Strategist decision violating this invariant
@@ -706,15 +1091,16 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         other check in this validator.
         """
         zone_status = self._entry_zone_status_by_ticker()
-        repriced = self._reprice_final_output(structured, risk_profile)
-        violations = validate_bounds(repriced, risk_profile, zone_status)
+        fundamentals = self._fundamentals_status_by_ticker()
+        repriced = self._stamp_fundamentals_status(self._reprice_final_output(structured, risk_profile), fundamentals)
+        violations = validate_bounds(repriced, risk_profile, zone_status, fundamentals)
         if violations:
             logger.warning(
                 "Final output failed PortfolioBoundsValidator on first pass (%s); re-invoking allocator",
                 violations,
             )
-            repriced = self._reprice_final_output(structured, risk_profile)
-            violations = validate_bounds(repriced, risk_profile, zone_status)
+            repriced = self._stamp_fundamentals_status(self._reprice_final_output(structured, risk_profile), fundamentals)
+            violations = validate_bounds(repriced, risk_profile, zone_status, fundamentals)
             if violations:
                 raise BoundsViolationError(violations)
         return repriced
@@ -754,18 +1140,28 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         try:
             self.kickoff(inputs={"sector": sector, "today": today, "risk_profile": risk_profile})
 
-            structured = _parse_crew_result(self._final_crew_result)
+            final_output = self.state.final_output
+            if final_output is None:
+                raise RuntimeError("final_strategy completed without a validated output")
+            structured = final_output.model_dump(mode="json")
             structured = self._finalize_and_validate_portfolio(structured, risk_profile)
 
             validation_issues = validate_portfolio(structured)
-            if validation_issues:
-                for issue in validation_issues:
-                    log_fn = logger.error if issue.severity == "critical" else logger.warning
-                    log_fn("[%s] %s — %s: %s", issue.severity.upper(), issue.ticker, issue.field, issue.message)
-                structured["validation_warnings"] = [
-                    {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
-                    for i in validation_issues
-                ]
+            for issue in validation_issues:
+                log_fn = logger.error if issue.severity == "critical" else logger.warning
+                log_fn("[%s] %s — %s: %s", issue.severity.upper(), issue.ticker, issue.field, issue.message)
+            validation_warnings = [
+                {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
+                for i in validation_issues
+            ]
+            # One warning per action the policy clamp changed (draft or final), so a clamp is never
+            # silent (D-08); a warning names the published action when a later phase changed it again.
+            validation_warnings += clamp_warnings(
+                self.state.policy_clamps,
+                {str(p.get("ticker", "")).upper(): p.get("action") for p in structured.get("positions", [])},
+            )
+            if validation_warnings:
+                structured["validation_warnings"] = validation_warnings
         except Exception as exc:
             tracker.finish()
             # Timing survives failure: the caller can read exc.partial_metrics. Some
@@ -799,8 +1195,5 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             "result": structured,
             "summary": summary,
             "execution_metrics": metrics,
-            "validation_warnings": [
-                {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
-                for i in validation_issues
-            ],
+            "validation_warnings": validation_warnings,
         }

@@ -19,12 +19,31 @@ from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.patient_serper_tool import PatientSerperDevTool
 from utils.tool_timing import instrument_tool
 from schemas.agent_outputs import (
-    MarketAnalysisOutput,
-    TechnicalAnalysisOutput,
-    FundamentalAnalysisOutput,
-    InvestorStrategicOutput,
+    MarketNarrativeOutput,
+    TechnicalNarrativeOutput,
+    FundamentalNarrativeOutput,
+    StrategyNarrativeOutput,
     CriticOutput,
 )
+
+# phase -> the model the LLM is asked to produce. The single source for each Task's
+# output_pydantic, for the $allowed_values in its prompt, and for the output_example
+# contract test (tests/test_task_output_specs.py): the schema is the source of truth
+# (D-10). For market_analysis, technical_analysis and fundamental_analysis that is the
+# narrative model; the Flow merges it into MarketAnalysisOutput / TechnicalAnalysisOutput /
+# FundamentalAnalysisOutput. For draft_strategy and final_strategy it is StrategyNarrativeOutput;
+# the Flow clamps the action and allocates after the LLM and assembles the published
+# InvestorStrategicOutput (the draft also scores before it, the final reuses those scores).
+# critique_review is the one phase whose model is also the published shape (CriticOutput carries
+# no number that reaches the report).
+PHASE_OUTPUT_MODELS = {
+    "market_analysis":      MarketNarrativeOutput,
+    "technical_analysis":   TechnicalNarrativeOutput,
+    "fundamental_analysis": FundamentalNarrativeOutput,
+    "draft_strategy":       StrategyNarrativeOutput,
+    "critique_review":      CriticOutput,
+    "final_strategy":       StrategyNarrativeOutput,
+}
 
 
 class TaskFactory:
@@ -52,40 +71,57 @@ class TaskFactory:
         ):
             agent.use_config(self.config)
 
+        # crewai's own retry re-runs the whole task blind and its counter lives on the
+        # Agent, so draft and final (one shared agent) would share a budget. Retries are
+        # counted per phase by utils/phase_runner.run_phase instead (STALL-04).
+        for agent in (
+            self.market_analyst, self.technical_analyst, self.fundamental_analyst,
+            self.investor_strategist, self.critic,
+        ):
+            agent.get_agent().max_retry_limit = 0
+
         # Same instance is shared with the phase config below (now instrumented).
         self.search_tool = instrument_tool(PatientSerperDevTool(), "market_analysis", self._tracker_getter)
 
-        # Phase config built once; tools are shared instances
+        # Phase config built once; tools are shared instances.
+        #   agent_tools: handed to the crewai Task, so the LLM calls them.
+        #   flow_tools:  name -> instrumented instance the Flow calls itself through
+        #                utils.flow_tools.call_tool (CORR-10). The LLM never sees them.
+        # What the LLM answers is PHASE_OUTPUT_MODELS[phase], not stored here.
         self._phase_config = {
             "market_analysis": {
-                "agent":  self.market_analyst.get_agent(),
-                "tools":  self._timed("market_analysis", [RedditSentimentTool(), self.search_tool]),
-                "schema": MarketAnalysisOutput,
+                "agent":       self.market_analyst.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name("market_analysis", [RedditSentimentTool(), self.search_tool]),
             },
             "technical_analysis": {
-                "agent":  self.technical_analyst.get_agent(),
-                "tools":  self._timed("technical_analysis", [TechnicalAnalysisTool()]),
-                "schema": TechnicalAnalysisOutput,
+                "agent":       self.technical_analyst.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name("technical_analysis", [TechnicalAnalysisTool()]),
             },
             "fundamental_analysis": {
-                "agent":  self.fundamental_analyst.get_agent(),
-                "tools":  self._timed("fundamental_analysis", [FundamentalDataTool(), FundamentalGraderTool()]),
-                "schema": FundamentalAnalysisOutput,
+                "agent":       self.fundamental_analyst.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name(
+                    "fundamental_analysis", [FundamentalDataTool(), FundamentalGraderTool()],
+                ),
             },
             "draft_strategy": {
-                "agent":  self.investor_strategist.get_agent(),
-                "tools":  self._timed("draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()]),
-                "schema": InvestorStrategicOutput,
+                "agent":       self.investor_strategist.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name(
+                    "draft_strategy", [CompositeScoreTool(), PortfolioAllocatorTool()],
+                ),
             },
             "critique_review": {
-                "agent":  self.critic.get_agent(),
-                "tools":  [],
-                "schema": CriticOutput,
+                "agent":       self.critic.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  {},
             },
             "final_strategy": {
-                "agent":  self.investor_strategist.get_agent(),
-                "tools":  [],
-                "schema": InvestorStrategicOutput,
+                "agent":       self.investor_strategist.get_agent(),
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name("final_strategy", [PortfolioAllocatorTool()]),
             },
         }
 
@@ -93,19 +129,44 @@ class TaskFactory:
         """Instrument every tool in `phase` once (idempotent) with its phase label."""
         return [instrument_tool(t, phase, self._tracker_getter) for t in tools]
 
-    def build_task(self, phase: str, sector: str, today: str, prior_context: str = "", risk_profile: str = "conservative") -> Task:
-        """Build a single Task for `phase`. prior_context is appended to the description."""
+    def _timed_by_name(self, phase: str, tools: list) -> dict:
+        """Like _timed, keyed by tool name (the tools the Flow calls itself)."""
+        return {t.name: t for t in self._timed(phase, tools)}
+
+    def flow_tool(self, phase: str, name: str):
+        """The instrumented tool instance the Flow calls in `phase` (KeyError if unknown)."""
+        return self._phase_config[phase]["flow_tools"][name]
+
+    def build_task(
+        self,
+        phase: str,
+        sector: str,
+        today: str,
+        prior_context: str = "",
+        risk_profile: str = "conservative",
+        feedback: str = "",
+    ) -> Task:
+        """Build a single Task for `phase`.
+
+        prior_context is appended to the description, then feedback (the failing
+        fields of a previous attempt, see utils/phase_runner.py) when non-empty.
+        """
         if phase not in self._phase_config:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
         pc = self._phase_config[phase]
-        cfg = TaskConfigLoader().render(phase, sector=sector, today=today, risk_profile=risk_profile)
+        output_model = PHASE_OUTPUT_MODELS[phase]
+        cfg = TaskConfigLoader().render(
+            phase, output_model=output_model, sector=sector, today=today, risk_profile=risk_profile,
+        )
         description = cfg["description"]
         if prior_context:
             description = description + "\n\n" + prior_context
+        if feedback:
+            description = description + "\n\n" + feedback
         return Task(
             description=description,
             agent=pc["agent"],
-            tools=pc["tools"],
+            tools=pc["agent_tools"],
             expected_output=cfg["expected_output"],
-            output_pydantic=pc["schema"],
+            output_pydantic=output_model,
         )

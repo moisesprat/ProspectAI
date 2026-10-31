@@ -5,8 +5,10 @@ All Reddit HTTP requests are mocked — no real network calls.
 
 import os
 import pytest
+import requests
 from unittest.mock import patch, MagicMock
 
+from tests.fake_clock import FakeClock
 from utils.reddit_sentiment_tool import RedditSentimentTool
 
 
@@ -40,6 +42,22 @@ def _run_with_posts(posts, sector="Technology"):
     with patch("utils.reddit_sentiment_tool.requests.get", return_value=resp), \
          patch("utils.reddit_sentiment_tool.time.sleep"):
         return RedditSentimentTool()._run(sector)
+
+
+def _status_response(status: int) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    return resp
+
+
+def _run_on_fake_clock(response, latency=0.0, sector="Technology"):
+    """Run the tool with requests.get and the module clock faked."""
+    clock = FakeClock()
+    get = clock.get_side_effect(response, latency=latency)
+    with patch("utils.reddit_sentiment_tool.requests.get", side_effect=get), \
+         patch("utils.reddit_sentiment_tool.time", clock):
+        result = RedditSentimentTool()._run(sector)
+    return result, clock
 
 
 # ── Tool contract ──────────────────────────────────────────────────────────────
@@ -211,3 +229,102 @@ class TestSentimentScoring:
         for upvotes, ratio in [(0, 0.0), (10000, 1.0), (500, 0.5), (100, 0.3)]:
             s = tool._score_sentiment(upvotes, ratio)
             assert -1.0 <= s <= 1.0, f"Sentiment {s} out of bounds for ({upvotes}, {ratio})"
+
+
+# ── Budget, breaker and pacing (change phase-2 plan 02-08, D-13) ──────────────
+
+class TestRedditBudget:
+
+    def test_all_429_stops_fast(self):
+        result, clock = _run_on_fake_clock(_status_response(429))
+        assert result["fallback_required"] is True
+        assert result["candidate_stocks"] == []
+        assert clock.request_count == 2  # breaker opens after two failures
+        assert clock.now < 1.0
+        assert 60 not in clock.sleeps and 60.0 not in clock.sleeps
+
+    def test_one_429_is_skipped(self):
+        ok = _reddit_response([_post("$MSFT is booming")])
+        result, clock = _run_on_fake_clock([_status_response(429), ok])
+        subs = RedditSentimentTool.SECTOR_CONFIG["Technology"]["subreddits"]
+        assert subs[0] not in result["subreddits_searched"]
+        assert subs[1] in result["subreddits_searched"]
+        assert result["fallback_required"] is False
+        assert clock.now < 10.0
+        assert all(s <= 1.0 for s in clock.sleeps)
+
+    def test_all_403_breaker_under_3s(self):
+        result, clock = _run_on_fake_clock(_status_response(403))
+        assert result["fallback_required"] is True
+        assert clock.request_count == 2
+        assert clock.now < 3.0
+        assert "breaker" in result["error"]
+        assert "http_403" in result["error"]
+
+    def test_all_request_errors_open_the_breaker(self):
+        err = requests.exceptions.ConnectionError("no network")
+        result, clock = _run_on_fake_clock(err)
+        assert result["fallback_required"] is True
+        assert clock.request_count == 2
+        assert clock.now < 3.0
+        assert "error_ConnectionError" in result["error"]
+
+    def test_budget_caps_slow_responses(self):
+        ok = _reddit_response([_post("$MSFT is booming")])
+        result, clock = _run_on_fake_clock(ok, latency=3.0)
+        assert clock.now <= RedditSentimentTool.TIME_BUDGET_SECONDS + 0.5
+        assert all(t is not None and t <= RedditSentimentTool.MAX_REQUEST_TIMEOUT_SECONDS
+                   for t in clock.timeouts)
+        # A later request is never allowed more time than the budget has left.
+        assert min(clock.timeouts) < RedditSentimentTool.MAX_REQUEST_TIMEOUT_SECONDS
+
+    def test_no_sleep_before_first_request(self):
+        ok = _reddit_response([_post("$MSFT is booming")])
+        _, clock = _run_on_fake_clock(ok)
+        assert clock.events[0][0] == "get"
+
+    def test_pacing_is_bounded(self):
+        ok = _reddit_response([_post("$MSFT is booming")])
+        result, clock = _run_on_fake_clock(ok)
+        assert result["fallback_required"] is False
+        assert clock.sleeps, "successful requests are paced"
+        assert all(s <= RedditSentimentTool.PACING_SECONDS for s in clock.sleeps)
+        assert clock.now <= RedditSentimentTool.TIME_BUDGET_SECONDS
+
+    def test_pacing_never_exceeds_remaining_budget(self):
+        ok = _reddit_response([_post("$MSFT is booming")])
+        clock = FakeClock()
+        get = clock.get_side_effect(ok, latency=4.8)
+        with patch("utils.reddit_sentiment_tool.requests.get", side_effect=get), \
+             patch("utils.reddit_sentiment_tool.time", clock):
+            RedditSentimentTool()._run("Technology")
+        assert clock.now <= RedditSentimentTool.TIME_BUDGET_SECONDS + 1e-9
+
+    def test_warnings_have_no_urls(self):
+        import warnings as _warnings
+        err = requests.exceptions.ConnectionError("HTTPSConnectionPool(host='www.reddit.com'): max retries")
+        for response in (_status_response(403), _status_response(429), err):
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                _run_on_fake_clock(response)
+            texts = [str(w.message) for w in caught]
+            assert texts, "failures warn"
+            for text in texts:
+                assert "http" not in text.lower(), text
+                assert "reddit.com" not in text.lower(), text
+                assert "r/investing" in text or "r/stocks" in text, text
+        # status and exception class are named
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            _run_on_fake_clock(_status_response(403))
+        assert any("403" in str(w.message) for w in caught)
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            _run_on_fake_clock(err)
+        assert any("ConnectionError" in str(w.message) for w in caught)
+
+    def test_empty_reddit_leaves_no_sentiment(self):
+        result, _ = _run_on_fake_clock(_status_response(500))
+        assert result["candidate_stocks"] == []
+        assert result["fallback_required"] is True
+        assert "average_sentiment" not in str(result)

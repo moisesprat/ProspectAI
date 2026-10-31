@@ -51,7 +51,7 @@ class TechnicalInterpretationTool(BaseTool):
 
     Returns JSON with computed numbers only:
         ticker, entry_zone_low, entry_zone_high,
-        momentum_score (0-10, float), risk_level ("LOW"/"MEDIUM"/"HIGH")
+        momentum_score (0-10, float), risk_level ("Low"/"Medium"/"High", the MomentumAnalysis schema labels)
 
     Note: overall_signal, overbought assessment, and investment action are NOT
     returned — the LLM determines those through reasoning.
@@ -248,11 +248,11 @@ class TechnicalInterpretationTool(BaseTool):
             # ── Risk level (ATR / current_price) ─────────────────────────────
             atr_ratio = atr / current_price if current_price > 0 else 0
             if atr_ratio > 0.03:
-                risk_level = "HIGH"
+                risk_level = "High"
             elif atr_ratio < 0.015:
-                risk_level = "LOW"
+                risk_level = "Low"
             else:
-                risk_level = "MEDIUM"
+                risk_level = "Medium"
 
             return json.dumps({
                 "ticker":             ticker.upper(),

@@ -3,11 +3,58 @@ Task Configuration Loader
 Loads task configurations from tasks.yaml and renders them with runtime variables.
 """
 
+import json
+import types
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union, get_args, get_origin
 
 import yaml
+from pydantic import BaseModel
+
+# Template variables a description may use besides sector/today/risk_profile.
+_GENERATED_VARS = ("output_example", "allowed_values")
+
+
+def _unwrap(annotation: Any) -> Any:
+    """Strip Annotated and Optional so a field's real type is visible."""
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _unwrap(get_args(annotation)[0])
+    if origin is Union or origin is types.UnionType:
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        return _unwrap(args[0]) if len(args) == 1 else annotation
+    return annotation
+
+
+def literal_fields(model: type, prefix: str = "") -> List[Tuple[str, Tuple[Any, ...]]]:
+    """(path, allowed values) for every Literal field of `model`, in field order.
+
+    Walks Optional[...], Annotated[...], List[...] and nested models; a list adds
+    "[]" to the path, e.g. ``positions[].action``.
+    """
+    found: List[Tuple[str, Tuple[Any, ...]]] = []
+    for name, field in model.model_fields.items():
+        path = f"{prefix}{name}"
+        annotation = _unwrap(field.annotation)
+        is_list = get_origin(annotation) in (list, List)
+        if is_list:
+            annotation = _unwrap(get_args(annotation)[0])
+            path += "[]"
+        if get_origin(annotation) is Literal:
+            found.append((path, get_args(annotation)))
+        elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            found.extend(literal_fields(annotation, f"{path}."))
+    return found
+
+
+def allowed_values_text(model: type) -> str:
+    """One line per Literal field, ``path: "v1" | "v2"``, or ``(none)`` (D-11: exact values in the prompt)."""
+    lines = [
+        f"{path}: " + " | ".join(json.dumps(v) for v in values)
+        for path, values in literal_fields(model)
+    ]
+    return "\n".join(lines) if lines else "(none)"
 
 
 class TaskConfigLoader:
@@ -38,10 +85,30 @@ class TaskConfigLoader:
             raise KeyError(f"Task '{task_key}' not found. Available: {list(tasks)}")
         return tasks[task_key]
 
-    def render(self, task_key: str, **kwargs) -> Dict[str, str]:
-        """Return description and expected_output with $variables substituted."""
+    def render(self, task_key: str, output_model: Optional[type] = None, **kwargs) -> Dict[str, str]:
+        """Return description and expected_output with $variables substituted.
+
+        Besides the runtime variables, a task may use:
+          $output_example  the task's ``output_example`` as indented JSON
+          $allowed_values  the Literal values of ``output_model`` (when given)
+        Each is substituted as one value and never re-templated, so a ``$`` inside
+        an example is safe. Using one without its source raises KeyError naming the task.
+        """
         cfg = self.get_task_config(task_key)
-        return {
-            "description": Template(cfg["description"]).substitute(**kwargs),
-            "expected_output": Template(cfg["expected_output"]).substitute(**kwargs),
-        }
+        variables = dict(kwargs)
+        if "output_example" in cfg:
+            variables["output_example"] = json.dumps(cfg["output_example"], indent=2)
+        if output_model is not None:
+            variables["allowed_values"] = allowed_values_text(output_model)
+        try:
+            return {
+                "description": Template(cfg["description"]).substitute(**variables),
+                "expected_output": Template(cfg["expected_output"]).substitute(**variables),
+            }
+        except KeyError as exc:
+            if exc.args and exc.args[0] in _GENERATED_VARS:
+                raise KeyError(
+                    f"Task '{task_key}' uses ${exc.args[0]} but has no "
+                    f"{'output_example' if exc.args[0] == 'output_example' else 'output_model'} to fill it"
+                ) from None
+            raise

@@ -1,5 +1,7 @@
 """Unit tests for individual ProspectAIFlow phase methods (F-08)."""
+import asyncio
 import json
+import threading
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +38,13 @@ def _make_task():
     task = MagicMock()
     task.agent.llm.model = "claude-haiku-4-5-20251001"
     return task
+
+
+def _final_stub(payload=None):
+    """Stand-in for the validated final output that run_analysis serialises."""
+    stub = MagicMock(spec=InvestorStrategicOutput)
+    stub.model_dump.return_value = payload if payload is not None else {"positions": []}
+    return stub
 
 
 @pytest.fixture
@@ -101,8 +110,9 @@ class TestExtractPydantic:
         result = MagicMock()
         result.raw = "not json at all"
         result.tasks_output = [task_out]
-        with pytest.raises(RuntimeError, match="Pydantic validation failed"):
+        with pytest.raises(RuntimeError, match="market_analysis: output failed schema validation") as info:
             ProspectAIFlow._extract_pydantic(result, MarketAnalysisOutput, "market_analysis")
+        assert "not json at all" not in str(info.value)
 
 
 # ─── _emit_progress ────────────────────────────────────────────────────────────
@@ -169,17 +179,21 @@ class TestParsCrewResult:
 class TestMarketAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_market_output(self, flow):
-        pydantic_out = MagicMock(spec=MarketAnalysisOutput)
-        pydantic_out.candidate_stocks = []
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            market_tools, mkt_entry, mkt_payload, narrative_result, wire_tools,
+        )
+
+        wire_tools(flow, market_tools(), phase="market_analysis")
         flow._factory.build_task.return_value = _make_task()
+        crew_result = narrative_result(mkt_payload(mkt_entry("AAA")))
         with patch.object(flow, "_make_crew") as mc:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
             await flow.market_analysis()
-        assert flow.state.market_output is pydantic_out
-        flow._factory.build_task.assert_called_once_with(
-            "market_analysis", "Technology", "2026-04-29"
-        )
+        assert isinstance(flow.state.market_output, MarketAnalysisOutput)
+        assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+        args = flow._factory.build_task.call_args
+        assert args.args[:3] == ("market_analysis", "Technology", "2026-04-29")
+        assert "Market Data (collected by the pipeline)" in args.args[3]
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -191,13 +205,21 @@ class TestMarketAnalysisPhase:
 class TestTechnicalAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_technical_output(self, flow):
-        pydantic_out = MagicMock(spec=TechnicalAnalysisOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            market_output, tech_narrative_entry, tech_payload, narrative_result,
+            tech_tools, wire_tools,
+        )
+        flow.state.market_output = market_output()
+        wire_tools(flow, tech_tools(), phase="technical_analysis")
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(tech_payload(tech_narrative_entry("AAA")))
+            )
             await flow.technical_analysis()
-        assert flow.state.technical_output is pydantic_out
+        assert isinstance(flow.state.technical_output, TechnicalAnalysisOutput)
+        assert [a.ticker for a in flow.state.technical_output.technical_analysis] == ["AAA"]
+        assert [f.ticker for f in flow.state.technical_output.failed_tickers] == ["BBB"]
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -205,29 +227,53 @@ class TestTechnicalAnalysisPhase:
         with pytest.raises(RuntimeError):
             await flow.technical_analysis()
 
+    @pytest.mark.asyncio
+    async def test_no_candidates_fails_clearly(self, flow):
+        flow.state.market_output = None
+        with pytest.raises(RuntimeError, match="technical_analysis"):
+            await flow.technical_analysis()
+
 
 class TestFundamentalAnalysisPhase:
     @pytest.mark.asyncio
     async def test_updates_fundamental_output(self, flow):
-        pydantic_out = MagicMock(spec=FundamentalAnalysisOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            market_output, narrative_entry, narrative_payload, narrative_result,
+            stub_tools, wire_tools,
+        )
+        flow.state.market_output = market_output()
+        wire_tools(flow, stub_tools())
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(narrative_payload(narrative_entry("AAA")))
+            )
             await flow.fundamental_analysis()
-        assert flow.state.fundamental_output is pydantic_out
+        assert isinstance(flow.state.fundamental_output, FundamentalAnalysisOutput)
+        assert [a.ticker for a in flow.state.fundamental_output.fundamental_analysis] == ["AAA", "BBB"]
 
 
 class TestDraftStrategyPhase:
     @pytest.mark.asyncio
     async def test_updates_draft_output(self, flow):
-        pydantic_out = MagicMock(spec=InvestorStrategicOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+        from tests.test_llm_role_audit import (
+            draft_entry, draft_payload, narrative_result, prime_draft, wire_tools,
+        )
+        wire_tools(flow, prime_draft(flow), phase="draft_strategy")
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+            )
             await flow.draft_strategy()
-        assert flow.state.draft_output is pydantic_out
+        assert isinstance(flow.state.draft_output, InvestorStrategicOutput)
+        assert [p.ticker for p in flow.state.draft_output.positions] == ["AAA", "BBB"]
+
+    @pytest.mark.asyncio
+    async def test_aborts_on_error_state(self, flow):
+        flow.state.error = "upstream failure"
+        with pytest.raises(RuntimeError, match="upstream failure"):
+            await flow.draft_strategy()
 
 
 class TestCritiqueReviewPhase:
@@ -243,14 +289,17 @@ class TestCritiqueReviewPhase:
 
 
 class TestFinalStrategyPhase:
-    @pytest.mark.asyncio
-    async def test_stores_final_crew_result(self, flow):
-        crew_result = _make_crew_result(raw="{}")
+    def test_stores_validated_final_output(self, flow):
+        from tests.test_llm_role_audit import draft_entry, draft_payload, narrative_result, prime_final
+        prime_final(flow)
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            await flow.final_strategy()
-        assert flow._final_crew_result is crew_result
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB")))
+            )
+            asyncio.run(flow.final_strategy())
+        assert isinstance(flow.state.final_output, InvestorStrategicOutput)
+        assert [p.ticker for p in flow.state.final_output.positions] == ["AAA", "BBB"]
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -302,9 +351,12 @@ class TestPartialMetrics:
     def test_post_kickoff_failure_also_carries_partial_metrics(self, flow):
         from utils.portfolio_bounds_validator import BoundsViolationError
 
-        flow.kickoff = lambda inputs=None: flow._tracker.start_phase("final_strategy")
-        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
-             patch.object(
+        def kickoff(inputs=None):
+            flow._tracker.start_phase("final_strategy")
+            flow.state.final_output = _final_stub()
+
+        flow.kickoff = kickoff
+        with patch.object(
                  flow, "_finalize_and_validate_portfolio",
                  side_effect=BoundsViolationError(
                      [{"ticker": "AAA", "rule": "max_allocation", "expected": 10, "actual": 20}]
@@ -337,9 +389,11 @@ class TestPartialMetrics:
             time.sleep(0.05)
             return {"positions": [], "overall_strategy": "ok"}
 
-        flow.kickoff = lambda inputs=None: None
-        with patch("prospect_ai_flow._parse_crew_result", return_value={"positions": []}), \
-             patch.object(flow, "_finalize_and_validate_portfolio", side_effect=slow_finalize):
+        def kickoff(inputs=None):
+            flow.state.final_output = _final_stub()
+
+        flow.kickoff = kickoff
+        with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=slow_finalize):
             out = flow.run_analysis({"sector": "Technology"})
         metrics = out["execution_metrics"]
         assert metrics["partial"] is False
@@ -409,56 +463,47 @@ class TestToolCallGuard:
             flow._require_tool_calls("market_analysis", _task_with_tools("Search"))
 
     @pytest.mark.asyncio
-    async def test_market_phase_body_raises_before_extracting(self, flow):
-        flow._tracker = ExecutionTracker()
-        flow._tracker.start()
-        flow._factory.build_task.return_value = _task_with_tools("Search")
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=MarketAnalysisOutput))
-        with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            with pytest.raises(MissingToolCallError, match="market_analysis"):
-                await flow.market_analysis()
-        assert flow.state.market_output is None
-
-    @pytest.mark.parametrize(
-        "phase,schema",
-        [
-            ("technical_analysis", TechnicalAnalysisOutput),
-            ("fundamental_analysis", FundamentalAnalysisOutput),
-            ("draft_strategy", InvestorStrategicOutput),
-        ],
-    )
-    @pytest.mark.asyncio
-    async def test_every_tool_phase_body_is_guarded(self, flow, phase, schema):
+    async def test_the_guard_runs_for_any_phase_whose_task_carries_tools(self, flow):
+        """No phase gives its agent tools any more (CORR-10), but _run_phase still enforces the guard."""
         flow._tracker = ExecutionTracker()
         flow._tracker.start()
         flow._factory.build_task.return_value = _task_with_tools("Tool")
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=schema))
-        with patch.object(flow, "_make_crew") as mc, \
-             patch.object(flow, "_slim_market_for_analysis", return_value=""), \
-             patch.object(flow, "_slim_market_for_strategy", return_value=""), \
-             patch.object(flow, "_slim_technical", return_value=""), \
-             patch.object(flow, "_slim_fundamental", return_value=""):
+        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=CriticOutput))
+        with patch.object(flow, "_make_crew") as mc:
             mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            with pytest.raises(MissingToolCallError, match=phase):
-                await getattr(flow, phase)()
+            with pytest.raises(MissingToolCallError, match="critique_review"):
+                await flow._run_phase("critique_review", 4, CriticOutput)
 
-    @pytest.mark.asyncio
-    async def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):
+    def test_no_phase_gives_its_agent_tools(self, monkeypatch):
+        """Every phase is Flow-owned or tool-less: the LLM never calls a tool, so it cannot skip one."""
+        monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+        monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+        from prospect_ai_crew import TaskFactory
+
+        factory = TaskFactory()
+        for phase, cfg in factory._phase_config.items():
+            assert cfg["agent_tools"] == [], phase
+
+    def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):
+        from tests.test_llm_role_audit import (
+            critic_payload, draft_entry, draft_payload, narrative_result, prime_final,
+        )
+        prime_final(flow)
         flow._tracker = ExecutionTracker()
         flow._tracker.start()
         task = _make_task()
         task.tools = []
         flow._factory.build_task.return_value = task
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=CriticOutput), raw="{}")
-        with patch.object(flow, "_make_crew") as mc, \
-             patch.object(flow, "_slim_draft", return_value=""), \
-             patch.object(flow, "_critic_reference_table", return_value=""), \
-             patch.object(flow, "_gated_slim_critique", return_value=""):
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            await flow.critique_review()
-            await flow.final_strategy()
-        assert flow._final_crew_result is crew_result
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(side_effect=[
+                narrative_result(critic_payload()),
+                narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))),
+            ])
+            asyncio.run(flow.critique_review())
+            asyncio.run(flow.final_strategy())
+        assert isinstance(flow.state.critique_output, CriticOutput)
+        assert flow.state.final_output is not None
 
     def test_run_analysis_attaches_partial_metrics_to_missing_tool_call(self, flow):
         def kickoff(inputs=None):
@@ -469,3 +514,174 @@ class TestToolCallGuard:
         with pytest.raises(MissingToolCallError) as info:
             flow.run_analysis({"sector": "Technology"})
         assert info.value.partial_metrics["partial"] is True
+
+
+# ─── Flow-owned phases keep the SSE step contract (plan 02-13, D-16) ──────────
+
+class TestFlowOwnedStepContract:
+    """agent_start first, tool steps with tool/tool_input/log, one task_complete."""
+
+    @staticmethod
+    def _wire(flow, *results):
+        from tests.test_llm_role_audit import market_output, stub_tools, wire_tools
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        flow.state.market_output = market_output()
+        wire_tools(flow, stub_tools())
+        flow._factory.build_task.return_value = _make_task()
+        return events
+
+    @staticmethod
+    def _run(flow, *results):
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+            asyncio.run(flow.fundamental_analysis())
+
+    def test_fundamental_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import narrative_entry, narrative_payload, narrative_result
+
+        events = self._wire(flow)
+        self._run(flow, narrative_result(narrative_payload(narrative_entry("AAA"))))
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 2
+        steps = [e for e in events if e[0] == "step"]
+        assert [s[2].tool for s in steps] == ["fetch_fundamental_data", "grade_fundamental_data"]
+        for _kind, phase_index, step in steps:
+            assert phase_index == 2
+            assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+            assert isinstance(step.log, str) and step.log
+        done = events[-1][1]
+        assert done["task_index"] == 2
+        published = json.dumps(flow.state.fundamental_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
+    def test_draft_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import (
+            draft_entry, draft_payload, narrative_result, prime_draft, wire_tools,
+        )
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        wire_tools(flow, prime_draft(flow), phase="draft_strategy")
+        flow._factory.build_task.return_value = _make_task()
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+            )
+            asyncio.run(flow.draft_strategy())
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 3
+        steps = [e for e in events if e[0] == "step"]
+        assert [s[2].tool for s in steps] == ["compute_composite_scores", "allocate_portfolio"]
+        assert [s[2].log for s in steps] == ["Scoring 2 tickers", "Allocating capital"]
+        for _kind, phase_index, step in steps:
+            assert phase_index == 3
+            assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+        done = events[-1][1]
+        assert done["task_index"] == 3
+        published = json.dumps(flow.state.draft_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
+    def test_retry_does_not_duplicate_events(self, flow):
+        from tests.test_llm_role_audit import narrative_entry, narrative_payload, narrative_result
+
+        events = self._wire(flow)
+        self._run(
+            flow,
+            narrative_result(narrative_payload(narrative_entry("BBB"))),
+            narrative_result(narrative_payload(narrative_entry("AAA"))),
+        )
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds.count("agent_start") == 1
+        assert kinds.count("task_complete") == 1
+        assert kinds.count("step") == 2
+        assert kinds[0] == "agent_start" and kinds[-1] == "task_complete"
+
+
+# ─── Technical phase: SSE contract and overlap with fundamental (plan 02-15, D-16, STALL-02) ──
+
+class TestTechnicalFlowOwned:
+    def test_technical_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import (
+            market_output, narrative_result, tech_narrative_entry, tech_payload, tech_tools, wire_tools,
+        )
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        flow.state.market_output = market_output()
+        wire_tools(flow, tech_tools(), phase="technical_analysis")
+        flow._factory.build_task.return_value = _make_task()
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(
+                side_effect=[narrative_result(tech_payload(tech_narrative_entry("AAA")))]
+            )
+            asyncio.run(flow.technical_analysis())
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 1
+        _kind, phase_index, step = events[1]
+        assert phase_index == 1
+        assert step.tool == "calculate_technical_indicators"
+        assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+        assert isinstance(step.log, str) and step.log
+        done = events[-1][1]
+        assert done["task_index"] == 1
+        published = json.dumps(flow.state.technical_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
+    def test_technical_and_fundamental_tools_overlap(self, flow):
+        """STALL-02: both phases' tool calls are in flight at the same time.
+
+        Each stub tool waits on a shared two-party barrier. If the phases (or the
+        tool calls) ran one after the other, the first would time out alone and the
+        barrier would break.
+        """
+        from tests.test_llm_role_audit import (
+            FETCH_JSON, GRADES_JSON, TECH_RESULT, StubTool, market_output, narrative_entry,
+            narrative_payload, narrative_result, tech_narrative_entry, tech_payload, wire_tools,
+        )
+
+        barrier = threading.Barrier(2, timeout=2)
+
+        class BarrierTool(StubTool):
+            def _run(self, **kwargs):
+                barrier.wait()
+                return super()._run(**kwargs)
+
+        tools = {
+            "calculate_technical_indicators": BarrierTool("calculate_technical_indicators", TECH_RESULT),
+            "fetch_fundamental_data": BarrierTool("fetch_fundamental_data", FETCH_JSON),
+            "grade_fundamental_data": StubTool("grade_fundamental_data", GRADES_JSON),
+        }
+        flow.state.market_output = market_output()
+        wire_tools(flow, tools)
+        flow._factory.build_task.return_value = _make_task()
+        answers = {
+            1: narrative_result(tech_payload(tech_narrative_entry("AAA"))),
+            2: narrative_result(narrative_payload(narrative_entry("AAA"))),
+        }
+
+        def make_crew(task, phase_index):
+            crew = MagicMock()
+            crew.akickoff = AsyncMock(return_value=answers[phase_index])
+            return crew
+
+        async def both():
+            return await asyncio.gather(flow.technical_analysis(), flow.fundamental_analysis())
+
+        with patch.object(flow, "_make_crew", side_effect=make_crew):
+            asyncio.run(both())  # BrokenBarrierError would surface here
+        assert barrier.n_waiting == 0
+        assert flow.state.technical_output is not None and flow.state.fundamental_output is not None

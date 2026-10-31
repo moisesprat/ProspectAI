@@ -4,12 +4,30 @@ Reddit Sentiment Tool - Fetches Reddit posts and calculates stock sentiment for 
 Returns the top 5 most-discussed stocks ranked by mention frequency and sentiment.
 
 Uses Reddit's public JSON endpoints — no OAuth credentials required.
+
+Stall rules (phase 2, plan 02-08, decision D-13). Phase 1 measured this tool at a
+fixed 10.3-14.4 s per run while returning no data in 9/9 sectors: an unconditional
+2 s sleep before every subreddit request, then a failure. A 429 added a 60 s sleep.
+The tool is kept but degrades fast:
+
+- one wall budget per call (TIME_BUDGET_SECONDS, measured with time.monotonic);
+  each request's timeout is capped to the budget that is left;
+- no sleep before the first request; pacing between two successful requests is
+  at most PACING_SECONDS and never longer than the remaining budget;
+- a 429 skips that subreddit at once: no wait, no retry;
+- a circuit breaker stops the tool after MAX_CONSECUTIVE_FAILURES consecutive
+  failed requests (non-200 or request error), so a Reddit outage costs well
+  under 3 s instead of the whole budget;
+- warnings name the subreddit and the status or exception class only, never a
+  URL or exception text.
+When Reddit returns nothing usable the tool returns fallback_required=True and
+no candidate stocks, so downstream sentiment stays null, never 0.0.
 """
 
 import re
 import time
 import warnings
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from crewai.tools import BaseTool
 
 import requests
@@ -26,7 +44,17 @@ class RedditSentimentTool(BaseTool):
     Uses Reddit's unauthenticated public JSON endpoints — no credentials needed.
     Sets fallback_required=True (instead of raising) when data cannot be fetched,
     so the calling agent can switch to SerperDevTool.
+
+    Budget (D-13): the whole call stays inside TIME_BUDGET_SECONDS; a 429 skips
+    the subreddit with no wait; MAX_CONSECUTIVE_FAILURES failed requests in a row
+    open a breaker; pacing between successful requests is at most PACING_SECONDS.
     """
+
+    # Wall budget and failure policy (D-13). Class constants so tests can read them.
+    TIME_BUDGET_SECONDS: ClassVar[float] = 10.0
+    PACING_SECONDS: ClassVar[float] = 1.0
+    MAX_CONSECUTIVE_FAILURES: ClassVar[int] = 2
+    MAX_REQUEST_TIMEOUT_SECONDS: ClassVar[float] = 5.0
 
     name: str = "analyze_sector_reddit_sentiment"
     description: str = """Fetch Reddit posts for a market sector and return the top 5 stocks
@@ -192,8 +220,39 @@ class RedditSentimentTool(BaseTool):
         subreddits_searched = []
         any_success = False
 
+        deadline = time.monotonic() + self.TIME_BUDGET_SECONDS
+        consecutive_failures = 0
+        recent_outcomes: List[str] = []
+        stop_reason = ""
+        pace_next = False
+
         for subreddit_name in subreddits:
-            posts = self._fetch_posts_public(subreddit_name, sort="hot", limit=limit)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop_reason = f"time budget of {self.TIME_BUDGET_SECONDS:g}s spent"
+                break
+
+            # Pace only between a successful request and the next one, never first.
+            if pace_next:
+                time.sleep(min(self.PACING_SECONDS, remaining))
+                pace_next = False
+
+            posts, outcome = self._fetch_posts_public(
+                subreddit_name, sort="hot", limit=limit, deadline=deadline
+            )
+            if outcome == "ok":
+                consecutive_failures = 0
+                pace_next = True
+            else:
+                consecutive_failures += 1
+                recent_outcomes.append(outcome)
+                warnings.warn(f"Reddit r/{subreddit_name} skipped: {self._describe_outcome(outcome)}")
+                if consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                    stop_reason = (
+                        f"breaker open after {consecutive_failures} consecutive failures "
+                        f"({', '.join(recent_outcomes[-consecutive_failures:])})"
+                    )
+                    break
             if posts:
                 any_success = True
                 subreddits_searched.append(subreddit_name)
@@ -225,7 +284,11 @@ class RedditSentimentTool(BaseTool):
                 "raw_post_count": 0,
                 "subreddits_searched": [],
                 "fallback_required": True,
-                "error": "All Reddit public endpoint requests failed. Serper fallback required.",
+                "error": (
+                    "All Reddit public endpoint requests failed"
+                    + (f" ({stop_reason})" if stop_reason else "")
+                    + ". Serper fallback required."
+                ),
             }
 
         # Build ranked list — only include stocks with at least 1 mention
@@ -271,13 +334,63 @@ class RedditSentimentTool(BaseTool):
             "fallback_required": False,
         }
 
+    @staticmethod
+    def _describe_outcome(outcome: str) -> str:
+        """Outcome code to log text: a status or an exception class, never a URL."""
+        if outcome == "rate_limited":
+            return "status 429"
+        if outcome.startswith("http_"):
+            return f"status {outcome[len('http_'):]}"
+        if outcome.startswith("error_"):
+            return f"exception {outcome[len('error_'):]}"
+        return outcome
+
+    def _get_json(
+        self, url: str, params: Dict[str, Any], deadline: float
+    ) -> Tuple[Optional[dict], str]:
+        """
+        One bounded GET against Reddit. Never sleeps, never retries.
+
+        Returns (json, outcome). Outcome is one of "ok", "rate_limited" (429, returned
+        at once), "http_<status>", "error_<ExceptionClass>" or "budget" (nothing left).
+        The request timeout is min(MAX_REQUEST_TIMEOUT_SECONDS, remaining budget).
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "budget"
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers={"User-Agent": _USER_AGENT},
+                timeout=min(self.MAX_REQUEST_TIMEOUT_SECONDS, remaining),
+            )
+            if response.status_code == 429:
+                return None, "rate_limited"
+            if response.status_code != 200:
+                return None, f"http_{response.status_code}"
+            data = response.json()
+            if not isinstance(data, dict):
+                return None, "error_TypeError"
+            return data, "ok"
+        except requests.exceptions.RequestException as exc:
+            return None, f"error_{type(exc).__name__}"
+        except ValueError as exc:
+            return None, f"error_{type(exc).__name__}"
+
+    @staticmethod
+    def _posts_from(data: dict) -> List[Dict[str, Any]]:
+        children = data.get("data", {}).get("children", [])
+        return [child["data"] for child in children if child.get("data")]
+
     def _fetch_posts_public(
         self,
         subreddit: str,
         sort: str = "hot",
         limit: int = 25,
         time_filter: str = "week",
-    ) -> List[Dict[str, Any]]:
+        deadline: Optional[float] = None,
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Fetch posts from a subreddit using Reddit's public JSON endpoint.
         No credentials required.
@@ -287,50 +400,28 @@ class RedditSentimentTool(BaseTool):
             sort:        Listing sort — hot | new | top | rising
             limit:       Number of posts to fetch (max 100)
             time_filter: Time window for top/controversial — hour | day | week | month | year | all
+            deadline:    time.monotonic() value the call must finish by
+                         (default: TIME_BUDGET_SECONDS from now)
 
         Returns:
-            List of post data dicts (child["data"] from Reddit's response).
-            Returns empty list on any error so the caller can continue.
+            (posts, outcome): posts are child["data"] dicts from Reddit's response;
+            the list is empty on any failure so the caller can continue. Outcome is
+            the code from _get_json. No sleeping and no retry here (D-13).
         """
+        if deadline is None:
+            deadline = time.monotonic() + self.TIME_BUDGET_SECONDS
         url = f"{_BASE_URL}/r/{subreddit}/{sort}.json"
         params: Dict[str, Any] = {"limit": limit}
         if sort in ("top", "controversial"):
             params["t"] = time_filter
 
-        time.sleep(2)  # respect unauthenticated rate limit (~10 req/min)
-
+        data, outcome = self._get_json(url, params, deadline)
+        if data is None:
+            return [], outcome
         try:
-            response = requests.get(
-                url,
-                params=params,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=15,
-            )
-
-            if response.status_code == 429:
-                warnings.warn(f"Reddit rate-limited on r/{subreddit}. Sleeping 60s and retrying.")
-                time.sleep(60)
-                response = requests.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": _USER_AGENT},
-                    timeout=15,
-                )
-
-            if response.status_code != 200:
-                warnings.warn(f"Reddit returned HTTP {response.status_code} for r/{subreddit}/{sort}")
-                return []
-
-            data = response.json()
-            children = data.get("data", {}).get("children", [])
-            return [child["data"] for child in children if child.get("data")]
-
-        except requests.exceptions.RequestException as exc:
-            warnings.warn(f"Reddit request failed for r/{subreddit}: {exc}")
-            return []
-        except (KeyError, ValueError) as exc:
-            warnings.warn(f"Reddit response parse error for r/{subreddit}: {exc}")
-            return []
+            return self._posts_from(data), "ok"
+        except (KeyError, AttributeError, TypeError) as exc:
+            return [], f"error_{type(exc).__name__}"
 
     def _search_reddit_public(
         self,
@@ -338,20 +429,24 @@ class RedditSentimentTool(BaseTool):
         sort: str = "relevance",
         time_filter: str = "week",
         limit: int = 25,
-    ) -> List[Dict[str, Any]]:
+        deadline: Optional[float] = None,
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Search Reddit using the public search JSON endpoint.
-        No credentials required.
+        No credentials required. Not used by _run; same budget rules (D-13).
 
         Args:
             query:       Search query string
             sort:        relevance | hot | top | new
             time_filter: hour | day | week | month | year | all
             limit:       Number of results (max 100)
+            deadline:    time.monotonic() value the call must finish by
 
         Returns:
-            List of post data dicts. Returns empty list on any error.
+            (posts, outcome), as _fetch_posts_public. Empty list on any failure.
         """
+        if deadline is None:
+            deadline = time.monotonic() + self.TIME_BUDGET_SECONDS
         url = f"{_BASE_URL}/search.json"
         params: Dict[str, Any] = {
             "q": query,
@@ -360,40 +455,14 @@ class RedditSentimentTool(BaseTool):
             "limit": limit,
         }
 
-        time.sleep(2)  # respect unauthenticated rate limit
-
+        data, outcome = self._get_json(url, params, deadline)
+        if data is None:
+            warnings.warn(f"Reddit search failed: {self._describe_outcome(outcome)}")
+            return [], outcome
         try:
-            response = requests.get(
-                url,
-                params=params,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=15,
-            )
-
-            if response.status_code == 429:
-                warnings.warn(f"Reddit rate-limited on search '{query}'. Sleeping 60s and retrying.")
-                time.sleep(60)
-                response = requests.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": _USER_AGENT},
-                    timeout=15,
-                )
-
-            if response.status_code != 200:
-                warnings.warn(f"Reddit search returned HTTP {response.status_code} for '{query}'")
-                return []
-
-            data = response.json()
-            children = data.get("data", {}).get("children", [])
-            return [child["data"] for child in children if child.get("data")]
-
-        except requests.exceptions.RequestException as exc:
-            warnings.warn(f"Reddit search request failed for '{query}': {exc}")
-            return []
-        except (KeyError, ValueError) as exc:
-            warnings.warn(f"Reddit search parse error for '{query}': {exc}")
-            return []
+            return self._posts_from(data), "ok"
+        except (KeyError, AttributeError, TypeError) as exc:
+            return [], f"error_{type(exc).__name__}"
 
     def _score_sentiment(self, upvotes: int, upvote_ratio: float) -> float:
         """
