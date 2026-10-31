@@ -147,7 +147,7 @@ def test_no_sleep_on_loop_full_run(flow):
         2: narrative_result(narrative_payload(narrative_entry("AAA"))),
         3: narrative_result(draft_payload(draft_entry("AAA"))),
         4: _json_result(_critic()),
-        5: _json_result(_portfolio()),
+        5: narrative_result(draft_payload(draft_entry("AAA"))),
     }
     serper_posts = [_serper_response(503), _serper_response(200, SERPER_BODY)]
     with patch.object(flow, "_make_crew", side_effect=_crew_factory(results, loop_threads)), \

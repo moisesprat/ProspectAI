@@ -42,6 +42,19 @@ def flow():
         yield f
 
 
+def _finalize(flow, structured, risk_profile):
+    """Seed the Flow's own composite scores (a real run has them from the draft phase), then finalize.
+
+    The hand-written scores in these fixtures stand in for what compute_composite_scores returned;
+    _reprice_final_output reads them from state, not from the dict it is given (plan 02-18).
+    """
+    flow.state.composite_scores = {
+        str(p["ticker"]).upper(): {"ticker": str(p["ticker"]).upper(), "composite_score": p["composite_score"]}
+        for p in structured["positions"]
+    }
+    return flow._finalize_and_validate_portfolio(structured, risk_profile)
+
+
 def _technical_output(ticker, entry_zone_low, entry_zone_high, current_price):
     return TechnicalAnalysisOutput(
         sector="Energy",
@@ -75,7 +88,7 @@ class TestFinalStrategistSkippedAllocator:
     def test_flow_overwrites_fabricated_numbers_with_allocator_result(self, flow):
         flow.state.technical_output = _technical_output("XOM", 114.0, 116.5, 118.0)
 
-        repriced = flow._finalize_and_validate_portfolio(FINAL_OUTPUT_SKIPPED_ALLOCATOR, "conservative")
+        repriced = _finalize(flow, FINAL_OUTPUT_SKIPPED_ALLOCATOR, "conservative")
 
         xom = next(p for p in repriced["positions"] if p["ticker"] == "XOM")
         # The fabricated allocation (22.0%) and fabricated zone (117-119) must be
@@ -97,7 +110,7 @@ class TestFinalStrategistSkippedAllocator:
         unchanged = json.loads(json.dumps(FINAL_OUTPUT_SKIPPED_ALLOCATOR))
         unchanged["positions"][0]["action"] = "LONG-BUY"  # already LONG-BUY, no change vs itself
 
-        repriced = flow._finalize_and_validate_portfolio(unchanged, "conservative")
+        repriced = _finalize(flow, unchanged, "conservative")
 
         # Numeric fields still come from the tool, not from the hand-written input.
         assert repriced["positions"][0]["trade_setup"]["entry_zone_low"] == 118.0
@@ -147,7 +160,7 @@ class TestZeroWidthEntryZoneCaught:
             "deployed_pct": 0.0, "reserved_pct": 0.0, "cash_reserve_pct": 100.0,
         }
 
-        repriced = flow._finalize_and_validate_portfolio(structured, "conservative")
+        repriced = _finalize(flow, structured, "conservative")
         assert validate(repriced, "conservative") == []
 
 
@@ -184,7 +197,7 @@ class TestWaitForEntryAtCurrentEntryCaught:
         }
 
         with pytest.raises(BoundsViolationError) as exc_info:
-            flow._finalize_and_validate_portfolio(structured, "conservative")
+            _finalize(flow, structured, "conservative")
         assert any(
             v["rule"] == "wait_for_entry_at_current_entry" and v["ticker"] == "ABBV"
             for v in exc_info.value.violations
@@ -212,7 +225,7 @@ class TestWaitForEntryAtCurrentEntryCaught:
             "deployed_pct": 0.0, "reserved_pct": 15.0, "cash_reserve_pct": 85.0,
         }
 
-        repriced = flow._finalize_and_validate_portfolio(structured, "conservative")
+        repriced = _finalize(flow, structured, "conservative")
         assert repriced["positions"][0]["action"] == "WAIT-FOR-ENTRY"
 
 
@@ -250,7 +263,7 @@ class TestFundamentalsStatusStamped:
         flow.state.fundamental_output = _fundamental_output("MRK", "Medium", "Stable")
 
         # An LLM-written UNKNOWN is overwritten by the deterministic AVAILABLE.
-        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", status="UNKNOWN"), "conservative")
+        repriced = _finalize(flow, _buy_structured("MRK", status="UNKNOWN"), "conservative")
 
         assert repriced["positions"][0]["fundamentals_status"] == "AVAILABLE"
 
@@ -258,7 +271,7 @@ class TestFundamentalsStatusStamped:
         flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
         flow.state.fundamental_output = None
 
-        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", status="AVAILABLE"), "conservative")
+        repriced = _finalize(flow, _buy_structured("MRK", status="AVAILABLE"), "conservative")
 
         assert repriced["positions"][0]["fundamentals_status"] is None
 
@@ -266,7 +279,7 @@ class TestFundamentalsStatusStamped:
         flow.state.technical_output = _technical_output("MRK", 100.0, 105.0, 108.0)
         flow.state.fundamental_output = _fundamental_output("MRK", "UNKNOWN", "Stable")
 
-        repriced = flow._finalize_and_validate_portfolio(_buy_structured("MRK", action="MONITOR"), "conservative")
+        repriced = _finalize(flow, _buy_structured("MRK", action="MONITOR"), "conservative")
 
         assert repriced["positions"][0]["fundamentals_status"] == "UNKNOWN"
 
@@ -278,7 +291,7 @@ class TestBuyOnUnknownFundamentalsCaught:
         flow.state.fundamental_output = _fundamental_output("MRK", "Low", "UNKNOWN")
 
         with pytest.raises(BoundsViolationError) as exc_info:
-            flow._finalize_and_validate_portfolio(_buy_structured("MRK", action=action), "conservative")
+            _finalize(flow, _buy_structured("MRK", action=action), "conservative")
 
         assert any(
             v["rule"] == "buy_with_unknown_fundamentals" and v["ticker"] == "MRK"

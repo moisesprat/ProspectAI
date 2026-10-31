@@ -402,11 +402,6 @@ class CritiqueItem(BaseModel):
     finding: str = Field(..., min_length=30)
     instruction: str = Field(..., min_length=30)
 
-    @field_validator("severity", mode="before")
-    @classmethod
-    def _upper(cls, v: object) -> object:
-        return v.upper() if isinstance(v, str) else v
-
 
 class CriticOutput(BaseModel):
     sector: str

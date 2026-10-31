@@ -1922,7 +1922,6 @@ def test_final_missing_position_is_retried_and_named(flow):
     full = narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
     assert run_final(flow, short, full).await_count == 2
     assert "positions[BBB]" in flow._factory.build_task.call_args_list[-1].kwargs["feedback"]
-    assert "final_strategy" in flow._factory.build_task.call_args_list[-1].kwargs["feedback"]
     with pytest.raises(PhaseSchemaError) as info:
         run_final(flow, short, short, short)
     assert info.value.phase == FINAL_PHASE and "positions[BBB]" in str(info.value)

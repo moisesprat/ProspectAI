@@ -113,7 +113,7 @@ class TestTaskFactoryWiring:
                 seen += 1
                 assert tool._prospectai_timed_phase == phase
                 assert instrument_tool(tool, phase, lambda: tracker) is tool
-        assert seen == 7
+        assert seen == 8        # reddit, serper, indicators, fetch, grade, composite, allocator (draft), allocator (final)
         # The market phase is Flow-owned (plan 02-16): its tools are called by the Flow.
         assert factory._phase_config["market_analysis"]["agent_tools"] == []
         assert factory.search_tool in factory._phase_config["market_analysis"]["flow_tools"].values()

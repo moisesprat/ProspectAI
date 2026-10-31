@@ -50,6 +50,7 @@ from utils.strategy_assembly import (
     allocator_payload,
     assemble_strategy,
     clamp_actions,
+    clamp_warnings,
     composite_inputs,
     eligible_by_ticker,
     excluded_tickers,
@@ -57,6 +58,7 @@ from utils.strategy_assembly import (
     parse_allocation,
     parse_composite_scores,
     policy_context_by_ticker,
+    require_composite_scores,
     require_position_coverage,
     scores_context,
 )
@@ -867,21 +869,37 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         positions, clamps = clamp_actions(
             ordered_positions(narrative, tickers), eligible,
             policy_context_by_ticker(to, fundamentals, risk_profile),
+            phase=phase,
         )
         self.state.policy_clamps = clamps
-        technical_by_ticker = {a.ticker.upper(): a for a in to.technical_analysis}
-        allocation = parse_allocation(await call_tool(
-            self._factory.flow_tool(phase, "allocate_portfolio"),
-            phase_index=3, step_callback=self._step_callback,
-            thought="Allocating capital",
-            stocks_json=json.dumps(allocator_payload(positions, composite, technical_by_ticker, risk_profile)),
-        ))
-        self.state.draft_output = assemble_strategy(
-            sector, risk_profile, positions, composite, technical_by_ticker, fundamentals,
-            allocation, narrative.overall_strategy,
+        self.state.draft_output = await self._allocate_and_assemble(
+            phase, 3, positions, composite, narrative.overall_strategy,
         )
         self._emit_progress_model(3, self.state.draft_output, result)
         return result.raw or ""
+
+    async def _allocate_and_assemble(
+        self, phase: str, index: int, positions: List[Any],
+        composite: Dict[str, Dict[str, Any]], overall_strategy: str,
+    ) -> InvestorStrategicOutput:
+        """Allocator (tool, off the loop) on the clamped actions, then the published model.
+
+        Shared by the draft and the final phase: every number comes from ``composite`` (the
+        Flow's scores), the allocator, and the technical and fundamental records.
+        """
+        sector, risk_profile = self.state.sector, self.state.risk_profile
+        to = self.state.technical_output
+        technical_by_ticker = {a.ticker.upper(): a for a in to.technical_analysis}
+        allocation = parse_allocation(await call_tool(
+            self._factory.flow_tool(phase, "allocate_portfolio"),
+            phase_index=index, step_callback=self._step_callback,
+            thought="Allocating capital",
+            stocks_json=json.dumps(allocator_payload(positions, composite, technical_by_ticker, risk_profile)),
+        ))
+        return assemble_strategy(
+            sector, risk_profile, positions, composite, technical_by_ticker,
+            self._fundamentals_status_by_ticker(), allocation, overall_strategy,
+        )
 
     @listen(draft_strategy)
     async def critique_review(self):
@@ -900,19 +918,56 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     @listen(critique_review)
     async def final_strategy(self):
+        """Flow-owned phase (CORR-10, D-08, D-14, D-15): the LLM weighs the Critic and chooses the
+        final action per ticker with its rationale, triggers, cadence and the overall strategy;
+        the Flow clamps, allocates and assembles.
+
+        The context is the Flow-numbered draft, the gated Critic output and each ticker's
+        score and eligible actions. After the answer the Flow clamps every action to its
+        eligible set (records join the draft's in ``state.policy_clamps``), takes
+        composite_score from the draft's Flow scores (a missing one fails closed), runs the
+        allocator and assembles the ``InvestorStrategicOutput`` that ``run_analysis`` then
+        reprices and validates with PortfolioBoundsValidator. Neither this answer nor the
+        Critic's can set a number, a status or the risk level. The agent has no tools.
+        """
         self._check_error()
         self._emit_start(5)
+        phase = "final_strategy"
+        risk_profile = self.state.risk_profile
+        mo, to, fo = self.state.market_output, self.state.technical_output, self.state.fundamental_output
+        if self.state.draft_output is None or to is None or not to.technical_analysis:
+            raise RuntimeError(f"{phase}: no draft strategy to revise")
+
+        inputs = composite_inputs(mo, to, fo)
+        tickers = [item["ticker"] for item in inputs]
+        composite = self.state.composite_scores
+        require_composite_scores(composite, tickers)
+        fundamentals = self._fundamentals_status_by_ticker()
+        eligible = eligible_by_ticker(to, fundamentals, risk_profile)
         ctx = "\n\n".join([
             self._fmt_ctx("Draft Strategy Output", self._slim_draft()),
             self._fmt_ctx("Critic Review Output", self._gated_slim_critique()),
+            self._fmt_ctx(
+                "Scores and eligible actions (computed by the pipeline)",
+                scores_context(inputs, composite, eligible, excluded_tickers(mo, to)),
+            ),
         ])
-        # Same schema validation and retry as every other phase; the validated
-        # model is what run_analysis publishes (no lenient parse, D-12).
-        result, self.state.final_output = await self._run_phase(
-            "final_strategy", 5, InvestorStrategicOutput,
-            build_args=(ctx,), build_kwargs={"risk_profile": self.state.risk_profile},
+        result, narrative = await self._run_phase(
+            phase, 5, StrategyNarrativeOutput,
+            build_args=(ctx,), build_kwargs={"risk_profile": risk_profile},
+            validate=lambda n: require_position_coverage(n, tickers, phase),
         )
-        self._emit_progress(5, result)
+
+        positions, clamps = clamp_actions(
+            ordered_positions(narrative, tickers), eligible,
+            policy_context_by_ticker(to, fundamentals, risk_profile),
+            phase=phase,
+        )
+        self.state.policy_clamps = [*self.state.policy_clamps, *clamps]
+        self.state.final_output = await self._allocate_and_assemble(
+            phase, 5, positions, composite, narrative.overall_strategy,
+        )
+        self._emit_progress_model(5, self.state.final_output, result)
         return result.raw or ""
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -922,10 +977,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         """Re-invoke allocate_portfolio against the Final Strategist's decided
         actions and overwrite all numeric allocation/trade-setup fields on the
         final output. Entry zones and current prices are read from the
-        deterministic Phase-2 technical output, never from the LLM's own
-        (possibly fabricated) trade_setup — only `action` and `composite_score`
-        are trusted from the Final Strategist output. Runs unconditionally,
-        even when no action changed relative to the draft.
+        deterministic Phase-2 technical output and the composite score from the
+        Flow's own scores (``state.composite_scores``), never from the LLM or
+        from the dict passed in — only `action` is taken from ``structured``.
+        A ticker with no Flow score raises BoundsViolationError
+        (``composite_score_missing``): fail closed, never a 0.0 default.
+        Runs unconditionally, even when no action changed relative to the draft.
         """
         technical_by_ticker: Dict[str, Any] = {}
         if self.state.technical_output:
@@ -933,6 +990,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 technical_by_ticker[t.ticker.upper()] = t
 
         positions = structured.get("positions", [])
+        require_composite_scores(
+            self.state.composite_scores, [str(pos.get("ticker", "")).upper() for pos in positions],
+        )
         stocks_payload = []
         for pos in positions:
             ticker = str(pos.get("ticker", "")).upper()
@@ -952,7 +1012,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             stocks_payload.append({
                 "ticker":          ticker,
                 "action":          pos.get("action", "MONITOR"),
-                "composite_score": pos.get("composite_score", 0.0),
+                "composite_score": float(self.state.composite_scores[ticker]["composite_score"]),
                 "entry_zone_low":  entry_zone_low,
                 "entry_zone_high": entry_zone_high,
                 "current_price":   current_price,
@@ -1094,11 +1154,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 {"severity": i.severity, "ticker": i.ticker, "field": i.field, "message": i.message}
                 for i in validation_issues
             ]
-            # One warning per draft action the policy clamp changed, so a clamp is never silent (D-08).
-            validation_warnings += [
-                {"severity": "warning", "ticker": c["ticker"], "field": "action", "message": c["message"]}
-                for c in self.state.policy_clamps
-            ]
+            # One warning per action the policy clamp changed (draft or final), so a clamp is never
+            # silent (D-08); a warning names the published action when a later phase changed it again.
+            validation_warnings += clamp_warnings(
+                self.state.policy_clamps,
+                {str(p.get("ticker", "")).upper(): p.get("action") for p in structured.get("positions", [])},
+            )
             if validation_warnings:
                 structured["validation_warnings"] = validation_warnings
         except Exception as exc:

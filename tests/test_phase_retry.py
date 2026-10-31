@@ -384,7 +384,6 @@ from tests.test_llm_role_audit import (  # noqa: E402
     tech_tools,
     wire_tools,
 )
-from tests.test_schemas import _portfolio  # noqa: E402
 from utils.execution_tracker import ExecutionTracker  # noqa: E402
 
 _PHASE_METHODS = [
@@ -393,7 +392,7 @@ _PHASE_METHODS = [
     ("fundamental_analysis", FundamentalNarrativeOutput),
     ("draft_strategy", StrategyNarrativeOutput),
     ("critique_review", CriticOutput),
-    ("final_strategy", InvestorStrategicOutput),
+    ("final_strategy", StrategyNarrativeOutput),
 ]
 
 
@@ -409,7 +408,7 @@ def _stub_result(schema):
         # A real model: the Flow-owned technical phase checks narrative coverage.
         model = TechnicalNarrativeOutput.model_validate(tech_payload(tech_narrative_entry("AAA")))
     elif schema is StrategyNarrativeOutput:
-        # A real model: the Flow-owned draft phase checks position coverage (tracked_flow primes AAA and BBB).
+        # A real model: the Flow-owned draft and final phases check position coverage (tracked_flow primes AAA and BBB).
         model = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
     else:
         model = MagicMock(spec=schema)
@@ -434,14 +433,19 @@ def _patch_context(flow):
 
 @pytest.fixture
 def tracked_flow(flow):
-    flow._tracker = ExecutionTracker()
-    flow._tracker.start()
     flow._factory.build_task.return_value = _task()
-    # The market, fundamental, technical and draft phases are Flow-owned (plans 02-16, 02-13,
-    # 02-15, 02-17): they need flow tools, and the later ones need candidates and prior outputs.
+    # The market, fundamental, technical, draft and final phases are Flow-owned (plans 02-16, 02-13,
+    # 02-15, 02-17, 02-18): they need flow tools, and the later ones need candidates and prior outputs.
     flow.state.market_output = market_output()
     draft = prime_draft(flow)
     wire_tools(flow, {**stub_tools(), **tech_tools(), **market_tools(), **draft})
+    # The final phase revises the draft and reuses its Flow scores: run the draft once, untracked, so the
+    # tracked metrics below start clean.
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(return_value=_stub_result(StrategyNarrativeOutput))
+        asyncio.run(flow.draft_strategy())
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
     stack = _patch_context(flow)
     yield flow
     for p in stack:
@@ -478,8 +482,7 @@ def test_each_phase_fails_after_three_attempts(tracked_flow, phase, schema):
 def test_final_phase_validated(tracked_flow):
     """An invalid final payload exhausts retries; there is no lenient parse fallback (D-12)."""
     flow = tracked_flow
-    payload = _portfolio().model_dump(mode="json")
-    payload["positions"][0]["action"] = "HOLD"
+    payload = draft_payload(draft_entry("AAA", "HOLD"), draft_entry("BBB"))
     task_out = SimpleNamespace(pydantic=None, json_dict=None)
     invalid = SimpleNamespace(raw=json.dumps(payload), tasks_output=[task_out], token_usage=MagicMock())
     with patch.object(flow, "_make_crew") as mc:
@@ -493,10 +496,11 @@ def test_final_phase_validated(tracked_flow):
 
 
 def test_final_phase_stores_validated_model_and_run_analysis_uses_it(flow):
-    valid = _portfolio()
-    task_out = SimpleNamespace(pydantic=None, json_dict=None)
-    result = SimpleNamespace(raw=valid.model_dump_json(), tasks_output=[task_out], token_usage=MagicMock())
+    from tests.test_llm_role_audit import narrative_result, prime_final
+
     flow._factory.build_task.return_value = _task()
+    prime_final(flow)
+    result = narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB")))
     seen = {}
 
     def kickoff(inputs=None):
@@ -514,7 +518,9 @@ def test_final_phase_stores_validated_model_and_run_analysis_uses_it(flow):
     with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=finalize):
         flow.run_analysis({"sector": "Technology"})
     assert isinstance(flow.state.final_output, InvestorStrategicOutput)
-    assert seen["structured"] == flow.state.final_output.model_dump(mode="json")
+    # run_analysis adds validation_warnings to the dict it publishes (the fixture's zero-width zone warns).
+    published = {k: v for k, v in seen["structured"].items() if k != "validation_warnings"}
+    assert published == flow.state.final_output.model_dump(mode="json")
     assert "parse_error" not in seen["structured"]
 
 
@@ -530,7 +536,7 @@ def test_draft_and_final_budgets_independent(tracked_flow):
     with patch.object(flow, "_make_crew") as mc:
         mc.return_value.akickoff = AsyncMock(side_effect=[
             bad, bad, _stub_result(StrategyNarrativeOutput),   # draft: 2 failures, then ok
-            bad, bad, _stub_result(InvestorStrategicOutput),   # final: full budget again
+            bad, bad, _stub_result(StrategyNarrativeOutput),   # final: full budget again
         ])
         asyncio.run(flow.draft_strategy())
         asyncio.run(flow.final_strategy())

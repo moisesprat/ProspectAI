@@ -1,4 +1,10 @@
-"""Flow-built draft strategy and the merge with the LLM's narrative (CORR-10, D-08, D-15).
+"""Flow-built draft and final strategy and the merge with the LLM's narrative (CORR-10, D-08, D-15).
+
+The draft phase (plan 02-17) and the final phase (plan 02-18) share every helper here: both
+ask the LLM for a ``StrategyNarrativeOutput`` and the Flow builds the published
+``InvestorStrategicOutput`` from it. The final phase reuses the Flow's composite scores from
+the draft (``ProspectAIFlowState.composite_scores``, ``require_composite_scores`` fails closed
+when one is missing) and records its own clamps next to the draft's, each tagged with its phase.
 
 The Draft Strategist used to compose the composite-score input from context (number
 reshaping), choose an action, compose the allocator input, copy the allocator's output
@@ -35,7 +41,10 @@ Order of work in ``ProspectAIFlow.draft_strategy``:
    indicators failed never reaches this phase: plan 02-15 records it in failed_tickers
    and excludes it upstream, which is why there is no price_data_error argument here.
    The monitoring triggers the LLM wrote for the original action are kept; the Critic
-   reviews the clamped position like any other.
+   reviews the clamped position like any other. Each clamp record carries its ``phase``
+   and its message says "draft" or "final", so a warning never claims more than it
+   describes; ``clamp_warnings`` adds the finally published action when a later phase
+   changed the action again.
 5. ``allocator_payload`` builds the allocator input from the clamped actions, the Flow's
    scores and the technical record (entry zone and price); the Flow calls the allocator.
 6. ``assemble_strategy`` builds ``InvestorStrategicOutput``: ``composite_score`` from the
@@ -169,6 +178,21 @@ def parse_composite_scores(raw: Any, tickers: Sequence[str]) -> Dict[str, Dict[s
     return {t: scores[t] for t in tickers}
 
 
+def require_composite_scores(composite_by_ticker: Dict[str, Dict[str, Any]], tickers: Sequence[str]) -> None:
+    """Fail closed (BoundsViolationError, rule ``composite_score_missing``) when a ticker has no Flow score.
+
+    The score is never defaulted: a missing one means the Flow's own scoring did not cover the
+    ticker, and a published number must come from a tool, not from 0.0 or from the LLM.
+    """
+    missing = [t for t in tickers if not isinstance((composite_by_ticker.get(t) or {}).get("composite_score"), (int, float))]
+    if missing:
+        raise BoundsViolationError([
+            {"ticker": t, "rule": "composite_score_missing",
+             "expected": "a composite score computed by the Flow", "actual": "none"}
+            for t in missing
+        ])
+
+
 # ── Policy: eligible actions and the clamp ─────────────────────────────────────
 
 def policy_context_by_ticker(
@@ -220,16 +244,24 @@ def policy_rule(
     return "; ".join(parts) or f"{action} is not an eligible action for this ticker"
 
 
+def _stage(phase: str) -> str:
+    """'draft_strategy' -> 'draft', 'final_strategy' -> 'final' (the word a clamp message uses)."""
+    return phase.split("_", 1)[0]
+
+
 def clamp_actions(
     positions: Sequence[PositionNarrative],
     eligible: Dict[str, frozenset],
     context: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+    phase: str = PHASE,
 ) -> Tuple[List[PositionNarrative], List[Dict[str, Any]]]:
     """(positions, clamp records): an ineligible action becomes MONITOR with a fixed rationale sentence.
 
     ``context`` (from ``policy_context_by_ticker``) lets the rule name the restricting row;
     without it the rule lists the eligible actions. A ticker with no entry in ``eligible``
-    is left alone. Inputs are not mutated; a clamped position is a copy.
+    is left alone. Inputs are not mutated; a clamped position is a copy. ``phase`` is the
+    phase whose action was clamped; it is recorded and named in the message ("draft action"
+    or "final action").
     """
     out: List[PositionNarrative] = []
     clamps: List[Dict[str, Any]] = []
@@ -256,10 +288,32 @@ def clamp_actions(
             "from_action": position.action,
             "to_action": CLAMP_ACTION,
             "rule": rule,
-            "message": f"{ticker}: draft action {position.action} set to {CLAMP_ACTION} by policy: {rule}",
+            "phase": phase,
+            "message": f"{ticker}: {_stage(phase)} action {position.action} set to {CLAMP_ACTION} by policy: {rule}",
         })
-        logger.warning("%s: %s", PHASE, clamps[-1]["message"])
+        logger.warning("%s: %s", phase, clamps[-1]["message"])
     return out, clamps
+
+
+def clamp_warnings(
+    clamps: Sequence[Dict[str, Any]], published_actions: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """One validation warning per clamp record (a clamp is never silent, D-08).
+
+    ``published_actions`` maps ticker to the action the report finally publishes. A clamp
+    describes the phase that made it, so when a later phase published a different action for
+    that ticker the warning ends with "The published action is X." and never leaves the reader
+    to assume the clamped action is the one in the report. A ticker with no published position
+    gets the clamp's own message unchanged.
+    """
+    warnings: List[Dict[str, Any]] = []
+    for clamp in clamps:
+        message = clamp["message"]
+        published = published_actions.get(clamp["ticker"])
+        if published is not None and published != clamp["to_action"]:
+            message += f" The published action is {published}."
+        warnings.append({"severity": "warning", "ticker": clamp["ticker"], "field": "action", "message": message})
+    return warnings
 
 
 # ── What the LLM reads, and what it must cover ─────────────────────────────────
@@ -310,15 +364,17 @@ def scores_context(
     })
 
 
-def _coverage_error(fields: List[str], what: str, advice: str) -> PhaseOutputError:
+def _coverage_error(fields: List[str], what: str, advice: str, phase: str = PHASE) -> PhaseOutputError:
     return PhaseOutputError(
-        f"{PHASE}: {what}; fields: {', '.join(fields)}",
+        f"{phase}: {what}; fields: {', '.join(fields)}",
         fields,
         [{"loc": (f,), "msg": advice} for f in fields],
     )
 
 
-def require_position_coverage(narrative: Optional[StrategyNarrativeOutput], tickers: Sequence[str]) -> None:
+def require_position_coverage(
+    narrative: Optional[StrategyNarrativeOutput], tickers: Sequence[str], phase: str = PHASE,
+) -> None:
     """Raise PhaseOutputError naming ``positions[T]`` for each ticker without a position or named twice.
 
     A position for a ticker outside ``tickers`` is not an error here; ``ordered_positions`` drops it.
@@ -329,10 +385,14 @@ def require_position_coverage(narrative: Optional[StrategyNarrativeOutput], tick
         seen[key] = seen.get(key, 0) + 1
     missing = [f"positions[{t}]" for t in tickers if t not in seen]
     if missing:
-        raise _coverage_error(missing, "positions missing for tickers with scores", "add this ticker's position")
+        raise _coverage_error(
+            missing, "positions missing for tickers with scores", "add this ticker's position", phase,
+        )
     twice = [f"positions[{t}]" for t in tickers if seen.get(t, 0) > 1]
     if twice:
-        raise _coverage_error(twice, "tickers named more than once", "keep exactly one position for this ticker")
+        raise _coverage_error(
+            twice, "tickers named more than once", "keep exactly one position for this ticker", phase,
+        )
 
 
 def ordered_positions(narrative: StrategyNarrativeOutput, tickers: Sequence[str]) -> List[PositionNarrative]:

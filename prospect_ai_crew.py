@@ -23,7 +23,6 @@ from schemas.agent_outputs import (
     TechnicalNarrativeOutput,
     FundamentalNarrativeOutput,
     StrategyNarrativeOutput,
-    InvestorStrategicOutput,
     CriticOutput,
 )
 
@@ -32,15 +31,18 @@ from schemas.agent_outputs import (
 # contract test (tests/test_task_output_specs.py): the schema is the source of truth
 # (D-10). For market_analysis, technical_analysis and fundamental_analysis that is the
 # narrative model; the Flow merges it into MarketAnalysisOutput / TechnicalAnalysisOutput /
-# FundamentalAnalysisOutput. For draft_strategy it is StrategyNarrativeOutput; the Flow scores
-# before the LLM and allocates after it and assembles the published InvestorStrategicOutput.
+# FundamentalAnalysisOutput. For draft_strategy and final_strategy it is StrategyNarrativeOutput;
+# the Flow clamps the action and allocates after the LLM and assembles the published
+# InvestorStrategicOutput (the draft also scores before it, the final reuses those scores).
+# critique_review is the one phase whose model is also the published shape (CriticOutput carries
+# no number that reaches the report).
 PHASE_OUTPUT_MODELS = {
     "market_analysis":      MarketNarrativeOutput,
     "technical_analysis":   TechnicalNarrativeOutput,
     "fundamental_analysis": FundamentalNarrativeOutput,
     "draft_strategy":       StrategyNarrativeOutput,
     "critique_review":      CriticOutput,
-    "final_strategy":       InvestorStrategicOutput,
+    "final_strategy":       StrategyNarrativeOutput,
 }
 
 
@@ -119,7 +121,7 @@ class TaskFactory:
             "final_strategy": {
                 "agent":       self.investor_strategist.get_agent(),
                 "agent_tools": [],
-                "flow_tools":  {},
+                "flow_tools":  self._timed_by_name("final_strategy", [PortfolioAllocatorTool()]),
             },
         }
 

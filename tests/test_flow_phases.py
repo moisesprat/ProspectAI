@@ -289,15 +289,17 @@ class TestCritiqueReviewPhase:
 
 
 class TestFinalStrategyPhase:
-    @pytest.mark.asyncio
-    async def test_stores_validated_final_output(self, flow):
-        pydantic_out = MagicMock(spec=InvestorStrategicOutput)
-        crew_result = _make_crew_result(pydantic_out=pydantic_out)
+    def test_stores_validated_final_output(self, flow):
+        from tests.test_llm_role_audit import draft_entry, draft_payload, narrative_result, prime_final
+        prime_final(flow)
         flow._factory.build_task.return_value = _make_task()
         with patch.object(flow, "_make_crew") as mc:
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            await flow.final_strategy()
-        assert flow.state.final_output is pydantic_out
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB")))
+            )
+            asyncio.run(flow.final_strategy())
+        assert isinstance(flow.state.final_output, InvestorStrategicOutput)
+        assert [p.ticker for p in flow.state.final_output.positions] == ["AAA", "BBB"]
 
     @pytest.mark.asyncio
     async def test_aborts_on_error_state(self, flow):
@@ -483,21 +485,24 @@ class TestToolCallGuard:
         for phase, cfg in factory._phase_config.items():
             assert cfg["agent_tools"] == [], phase
 
-    @pytest.mark.asyncio
-    async def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):
+    def test_toolless_critic_and_final_bodies_run_with_tracker(self, flow):
+        from tests.test_llm_role_audit import (
+            critic_payload, draft_entry, draft_payload, narrative_result, prime_final,
+        )
+        prime_final(flow)
         flow._tracker = ExecutionTracker()
         flow._tracker.start()
         task = _make_task()
         task.tools = []
         flow._factory.build_task.return_value = task
-        crew_result = _make_crew_result(pydantic_out=MagicMock(spec=CriticOutput), raw="{}")
-        with patch.object(flow, "_make_crew") as mc, \
-             patch.object(flow, "_slim_draft", return_value=""), \
-             patch.object(flow, "_critic_reference_table", return_value=""), \
-             patch.object(flow, "_gated_slim_critique", return_value=""):
-            mc.return_value.akickoff = AsyncMock(return_value=crew_result)
-            await flow.critique_review()
-            await flow.final_strategy()
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(side_effect=[
+                narrative_result(critic_payload()),
+                narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))),
+            ])
+            asyncio.run(flow.critique_review())
+            asyncio.run(flow.final_strategy())
+        assert isinstance(flow.state.critique_output, CriticOutput)
         assert flow.state.final_output is not None
 
     def test_run_analysis_attaches_partial_metrics_to_missing_tool_call(self, flow):
