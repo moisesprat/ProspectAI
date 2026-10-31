@@ -310,6 +310,13 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Deterministic numbers in every phase
+- Every number and grade in a report is now computed from live data by the pipeline. The AI model only writes the commentary and chooses each stock's action. A stock whose fundamentals cannot be graded is marked as unavailable and can only be Monitor or Avoid.
+- For package users: the `technical_score` field is removed from technical analyses and the `overall` grade is removed from fundamental ratings. New optional fields `data_status`, `fundamentals_status` and `failed_tickers` were added, and a stock's mention count and relevance score can now be empty.
+- When web search is the only sentiment source, sentiment is reported as unavailable instead of being guessed by the model.
+- An invalid model answer for a step is retried at most twice, then the analysis stops with an error naming that step.
+- Reddit lookups now give up after 10 seconds, so a slow source no longer stalls a run.
+
 ### v1.10.1 — Reliable live data on Claude Haiku 5.5
 - Fixed an issue where the market, technical and fundamental analysis steps could skip fetching live data and answer from the model alone. They now always fetch their data first.
 

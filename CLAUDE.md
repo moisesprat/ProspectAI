@@ -86,25 +86,29 @@ InvestorStrategicAgent (final revision — actions/rationale only)
    validated result
 ```
 
-As of `reasoning-depth-action-selection`, **the only LLM-owned decision in the whole pipeline is which of the 4 valid actions (`LONG-BUY`/`WAIT-FOR-ENTRY`/`MONITOR`/`AVOID`) to assign to each ticker, and the rationale for it.** Every number that reaches the final output — composite score inputs, allocation %, entry zone, stop-loss, take-profit, bounds compliance — is computed by deterministic code and is never trusted from LLM output, even when the LLM echoes a number back. See "LLM vs. deterministic responsibility per phase" below for the full breakdown.
+As of Phase 2 (`CORR-10`), **every phase is Flow-owned: the Flow calls every tool itself and builds every record, number, grade and label; the LLM writes only narrative fields and, in the two strategy phases, the action (`LONG-BUY`/`WAIT-FOR-ENTRY`/`MONITOR`/`AVOID`) with its rationale.** No agent is handed a tool. A number or grade the LLM might echo has no field to land in: each phase asks the LLM for a narrative-only model (`MarketNarrativeOutput`, `TechnicalNarrativeOutput`, `FundamentalNarrativeOutput`, `StrategyNarrativeOutput`), pydantic ignores extra keys, and the Flow merges the narrative with its own records into the published schema. See "LLM vs. deterministic responsibility per phase" below for the full breakdown.
 
-1. **MarketAnalystAgent** — calls `RedditSentimentTool` (or `PatientSerperDevTool` fallback); LLM extracts up to 5 tickers and writes sentiment rationale. Deterministic: `CandidateUniverseFilter` (`utils/candidate_universe_filter.py`) strips sector-benchmark/broad-market ETFs from the LLM's candidate list after this phase, uniformly for both the Reddit and Serper paths.
-2. **TechnicalAnalystAgent** — calls `TechnicalAnalysisTool` (batch, all tickers at once); 13+ indicators (RSI, MACD, BB, ATR, etc.) via `yfinance` + `ta`. `TechnicalInterpretationTool` deterministically computes `momentum_score`, `entry_zone_low/high`, `entry_zone_status`, and `risk_level` from the raw indicators — the LLM only writes `overall_signal`/`key_signals` as its reading of those numbers, and copies the rest verbatim.
-3. **FundamentalAnalystAgent** — calls `FundamentalDataTool` then `FundamentalGraderTool` (both batch, deterministic grading). Phases 2 and 3 run in parallel after Phase 1. The LLM only writes `risk_factors`/`catalysts`/`fundamental_summary`; all grades (`valuation_grade`, `financial_health`, `growth_outlook`) are copied verbatim from the tool.
-4. **InvestorStrategicAgent (draft)** — calls `CompositeScoreTool` (deterministic weighted blend) then reasons over the resulting signals to decide **one action per ticker**, weighing technical/fundamental/sentiment signals holistically with no fixed decision table — only two facts are hard invariants (`entry_zone_status=CURRENT_ENTRY` excludes `WAIT-FOR-ENTRY`; `price_data_error` caps at `MONITOR`/`AVOID`). It then calls `PortfolioAllocatorTool` with its decided actions to get allocation %/trade-setup numbers — the LLM never computes those itself, only copies them into the draft.
-5. **CriticAgent** — adversarial review of the draft's *reasoning*, not its numbers (allocation caps, stop%, R/R, bucket sums are explicitly out of scope — `PortfolioBoundsValidator` and `ActionPolicyGate` cover those deterministically downstream, and the Critic has no authority to fix a numeric field anyway). Outputs `revision_directives` and `per_ticker_critiques` (both may legitimately be empty on a clean draft). `ActionPolicyGate` (`utils/action_policy_gate.py`) deterministically drops any directive/critique that orders an action outside the `entry_zone_status × risk_profile` policy table before it reaches Phase 6 — this table only excludes `WAIT-FOR-ENTRY` at `CURRENT_ENTRY`/`BELOW_ZONE`; `LONG-BUY` is permitted at every `entry_zone_status`, including `BELOW_ZONE`.
-6. **InvestorStrategicAgent (final)** — weighs the Critic's directives as a second analyst's counter-argument (every CRITICAL/MAJOR item must be explicitly adopted or rebutted with cited evidence) and decides the final action/rationale per ticker. Calls no tools. `ProspectAIFlow` — not the LLM — always re-invokes `PortfolioAllocatorTool` afterward (reading entry zones from the deterministic Phase-2 technical output, never from the LLM's own trade_setup) and overwrites every numeric allocation/trade-setup field, then validates the result with `PortfolioBoundsValidator` (fail-closed: one repair re-invocation, then raises `BoundsViolationError` rather than publishing a non-compliant result).
+1. **MarketAnalystAgent** — the Flow calls `RedditSentimentTool` and, when Reddit asks for fallback, `PatientSerperDevTool` with a fixed query (`<sector> sector stocks investors discussing <today>`), both off the event loop (`utils/flow_tools.call_tool`), and builds the corpus (`utils/market_records.py`). The LLM picks up to 5 tickers from that corpus (on the Reddit path only from the measured candidates) and writes a rationale per pick and the summary. Deterministic: `mention_count`, `relevance_score` and `average_sentiment` are measured by the Flow (null when no source measured them); `CandidateUniverseFilter` (`utils/candidate_universe_filter.py`) strips sector-benchmark/broad-market ETFs afterward, uniformly for both paths.
+2. **TechnicalAnalystAgent** — the Flow calls `TechnicalAnalysisTool` (batch, all tickers at once; 13+ indicators via `yfinance` + `ta`) and builds every record (`utils/technical_records.py`): `current_price`, raw indicators, `momentum_score`, `risk_level`, entry zone and status, `regime`, and `trend_strength` from ADX thresholds. The LLM writes only `overall_signal` (a strict Literal), `key_signals`, `comprehensive_analysis`, `investment_recommendation` and the summary. A ticker whose indicators fail goes to `failed_tickers` and is excluded from later phases; if every ticker fails the phase raises.
+3. **FundamentalAnalystAgent** — the Flow calls `FundamentalDataTool` then `FundamentalGraderTool` (batch, deterministic) and builds company name, `ValuationMetrics`, the three labels and `data_status` (`utils/fundamental_records.py`). The LLM writes only `key_strengths`, `key_risks`, `investment_thesis` and the summary. A failed fetch becomes `data_status: "failed"` with `UNKNOWN` labels, null metrics and fixed text. Phases 2 and 3 run in parallel after Phase 1.
+4. **InvestorStrategicAgent (draft)** — the Flow calls `CompositeScoreTool` before the LLM and shows each ticker's score, components, sentiment (or "no data") and eligible actions in its context. The LLM chooses **one action per ticker** and writes `rationale`, `monitoring_triggers`, `review_frequency` and `overall_strategy`. After the LLM the Flow clamps each action to `eligible_actions(entry_zone_status, risk_profile, fundamentals_status)` (an ineligible action becomes `MONITOR` with a fixed sentence in the rationale and a `validation_warnings` entry), calls `PortfolioAllocatorTool`, and assembles the published model (`utils/strategy_assembly.py`): `composite_score`, `allocation_pct`, trade setups, capital buckets, `current_price`, `fundamentals_status` and the rule-derived portfolio `risk_level`.
+5. **CriticAgent** — adversarial review of the draft's *reasoning*, not its numbers. Its reference table is built by the Flow from the technical and fundamental records. Outputs `revision_directives` and `per_ticker_critiques` (both may legitimately be empty). `ActionPolicyGate` (`utils/action_policy_gate.py`) drops any directive/critique that orders an action outside the `entry_zone_status × risk_profile` policy table before it reaches Phase 6. The Critic is pinned as compliant, not refactored (D-14): a Critic answer cannot change a published number because the Flow recomputes every number after Phase 6.
+6. **InvestorStrategicAgent (final)** — weighs the Critic's directives as a second analyst's counter-argument and decides the final action and narrative per ticker, answering the same `StrategyNarrativeOutput` as the draft. The Flow clamps the action again with the same `eligible_actions`, takes `composite_score` from the draft's Flow scores (a missing score raises `BoundsViolationError`, rule `composite_score_missing`, never a `0.0` default), calls `PortfolioAllocatorTool`, assembles the model, then `run_analysis` reprices and validates with `PortfolioBoundsValidator` (fail-closed: one repair re-invocation, then raises `BoundsViolationError` rather than publishing a non-compliant result).
+
+Every phase runs through `utils/phase_runner.run_phase`: invalid model output is retried at most `MAX_SCHEMA_RETRIES = 2` times (3 attempts) with the failing field paths and allowed values fed back, then fails with `PhaseSchemaError` naming the phase, the attempt count and the field paths (never raw output or input values). Every Flow-called tool emits one synthetic SSE step (`utils/flow_tools.call_tool`) so the SPA's execution panel still shows tool activity; each phase still emits one `agent_start` and one `task_complete`, and a retry never emits a second one.
 
 ### LLM vs. deterministic responsibility per phase
 
-| Phase | LLM decides | Code decides (never trusted from LLM output) |
+| Phase | LLM writes (narrative fields and action only) | Flow owns (tools, records, scores, clamp, validation) |
 |---|---|---|
-| 1 Market Analysis | Which tickers to surface; sentiment tone/rationale when no measured score exists | `CandidateUniverseFilter` — drops ETF/benchmark tickers regardless of what the LLM picked |
-| 2 Technical Analysis | `overall_signal`/`key_signals` (reasoned reading of the raw indicators) | `TechnicalInterpretationTool` — `momentum_score`, `entry_zone_low/high`, `entry_zone_status`, `risk_level`, all raw indicator values (`ta`/`yfinance`) |
-| 3 Fundamental Analysis | `risk_factors`/`catalysts`/summary prose | `FundamentalGraderTool` — `valuation_grade`, `financial_health`, `growth_outlook`; all raw fundamentals (`yfinance`) |
-| 4 Draft Strategy | **The action** per ticker (open reasoning, no table, 2 hard invariants only) and its rationale | `CompositeScoreTool` — composite score; `PortfolioAllocatorTool` — allocation %, entry zone, stop-loss, take-profit for the LLM's chosen action |
-| 5 Critique Review | Whether the draft's *reasoning* holds up (findings may legitimately be zero) | `ActionPolicyGate` — strips any directive/critique requesting an action outside the policy table before Phase 6 ever sees it |
-| 6 Final Strategy | The final action per ticker (weighing Critic input) and its rationale | `PortfolioAllocatorTool` (Flow re-invocation, ignores whatever the LLM wrote for these fields) + `PortfolioBoundsValidator` (fail-closed gate on the published result) |
+| 1 Market Analysis | Up to 5 tickers from the supplied corpus, a rationale per pick, the summary | Calls Reddit then Serper; builds the corpus; `mention_count`, `relevance_score`, `average_sentiment` (null on the Serper path, so `sentiment_available` is false), `analysis_timestamp`; drops picks outside the Reddit candidate list; `CandidateUniverseFilter` |
+| 2 Technical Analysis | `overall_signal`, `key_signals`, `comprehensive_analysis`, `investment_recommendation`, summary | Calls `TechnicalAnalysisTool`; `current_price`, raw indicators, `momentum_score`, `risk_level`, entry zone and status, `regime`, `trend_strength` (ADX thresholds), `failed_tickers` |
+| 3 Fundamental Analysis | `key_strengths`, `key_risks`, `investment_thesis`, summary | Calls `FundamentalDataTool` and `FundamentalGraderTool`; company name, `ValuationMetrics`, `valuation`/`quality`/`growth` labels (`UNKNOWN` when ungradable), `data_status` |
+| 4 Draft Strategy | **The action** per ticker, `rationale`, `monitoring_triggers`, `review_frequency`, `overall_strategy` | `CompositeScoreTool` before the LLM; action clamp to `eligible_actions` (to `MONITOR` plus a warning); `PortfolioAllocatorTool`; `composite_score`, `allocation_pct`, trade setups, buckets, `current_price`, `fundamentals_status`, rule-derived `risk_level` |
+| 5 Critique Review | Whether the draft's *reasoning* holds up (findings may legitimately be zero) | Reference table from the Flow's records; `ActionPolicyGate` strips any directive/critique requesting an action outside the policy table before Phase 6 |
+| 6 Final Strategy | The final action per ticker (weighing Critic input), `rationale`, `monitoring_triggers`, `review_frequency`, `overall_strategy` | Same clamp as the draft; `composite_score` from the draft's Flow scores; `PortfolioAllocatorTool`; `assemble_strategy`; `PortfolioBoundsValidator` (fail-closed gate on the published result) |
+
+Fundamentals that cannot be graded (quality or growth `UNKNOWN`) set `fundamentals_status` to `UNKNOWN`; the action policy then allows only `MONITOR` or `AVOID` for that ticker (the `FUNDAMENTALS_UNKNOWN` row), and the bounds validator fails closed on a buy for it.
 
 The guardrail against the LLM inventing a 5th action is enforced independently of all of the above reasoning freedom: `PositionRecommendation.action` is a closed `Literal["LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"]` in `schemas/agent_outputs.py`, and `ActionPolicyGate`'s directive parser only recognizes those same 4 tokens — an invented action fails schema validation outright rather than being silently accepted or misparsed.
 
@@ -114,7 +118,7 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 |---|---|
 | `main.py` | CLI entry point; validates `.env`, sets `MODEL_PROVIDER`, calls `ProspectAIFlow.run_analysis()` |
 | `prospect_ai_flow.py` | **Current orchestrator** — `ProspectAIFlow(Flow[ProspectAIFlowState])`: 6-phase CrewAI Flow, state model, context slimming helpers, `_extract_pydantic()` for schema validation |
-| `prospect_ai_crew.py` | `TaskFactory` — agent/task factory used by `ProspectAIFlow` (per-phase agent + tools + schema config, `build_task()`) |
+| `prospect_ai_crew.py` | `TaskFactory` — agent/task factory used by `ProspectAIFlow` (per-phase agent, `flow_tools` the Flow calls itself, empty `agent_tools`, `build_task()`) |
 | `agents/base_agent.py` | `BaseAgent` ABC; loads YAML config, `_get_llm()` returns `crewai.LLM` based on `MODEL_PROVIDER` |
 | `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
 | `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, thinking, model, max_tokens |
@@ -122,7 +126,13 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 | `config/agent_config_loader.py` | Reads `agents.yaml`, exposes per-agent config dicts |
 | `config/task_config_loader.py` | `TaskConfigLoader.render(task_key, **kwargs)` — substitutes template variables |
 | `config/config.py` | `Config` class: env var properties, `default_model_id()`, `model_id_for_agent(agent_key)` |
-| `schemas/agent_outputs.py` | Pydantic output contracts for all 5 agent outputs |
+| `schemas/agent_outputs.py` | Pydantic contracts: the narrative-only models the LLM answers, and the published output models the Flow assembles |
+| `utils/phase_runner.py` | `run_phase` — bounded schema retry with field-path feedback; `MAX_SCHEMA_RETRIES = 2`; `PhaseSchemaError` (names phase, attempts, field paths) |
+| `utils/flow_tools.py` | `call_tool` — runs a Flow-owned tool off the event loop, times it and emits one synthetic SSE step |
+| `utils/market_records.py` | Market corpus, measured `mention_count`/`relevance_score`, `serper_sentiment_by_ticker` (the one seam for a future sentiment classifier), `merge_market` |
+| `utils/technical_records.py` | Builds each ticker's technical record and `failed_tickers` from the tool output; `trend_strength` from ADX |
+| `utils/fundamental_records.py` | Builds each ticker's fundamental record, labels and `data_status`; the failed-fetch record |
+| `utils/strategy_assembly.py` | Draft/final helpers: `eligible_by_ticker`, `clamp_actions`, allocator payload, `derive_portfolio_risk_level`, `assemble_strategy` |
 | `utils/reddit_sentiment_tool.py` | `RedditSentimentTool` — Reddit scraper, sets `fallback_required=True` instead of raising |
 | `utils/technical_analysis_tool.py` | `TechnicalAnalysisTool` — batch yfinance + ta; one call covers all tickers |
 | `utils/fundamental_data_tool.py` | `FundamentalDataTool` — batch yfinance fetch (P/E, margins, FCF, growth, etc.) |
@@ -141,26 +151,37 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 
 ### Task → Tool Mapping
 
-| Phase | Agent | Tools | Runs after |
+The Flow calls every tool (off the event loop, through `utils/flow_tools.call_tool`); no agent has tools.
+
+| Phase | Agent | Tools the Flow calls | Runs after |
 |---|---|---|---|
-| 1 Market Analysis | MarketAnalyst | `RedditSentimentTool`, `PatientSerperDevTool` (fallback) | — |
+| 1 Market Analysis | MarketAnalyst | `RedditSentimentTool`, then `PatientSerperDevTool` when Reddit asks for fallback | — |
 | 2 Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool` | Phase 1 |
 | 3 Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool` → `FundamentalGraderTool` | Phase 1 (parallel with 2) |
-| 4 Draft Strategy | InvestorStrategic | `CompositeScoreTool` → `PortfolioAllocatorTool` | Phases 2 + 3 |
+| 4 Draft Strategy | InvestorStrategic | `CompositeScoreTool` (before the LLM) → `PortfolioAllocatorTool` (after) | Phases 2 + 3 |
 | 5 Critique Review | Critic | none (reasoning only); `ActionPolicyGate` filters output before Phase 6 | Phase 4 |
-| 6 Final Strategy | InvestorStrategic | none — LLM decides actions/rationale only; the Flow deterministically re-invokes `PortfolioAllocatorTool` and validates with `PortfolioBoundsValidator` afterward | Phase 5 |
+| 6 Final Strategy | InvestorStrategic | `PortfolioAllocatorTool` (after the LLM); `PortfolioBoundsValidator` validates in `run_analysis` | Phase 5 |
 
 ### Pydantic Output Schemas (`schemas/agent_outputs.py`)
 
-Each phase validates its LLM output against a Pydantic model via `_extract_pydantic()` in `ProspectAIFlow`:
+Each phase validates its LLM answer against a narrative-only Pydantic model through `utils/phase_runner.run_phase`; the Flow merges the answer with its own records into the published model. Narrative models have no number or grade field, and pydantic ignores extra keys.
 
-| Schema | Key fields |
+| LLM answers (narrative model) | Fields |
 |---|---|
-| `MarketAnalysisOutput` | `sentiment_available` (bool), `candidate_stocks[]` — ticker, mention_count, average_sentiment [-1,1] or `null` when `sentiment_available=false` (never a fabricated `0.0`), relevance_score [0,1], rationale |
-| `TechnicalAnalysisOutput` | `technical_analysis[]` — ticker, raw_indicators, momentum_analysis (momentum_score 0-10, risk_level, regime, entry_zone) |
-| `FundamentalAnalysisOutput` | `fundamental_analysis[]` — ticker, valuation_metrics, fundamental_rating, key_strengths/risks |
-| `InvestorStrategicOutput` | `positions[]` — ticker, action (`Literal["LONG-BUY","WAIT-FOR-ENTRY","MONITOR","AVOID"]`), composite_score, allocation_pct, trade_setup, rationale |
-| `CriticOutput` | `per_ticker_critiques[]` — severity, issue_type, finding, instruction (`default_factory=list`, may be empty); `revision_directives[]` (same) |
+| `MarketNarrativeOutput` | `candidates[]` (1 to 5 of `{ticker, rationale}`), `summary` |
+| `TechnicalNarrativeOutput` | `analyses[]` — ticker, `overall_signal` (`Literal["BULLISH","BEARISH","MIXED","NEUTRAL"]`), key_signals, comprehensive_analysis, investment_recommendation; `summary` |
+| `FundamentalNarrativeOutput` | per ticker `key_strengths`, `key_risks`, `investment_thesis`; `summary` |
+| `StrategyNarrativeOutput` (draft and final) | per ticker `action` (`Literal["LONG-BUY","WAIT-FOR-ENTRY","MONITOR","AVOID"]`), `rationale`, `monitoring_triggers`, `review_frequency` (`Literal["DAILY","WEEKLY","MONTHLY"]`); `overall_strategy` |
+| `CriticOutput` | `per_ticker_critiques[]` — severity (strict Literal), issue_type, finding, instruction (`default_factory=list`, may be empty); `revision_directives[]` (same). Also the published shape; it has no number field |
+
+| Published model (Flow-assembled) | Key fields |
+|---|---|
+| `MarketAnalysisOutput` | `sentiment_available` (bool), `candidate_stocks[]` — ticker, `mention_count` and `relevance_score` (null when no source measured them, never 0 or 0.5), `average_sentiment` [-1,1] or `null` when `sentiment_available=false` (never a fabricated `0.0`), rationale |
+| `TechnicalAnalysisOutput` | `technical_analysis[]` — ticker, raw_indicators, momentum_analysis (momentum_score 0-10, risk_level, regime, entry_zone, `trend_strength` null when ADX is missing), `support_resistance` (optional, null: no tool computes it); `failed_tickers[]` — `{ticker, error}` for tickers whose indicators failed, excluded from later phases |
+| `FundamentalAnalysisOutput` | `fundamental_analysis[]` — ticker, valuation_metrics, fundamental_rating (`valuation`, `quality`, `growth`; each may be `"UNKNOWN"`), key_strengths/risks, `data_status` (`ok` / `partial` / `failed`) |
+| `InvestorStrategicOutput` | `positions[]` — ticker, action, composite_score, allocation_pct, trade_setup, rationale, `fundamentals_status` (`AVAILABLE` / `UNKNOWN`) |
+
+Removed fields (breaking for package users): `FundamentalRating.overall` (D-09) and `StockTechnicalAnalysis.technical_score` with its `TechnicalScore` model (D-17). No enum field in the schema file has a case or whitespace normaliser (D-11); an out-of-set value fails validation and spends the retry budget. New optional fields: `data_status`, `fundamentals_status`, `failed_tickers`; market `mention_count` and `relevance_score` may be null. Older stored reports still load.
 
 ### Final `run_analysis()` Return Value
 
@@ -168,7 +189,7 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
 {
     "status": "success",
     "workflow_completed": True,
-    "result": {                     # InvestorStrategicOutput (final phase)
+    "result": {                     # InvestorStrategicOutput, assembled by the Flow (final phase)
         "sector": str,
         "positions": [
             {
@@ -177,6 +198,7 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
                 "composite_score": float,   # 0-100; formula: 30 sentiment + 40 momentum + 30 fundamentals
                 "allocation_pct": float,
                 "current_price": float | None,
+                "fundamentals_status": "AVAILABLE" | "UNKNOWN" | None,   # UNKNOWN: only MONITOR/AVOID allowed
                 "trade_setup": {"entry_zone_low", "entry_zone_high", "stop_loss", "take_profit"} | None,
                 "rationale": str,
                 "monitoring_triggers": [str, ...],
@@ -188,7 +210,7 @@ Each phase validates its LLM output against a Pydantic model via `_extract_pydan
         "reserved_allocations": [{"ticker": str, "pct": float}],  # explicit per-ticker attribution of reserved_pct
         "cash_reserve_pct": float,
         "overall_strategy": str,
-        "risk_level": "Low" | "Medium" | "High" | "Very High"
+        "risk_level": "Low" | "Medium" | "High" | "Very High"   # Flow-derived by rule, never LLM-written
     },
     "summary": str,
     "execution_metrics": {          # from ExecutionTracker
@@ -208,13 +230,19 @@ still fails `PortfolioBoundsValidator` after one repair attempt. Callers (`main.
 `prospectai-backend` service once it's updated to depend on this version) should catch this
 alongside other run failures rather than assume `run_analysis()` always returns a result.
 
+**Phase 2 error handling:** a phase whose answer fails its schema is retried at most `MAX_SCHEMA_RETRIES = 2` times
+(`utils/phase_runner.py`), then `run_analysis()` raises `PhaseSchemaError` naming the phase, the attempt count and the
+failing field paths (capped at 400 characters, no raw output). Callers should catch it alongside `BoundsViolationError`.
+A technical batch where every ticker fails raises `RuntimeError` naming `technical_analysis`. The draft and final phases
+clamp an ineligible action to `MONITOR` and record a `validation_warnings` entry instead of failing.
+
 ### LLM Configuration
 
 - **Global**: `MODEL_PROVIDER` env var (`anthropic` or `ollama`) — set by `--ollama` CLI flag.
 - **Per-agent env overrides**: `AGENT_MARKET_ANALYST_MODEL`, `AGENT_TECHNICAL_ANALYST_MODEL`, `AGENT_FUNDAMENTAL_ANALYST_MODEL`, `AGENT_INVESTOR_STRATEGIC_MODEL`, `AGENT_CRITIC_MODEL`.
 - **Per-agent YAML defaults** (`config/agents.yaml` `llm:` block): all agents use `claude-haiku-5-5`. `thinking: off|low` is set per agent (off for data-gathering agents, low-effort adaptive thinking for the draft, critic and final steps). No sampling parameters (`temperature`, `top_p`, `top_k`) are configured or sent, because Haiku 5.5 rejects non-default values.
 - `agents/caching_llm.py` patches crewai's native structured-output allow-list so Haiku 5.5 gets native structured output. A crewai upgrade must keep `tests/test_llm_sdk_compat.py` green.
-- A tool phase that finishes with zero recorded tool calls fails the run with `MissingToolCallError` rather than publishing model-invented numbers.
+- Agents are handed no tools; the Flow calls them. The zero-tool-call guard (`MissingToolCallError`) stays as a backstop for any task that is given agent tools, so model-invented numbers are never published.
 - All LLM calls go through `crewai.LLM` (see `agents/base_agent.py::_get_llm()` and `agents/caching_llm.py`) — no direct langchain dependencies. `crewai.LLM(...)` is a factory: for providers in crewai's `SUPPORTED_NATIVE_PROVIDERS` list (includes both `anthropic` and `ollama`), it dispatches to a native completion class (e.g. `AnthropicCompletion`) instead of LiteLLM. Since `litellm` is not a pinned dependency here (only `crewai`/`crewai-tools` are) and isn't installed in `.venv`, **both the default Anthropic path and the `--ollama` path run through crewai's native clients, not LiteLLM** — LiteLLM is only crewai's fallback for providers outside that native list.
 
 ### Related Repositories
