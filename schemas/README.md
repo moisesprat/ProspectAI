@@ -23,6 +23,7 @@ One `StockFundamentalAnalysis` entry per candidate ticker. Contains valuation me
 ### `InvestorStrategicOutput` (Task 4 — Investor Strategic Agent)
 
 Final portfolio synthesis. Each `PositionRecommendation` may include a `TradeSetup` with entry zone, stop loss, and take profit.
+- Draft phase (plan 02-17): the Flow computes the composite scores before the LLM, then allocates after it, and assembles this model (`utils/strategy_assembly.py`). The LLM writes only `StrategyNarrativeOutput`: per ticker an `action`, a `rationale`, `monitoring_triggers` and a `review_frequency`, plus `overall_strategy`. An action outside the ticker's eligible set (the action policy table, including the `FUNDAMENTALS_UNKNOWN` row) becomes `MONITOR` with a fixed rationale sentence and a validation warning. The portfolio `risk_level` is derived from the allocation-weighted technical risk of the deployed positions (rule in the module docstring). `action`, `review_frequency` and `TradeSetup.direction` are strict Literals: a case or whitespace variant is a validation error.
 
 ## Trade Structure Invariants
 

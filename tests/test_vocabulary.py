@@ -301,12 +301,44 @@ def test_critic_checks_use_schema_labels():
 
 
 def test_prompt_enum_hints_match_schema():
+    """The draft prompt no longer hand-writes the composite tool's quality/growth hints.
+
+    Since plan 02-17 the Flow builds the composite tool input from the typed fundamental
+    ratings (utils.strategy_assembly.composite_inputs), so those labels cannot drift from the
+    schema, and the draft prompt lists the action and review_frequency vocabularies through
+    $allowed_values, read from the schema Literals. Pin both: no stale hand-written hint, and
+    the rendered prompt carries exactly the schema's values.
+    """
+    from config.task_config_loader import TaskConfigLoader
+    from prospect_ai_crew import PHASE_OUTPUT_MODELS
+    from schemas.agent_outputs import Action, ReviewFrequency
+
     text = TASKS_YAML.read_text(encoding="utf-8")
-    quality_hint = "|".join(sorted(_members(QualityLabel), key=["High", "Medium", "Low", "UNKNOWN"].index))
-    growth_order = ["High Growth", "Moderate Growth", "Stable", "Declining", "UNKNOWN"]
-    growth_hint = "|".join(sorted(_members(GrowthLabel), key=growth_order.index))
-    assert f'"quality": "<{quality_hint}>"' in text
-    assert f'"growth": "<{growth_hint}>"' in text
+    assert '"quality": "<' not in text and '"growth": "<' not in text
+    description = TaskConfigLoader().render(
+        "draft_strategy", output_model=PHASE_OUTPUT_MODELS["draft_strategy"],
+        sector="Technology", today="2026-04-29", risk_profile="conservative",
+    )["description"]
+    action_line = next(l for l in description.splitlines() if l.startswith("positions[].action:"))
+    frequency_line = next(l for l in description.splitlines() if l.startswith("positions[].review_frequency:"))
+    assert set(re.findall(r'"([^"]+)"', action_line)) == _members(Action)
+    assert set(re.findall(r'"([^"]+)"', frequency_line)) == _members(ReviewFrequency)
+
+
+def test_composite_inputs_use_the_schema_labels():
+    """Quality and growth in the Flow-built composite input are the schema's own values (UNKNOWN included)."""
+    from tests.test_llm_role_audit import prime_draft
+    from types import SimpleNamespace
+    from utils.strategy_assembly import composite_inputs
+
+    holder = SimpleNamespace(state=SimpleNamespace())
+    prime_draft(holder)
+    inputs = composite_inputs(
+        holder.state.market_output, holder.state.technical_output, holder.state.fundamental_output,
+    )
+    assert {i["quality"] for i in inputs} <= _members(QualityLabel)
+    assert {i["growth"] for i in inputs} <= _members(GrowthLabel)
+    assert {"UNKNOWN"} <= {i["quality"] for i in inputs}
 
 
 # ── Technical risk_level (D-11) ──────────────────────────────────────────────

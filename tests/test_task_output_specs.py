@@ -403,3 +403,77 @@ def test_market_agent_text_has_no_tool_calls_and_keeps_the_ticker_rule():
         assert forbidden not in text, f"market_analyst text still says {forbidden!r}"
     assert "Never invent ticker symbols" in text
     assert cfg.get("thinking", "off") == "off"
+
+
+# ── Draft prompt (action and narrative only, D-14, CORR-10, plan 02-17) ────────
+
+def test_draft_declares_an_example_and_lists_the_actions_and_frequencies():
+    assert "draft_strategy" in _declared_examples()
+    description = render_task("draft_strategy")["description"]
+    for value in ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID", "DAILY", "WEEKLY", "MONTHLY"):
+        assert f'"{value}"' in description
+
+
+def test_draft_prompt_is_narrative_only_and_keeps_the_reasoning_guidance():
+    description = render_task("draft_strategy")["description"]
+    for forbidden in (
+        "compute_composite_scores",
+        "allocate_portfolio",
+        "STEP 4",
+        "Copy ALL",
+        "scaled_entry_setups",
+        "from the tool result",
+        "trade_setup(obj",
+        "deployed_pct: float",
+        "risk_level: str",
+        "price_data_error",
+    ):
+        assert forbidden not in description, f"draft prompt still mentions {forbidden}"
+    for wanted in (
+        "RISK PROFILE: conservative",                      # the disposition text is kept
+        "no pre-set resolution",                           # the open-reasoning guidance is kept
+        "RSI < 50",                                        # the monitoring-trigger rules are kept
+        "Price falls/retraces to entry_zone_high of $X.XX",
+        "Scores and eligible actions (computed by the pipeline)",
+        "eligible_actions",
+        "CURRENT_ENTRY",
+        "fundamentals_unknown",
+        "excluded",
+        "monitoring_triggers",
+        "review_frequency",
+        "overall_strategy",
+    ):
+        assert wanted in description, f"draft prompt lost {wanted!r}"
+
+
+def test_draft_prompt_covers_the_no_sentiment_path():
+    """02-16 decision A: on the Serper path sentiment is 'no data' and the score is renormalised."""
+    description = render_task("draft_strategy")["description"]
+    assert '"no data"' in description and "sentiment: no data" in description
+    assert "rescaled" in description
+    assert "never use a default number" in description.lower().replace("\n", " ") or "default number" in description
+
+
+def test_draft_example_has_no_number_or_grade_fields():
+    example = TaskConfigLoader().get_task_config("draft_strategy")["output_example"]
+    assert set(example) == {"positions", "overall_strategy"}
+    for entry in example["positions"]:
+        assert set(entry) == {"ticker", "action", "rationale", "monitoring_triggers", "review_frequency"}
+
+
+def test_draft_expected_output_matches_the_narrative_shape():
+    expected = render_task("draft_strategy")["expected_output"]
+    assert "positions" in expected and "overall_strategy" in expected
+    for forbidden in ("allocation_pct", "trade_setup", "deployed_pct", "risk_level", "total_allocated_pct"):
+        assert forbidden not in expected
+
+
+def test_investor_agent_text_has_no_tool_calls_and_no_number_copying():
+    agent = yaml.safe_load(open(TaskConfigLoader().config_path.parent / "agents.yaml", encoding="utf-8"))
+    cfg = agent["agents"]["investor_strategic"]
+    text = f"{cfg['goal']} {cfg['backstory']}"
+    for forbidden in ("When you need a tool", "call it first", "Python dict", "compute_composite_scores",
+                      "allocate_portfolio"):
+        assert forbidden not in text, f"investor_strategic text still says {forbidden!r}"
+    assert "Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID" in text
+    assert cfg["thinking"] == "low" and cfg["max_tokens"] == 16000

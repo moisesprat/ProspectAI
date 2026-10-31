@@ -555,6 +555,37 @@ class TestFlowOwnedStepContract:
         assert published.startswith(done["preview"])
         assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
 
+    def test_draft_emits_contract_sequence(self, flow):
+        from tests.test_llm_role_audit import (
+            draft_entry, draft_payload, narrative_result, prime_draft, wire_tools,
+        )
+
+        events = []
+        flow._progress_callback = lambda payload: events.append(("progress", payload))
+        flow._step_callback = lambda index, step: events.append(("step", index, step))
+        wire_tools(flow, prime_draft(flow), phase="draft_strategy")
+        flow._factory.build_task.return_value = _make_task()
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = AsyncMock(
+                return_value=narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+            )
+            asyncio.run(flow.draft_strategy())
+
+        kinds = [e[0] if e[0] == "step" else e[1]["event"] for e in events]
+        assert kinds == ["agent_start", "step", "step", "task_complete"]
+        assert events[0][1]["task_index"] == 3
+        steps = [e for e in events if e[0] == "step"]
+        assert [s[2].tool for s in steps] == ["compute_composite_scores", "allocate_portfolio"]
+        assert [s[2].log for s in steps] == ["Scoring 2 tickers", "Allocating capital"]
+        for _kind, phase_index, step in steps:
+            assert phase_index == 3
+            assert isinstance(step.tool_input, str) and len(step.tool_input) <= 400
+        done = events[-1][1]
+        assert done["task_index"] == 3
+        published = json.dumps(flow.state.draft_output.model_dump(mode="json"))
+        assert published.startswith(done["preview"])
+        assert set(done) >= {"event", "task_index", "agent", "preview", "tokens_est", "output_len"}
+
     def test_retry_does_not_duplicate_events(self, flow):
         from tests.test_llm_role_audit import narrative_entry, narrative_payload, narrative_result
 

@@ -221,16 +221,21 @@ tasks:
       summary: "Across the names fundamentals are mixed: profitability and balance sheets are generally sound, while growth is uneven and valuations are stretched for the quality leaders. Read the pipeline's grades together with the cited metrics."
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Task 4: Draft Strategy
-  # Agent:   Investor Strategic
-  # Context: market_analysis_task, technical_analysis_task, fundamental_analysis_task
-  # Tools:   compute_composite_scores, allocate_portfolio
-  # Output:  InvestorStrategicOutput (DRAFT — will be reviewed by Critic)
+  # Task 4: Draft Strategy (action and narrative only; the Flow owns the numbers, D-14)
+  # Agent:   Investor Strategic (no tools)
+  # Context: market, technical and fundamental outputs, plus the composite scores and each
+  #          ticker's eligible actions, which the Flow computed before this task runs
+  # Tools:   none for the agent; the Flow calls compute_composite_scores before this task and
+  #          allocate_portfolio after it
+  # Output:  StrategyNarrativeOutput {positions[{ticker, action, rationale,
+  #          monitoring_triggers, review_frequency}], overall_strategy}; the Flow clamps each
+  #          action to its eligible set and assembles the published InvestorStrategicOutput
+  #          (DRAFT, reviewed by the Critic), so no number or grade comes from the LLM
   # ─────────────────────────────────────────────────────────────────────────────
   draft_strategy:
     description: |
-      Synthesize the outputs from the Market, Technical, and Fundamental agents
-      and produce a machine-readable JSON portfolio draft.
+      Synthesize the Market, Technical and Fundamental analysis of the $sector stocks
+      below into a portfolio draft: one decision per stock, with the reasoning behind it.
 
       RISK PROFILE: $risk_profile
       This is a general disposition for your reasoning, not a set of branch conditions:
@@ -240,67 +245,42 @@ tasks:
         aggressive — weigh opportunity capture heavily; willing to act on strong
           conviction in one dimension (e.g. compelling momentum) even when another
           dimension is unresolved or mixed, as long as you name that tension and defend it.
-      The LLM chooses actions and writes rationale by reasoning through the evidence —
-      see STEP 3. All numeric bounds (allocation caps, stop %, R/R) are enforced by the
-      allocate_portfolio tool — you do NOT compute them.
+      You choose actions and write rationale by reasoning through the evidence (see
+      STEP 2). You do not compute or write any number: composite scores are already in the
+      context, and allocations, trade setups, capital percentages and the portfolio risk
+      level are calculated by the pipeline after you answer.
 
-      STEP 1 — Cross-reference data for each ticker:
-        From Market context:      average_sentiment (float), rationale
-        From Technical context:   momentum_score, entry_zone_low, entry_zone_high,
-                                  entry_zone_status, regime, risk_level,
-                                  overall_signal, key_signals, raw_indicators
-        From Fundamental context: quality, growth, valuation, data_status,
-                                  fundamentals_status, risk_factors, catalysts
+      STEP 1 — Read the data for each ticker. The context sections are Market Analysis
+        Output, Technical Analysis Output, Fundamental Analysis Output, and
+        "Scores and eligible actions (computed by the pipeline)".
+        Everything in them is final; use the values as given and never recalculate an RSI
+        threshold, a score or a price gap.
+        Scores section, per ticker:
+          composite_score and score_components (sentiment, technical, fundamental): the
+            blended score. A component that is null was not measured; the pipeline has
+            already rescaled the score over the components it did measure.
+          sentiment: the measured sentiment, or "no data".
+          fundamentals_unknown: true when quality or growth could not be graded.
+          eligible_actions: the only actions you may choose for this ticker.
+        When sentiment is "no data", write "sentiment: no data" in that stock's rationale
+        and reason from the technical and fundamental evidence alone. Never describe a
+        sentiment tone that was not measured, and never use a default number for it.
+        Write a position for every ticker in "tickers", and for no other ticker. A ticker
+        under "excluded" had no indicator data this run: write nothing for it.
 
-        CRITICAL: average_sentiment is a float between -1.0 and 1.0. Extract the EXACT
-        value — do NOT use 0.65 or any default.
-        CRITICAL: When sentiment_available=false (or a stock's average_sentiment is null),
-        pass average_sentiment=null to compute_composite_scores for that stock — do NOT
-        substitute 0.0 or any other number. In the rationale, write "sentiment: no data"
-        for that stock instead of describing a sentiment tone that was never measured.
-        CRITICAL: momentum_score is a float between 0 and 10. Extract the EXACT
-        value — do NOT default to 8.0 or any other fixed number.
-        CRITICAL: Every stock must have a DISTINCT composite_score.
-        CRITICAL: When a stock has fundamentals_status=UNKNOWN, pass its quality and growth
-        values (including "UNKNOWN") to compute_composite_scores exactly as given. The tool
-        excludes the fundamental component from that stock's score and flags
-        fundamental_unknown=true.
-        Copy the returned composite_score verbatim — it already reflects missing data.
-        CRITICAL: If a stock has price_data_error set (current_price is null), it means
-        live price data could not be retrieved. You MUST cap that stock at MONITOR or AVOID —
-        do NOT assign LONG-BUY, SCALED-ENTRY, or WAIT-FOR-ENTRY. Include the price_data_error
-        message in the rationale so the user understands why no trade was initiated.
-
-      STEP 2 — Call 'compute_composite_scores' ONCE with ALL stocks:
-          compute_composite_scores(stocks_json='[
-            {
-              "ticker":            "<TICKER>",
-              "average_sentiment": <float>,
-              "momentum_score":    <float from Technical interpretation>,
-              "quality": "<High|Medium|Low|UNKNOWN>",
-              "growth": "<High Growth|Moderate Growth|Stable|Declining|UNKNOWN>"
-            }, ...
-          ]')
-        Record each stock's composite_score and components verbatim.
-        For tickers with fundamentals_status=UNKNOWN the tool returns fundamental_component=null —
-        copy it as null, do NOT substitute a number.
-
-      STEP 3 — Reason like a market analyst to decide one action per stock. Do NOT
+      STEP 2 — Reason like a market analyst to decide one action per stock. Do NOT
         apply a fixed lookup table — weigh the signals holistically and reach your
         own conclusion, the way a real analyst reconciles conflicting evidence.
 
-        Signals available as reasoning inputs (use the pre-computed values as-is —
-        do NOT recalculate RSI thresholds, price-to-zone gaps, or other numeric
-        conditions yourself):
+        Signals available as reasoning inputs (use the pre-computed values as-is):
           Technical:   entry_zone_status, overall_signal, momentum_score, regime,
                        risk_level, key_signals, raw_indicators
           Fundamental: quality, growth, valuation, risk_factors, catalysts
-                       (or fundamentals_status=UNKNOWN — treat as a genuine
-                       uncertainty to weigh, not an automatic block)
-          Market:      average_sentiment (or "no data" when sentiment_available=false —
-                       reason from technical/fundamental alone, do not invent a tone)
-          Composite:   composite_score (already blends all three — a low score is a
-                       signal to weigh, not a threshold that pre-empts your reasoning)
+          Market:      sentiment (or "no data" — reason from technical/fundamental
+                       alone, do not invent a tone)
+          Composite:   composite_score (already blends the measured components — a low
+                       score is a signal to weigh, not a threshold that pre-empts your
+                       reasoning)
 
         There is no pre-set resolution when signals conflict — e.g. strong technicals
         with weak fundamentals, or solid fundamentals undermined by bearish momentum.
@@ -310,49 +290,24 @@ tasks:
         identify a genuine tension, name it explicitly in the rationale and state why
         the action you chose wins despite it — do not silently pick a side.
 
-        The one fact that is NOT a judgment call: entry_zone_status=CURRENT_ENTRY
-        means price is ALREADY inside the actionable zone — WAIT-FOR-ENTRY is a
-        contradiction in terms here (there is nothing left to wait for), regardless
-        of profile or any other signal. Every other entry_zone_status (PULLBACK_ENTRY,
-        BELOW_ZONE) is fully open to your reasoning — there is no default action.
+        Two facts are NOT judgment calls, and eligible_actions already reflects them:
+          - entry_zone_status=CURRENT_ENTRY means price is ALREADY inside the actionable
+            zone, so WAIT-FOR-ENTRY is a contradiction in terms (there is nothing left to
+            wait for), whatever the profile or any other signal.
+          - fundamentals_unknown=true means the pipeline could not grade quality or growth,
+            so it cannot justify putting capital to work on them: only MONITOR or AVOID
+            are eligible, and your rationale should say fundamentals could not be graded.
+        Every other combination is open to your reasoning. Choose only from the ticker's
+        eligible_actions: an action outside that list is replaced by MONITOR with a note
+        that the policy changed it, which wastes your analysis.
 
-        The other fact that is NOT a judgment call: price_data_error set
-        (current_price=null) means no valid trade_setup can be constructed at all —
-        cap that stock at MONITOR or AVOID regardless of how compelling the other
-        signals look, and say why in the rationale.
-
-        Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID.
-        HOLD, SHORT-SELL, and SCALED-ENTRY are invalid — they cause schema rejection.
         MONITOR ≠ AVOID: MONITOR signals interest but conditions not met yet.
 
-      STEP 4 — Call 'allocate_portfolio' ONCE with your decided actions:
-          allocate_portfolio(stocks_json='{"risk_profile": "$risk_profile", "stocks": [
-            {
-              "ticker":          "<TICKER>",
-              "action":          "<YOUR DECIDED ACTION>",
-              "composite_score": <float from Step 2>,
-              "entry_zone_low":  <float from Technical context>,
-              "entry_zone_high": <float from Technical context>,
-              "current_price":   <float — current market price; required for SCALED-ENTRY>
-            }, ...
-          ]}')
-        Copy ALL of the following verbatim from the tool result:
-          allocation_pct, trade_setup, scaled_entry_setups,
-          deployed_pct, reserved_pct, total_allocated_pct, cash_reserve_pct.
-        Also copy composite_score verbatim from Step 2 into each position —
-        do NOT paraphrase or cite a different value in the rationale text.
-        Allocation cap: max $risk_profile per-position limit enforced by the tool (do not compute).
-        LONG-BUY above- or below-zone: the tool automatically detects when current_price
-          is outside [entry_zone_low, entry_zone_high] and anchors stop/TP to
-          current_price for a valid R/R at actual entry.
-        WAIT-FOR-ENTRY: receives trade_setup AND a real allocation_pct (earmarked capital).
-        MONITOR / AVOID: allocation_pct=0, trade_setup=null.
-        The tool returns deployed_pct, reserved_pct, cash_reserve_pct as three separate
-        fields. Copy all three into your output.
-
-      STEP 5 — Write qualitative content for each position:
-        rationale: 100-150 words citing specific numbers from all three agents.
-          Every claim must reference a data point (e.g. "RSI=67", "momentum_score=7.8").
+      STEP 3 — Write the qualitative content for each position:
+        rationale: 100-150 words citing specific data points from all three analyses
+          (for example "RSI=67", "momentum_score=7.8", "composite_score=73.4"). Every
+          claim must reference a value from the context. You may quote the composite score;
+          do not put it, or any allocation, in a field of your answer.
         monitoring_triggers: 2-3 specific, measurable thresholds directionally
           consistent with your action. LONG-BUY triggers must fire on bearish
           reversal patterns, not normal uptrend levels.
@@ -367,28 +322,42 @@ tasks:
           the pullback is a healthy retracement, not a breakdown.
           For MONITOR: triggers must describe conditions that would upgrade to WAIT-FOR-ENTRY
           or LONG-BUY (e.g. "RSI drops below 55", "Earnings beat clears valuation concern").
-        review_frequency: DAILY / WEEKLY / MONTHLY.
+        review_frequency: how often to review the position, one of the allowed values below.
+        overall_strategy: 2-3 paragraphs on the portfolio logic: which names you favour and
+          why, which you only watch or avoid, and how the risk profile shaped the choices.
+          Do not state percentages of capital or a portfolio risk level: the pipeline
+          calculates and publishes those itself.
 
-      STEP 6 — Determine portfolio risk_level: Low / Medium / High / Very High.
+      Do not write any number field: composite scores, allocation percentages, prices,
+      entry zones, stops, take-profits, deployed or reserved or cash percentages, a
+      risk level, or a fundamentals status. The pipeline publishes its own values and
+      ignores any you write.
 
-      STEP 7 — Output a pure JSON dict (no markdown fences):
-        sector: str
-        risk_profile: str — "$risk_profile" (echo back verbatim)
-        positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
-          current_price(float|null) trade_setup(obj|null)
-          rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
-        deployed_pct: float
-        reserved_pct: float
-        total_allocated_pct: float
-        cash_reserve_pct: float
-        overall_strategy: str (2-3 paragraphs, describe allocation logic accurately)
-        risk_level: str — Low/Medium/High/Very High
+      Output JSON only, shaped exactly like this example (no markdown wrapper):
+      $output_example
+        Allowed values:
+      $allowed_values
     expected_output: >
-      JSON dict with sector='$sector', risk_profile='$risk_profile', positions
-      (ticker/action/allocation_pct/current_price/trade_setup/
-      rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
-      total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
+      JSON object with positions (one per ticker in the scores section, each with ticker,
+      action, rationale, monitoring_triggers and review_frequency) and overall_strategy.
       This is a DRAFT pending Critic review.
+    output_example:
+      positions:
+        - ticker: "AAPL"
+          action: "LONG-BUY"
+          rationale: "AAPL clears the bar for a conservative buy because three signals line up: momentum_score=7.4 with a bullish MACD, a composite_score=73.4 that blends technicals and graded fundamentals, and quality rated High with Moderate Growth. Price already sits inside the entry zone (CURRENT_ENTRY), so there is nothing to wait for. The strongest argument against is valuation, which the pipeline grades FAIR rather than CHEAP, and RSI=63 leaves limited room before overbought. Downside is acknowledged: a break below the entry zone would invalidate the setup."
+          monitoring_triggers:
+            - "RSI rises above 75 (overbought exit)"
+            - "Price closes below the stop_loss level"
+          review_frequency: "DAILY"
+        - ticker: "MSFT"
+          action: "MONITOR"
+          rationale: "MSFT is worth watching but does not yet earn capital. Fundamentals are solid (quality High, growth Moderate Growth) and composite_score=61.0 is respectable, yet momentum_score=5.2 with a MIXED technical signal and ADX=18 describes a market without a trend. entry_zone_status is PULLBACK_ENTRY, so price has not reached a level that offers a margin of safety for a conservative profile. The tension is between good business quality and unconvincing price action; I resolve it in favour of patience."
+          monitoring_triggers:
+            - "RSI drops below 55 while the price holds the entry zone"
+            - "MACD turns bullish on a weekly close"
+          review_frequency: "WEEKLY"
+      overall_strategy: "The draft favours one high-conviction long where technical momentum, graded fundamentals and the entry zone agree, and keeps the second name on a watch list until price action confirms the business quality the fundamentals show. For a conservative profile this means deploying capital only where several independent signals align, and accepting that a large part of the portfolio stays in cash while the rest of the field is unconfirmed.\n\nThe main risk is concentration in a single deployed idea, so the review cadence is daily for the active position and weekly for the watched one. The Critic should test whether the valuation grade of the long is consistent with its conviction, and whether the watch-list name has a trigger that is genuinely measurable."
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 5: Critique Review
