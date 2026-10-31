@@ -20,7 +20,7 @@ from utils.patient_serper_tool import PatientSerperDevTool
 from utils.tool_timing import instrument_tool
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
-    TechnicalAnalysisOutput,
+    TechnicalNarrativeOutput,
     FundamentalNarrativeOutput,
     InvestorStrategicOutput,
     CriticOutput,
@@ -29,11 +29,11 @@ from schemas.agent_outputs import (
 # phase -> the model the LLM is asked to produce. The single source for each Task's
 # output_pydantic, for the $allowed_values in its prompt, and for the output_example
 # contract test (tests/test_task_output_specs.py): the schema is the source of truth
-# (D-10). For fundamental_analysis that is the narrative model; the Flow merges it
-# into FundamentalAnalysisOutput.
+# (D-10). For technical_analysis and fundamental_analysis that is the narrative model;
+# the Flow merges it into TechnicalAnalysisOutput / FundamentalAnalysisOutput.
 PHASE_OUTPUT_MODELS = {
     "market_analysis":      MarketAnalysisOutput,
-    "technical_analysis":   TechnicalAnalysisOutput,
+    "technical_analysis":   TechnicalNarrativeOutput,
     "fundamental_analysis": FundamentalNarrativeOutput,
     "draft_strategy":       InvestorStrategicOutput,
     "critique_review":      CriticOutput,
@@ -91,8 +91,8 @@ class TaskFactory:
             },
             "technical_analysis": {
                 "agent":       self.technical_analyst.get_agent(),
-                "agent_tools": self._timed("technical_analysis", [TechnicalAnalysisTool()]),
-                "flow_tools":  {},
+                "agent_tools": [],
+                "flow_tools":  self._timed_by_name("technical_analysis", [TechnicalAnalysisTool()]),
             },
             "fundamental_analysis": {
                 "agent":       self.fundamental_analyst.get_agent(),

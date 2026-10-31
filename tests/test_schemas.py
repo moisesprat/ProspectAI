@@ -13,7 +13,6 @@ from schemas.agent_outputs import (
     MarketAnalysisOutput,
     SupportResistance,
     MomentumAnalysis,
-    TechnicalScore,
     StockTechnicalAnalysis,
     TechnicalAnalysisOutput,
     ValuationMetrics,
@@ -182,9 +181,6 @@ def test_technical_analysis_output_valid():
                         "MACD confirming bullish momentum above the signal line."
                     ),
                 ),
-                technical_score=TechnicalScore(
-                    percentage=72.0, grade="B+", recommendation="Buy"
-                ),
                 investment_recommendation=(
                     "AAPL is technically sound with a confirmed uptrend and favorable "
                     "risk/reward at current levels near the support zone."
@@ -197,6 +193,35 @@ def test_technical_analysis_output_valid():
         ),
     )
     assert output.technical_analysis[0].current_price == 185.50
+
+
+def test_technical_score_is_gone_and_old_payloads_still_load():
+    """D-17: TechnicalScore and technical_score are removed; a stored payload carrying it loads."""
+    import schemas.agent_outputs as schemas
+
+    assert not hasattr(schemas, "TechnicalScore")
+    assert "technical_score" not in StockTechnicalAnalysis.model_fields
+    stock = StockTechnicalAnalysis.model_validate({
+        "ticker": "AAPL", "current_price": 10.0,
+        "momentum_analysis": {
+            "momentum_score": 5.0, "risk_level": "Low", "trend_strength": "Weak",
+            "key_signals": ["x"], "support_resistance": {"support": 1.0, "resistance": 2.0},
+            "comprehensive_analysis": "c" * 60,
+        },
+        "technical_score": {"percentage": 50.0, "grade": "B", "recommendation": "Buy"},
+        "investment_recommendation": "r" * 60,
+    })
+    assert not hasattr(stock, "technical_score")
+
+
+def test_momentum_analysis_optional_fields_and_strict_literals():
+    base = dict(momentum_score=5.0, risk_level="Low", key_signals=["x"], comprehensive_analysis="c" * 60)
+    ma = MomentumAnalysis(**base)
+    assert ma.trend_strength is None and ma.support_resistance is None and ma.overall_signal is None
+    for field, bad in (("trend_strength", "Moderate"), ("overall_signal", "Bullish"),
+                       ("entry_zone_status", "SOMEWHERE"), ("regime", "wild")):
+        with pytest.raises(ValidationError):
+            MomentumAnalysis(**base, **{field: bad})
 
 
 def test_support_resistance_invalid():

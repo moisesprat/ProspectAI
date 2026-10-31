@@ -11,8 +11,9 @@ Captures the top candidate stocks identified from Reddit sentiment and web searc
 ### `TechnicalAnalysisOutput` (Task 2 — Technical Analyst)
 
 One `StockTechnicalAnalysis` entry per candidate ticker. Contains:
-- `MomentumAnalysis`: momentum score (0–10), risk level, trend strength, key signals, support/resistance levels
-- `TechnicalScore`: percentage score (0–100), letter grade, and buy/sell recommendation
+- `MomentumAnalysis`: momentum score (0–10), risk level, trend strength (derived from ADX, null when ADX is missing), key signals, entry zone and regime; `support_resistance` is optional and null because no tool computes it
+- `failed_tickers`: tickers whose indicators could not be computed (excluded from the analyses)
+- The Flow builds every number and label from the indicator tool; the LLM writes only `TechnicalNarrativeOutput` (`overall_signal`, key signals, analysis text). `TechnicalScore` was removed in plan 02-15.
 
 ### `FundamentalAnalysisOutput` (Task 3 — Fundamental Analyst)
 

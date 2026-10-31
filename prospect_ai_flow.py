@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
     TechnicalAnalysisOutput,
+    TechnicalNarrativeOutput,
     FundamentalAnalysisOutput,
     FundamentalNarrativeOutput,
     InvestorStrategicOutput,
@@ -27,6 +28,12 @@ from utils.fundamental_records import (
     require_narrative_coverage,
 )
 from utils.phase_runner import extract_model, run_phase
+from utils.technical_records import (
+    build_technical_records,
+    merge_technical,
+    narrative_context as technical_narrative_context,
+    require_technical_coverage,
+)
 from utils.recommendation_validator import validate_portfolio
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
@@ -414,8 +421,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "interpretation": {
                     "overall_signal": ma.overall_signal,
                     "key_signals": ma.key_signals,
-                    "entry_zone_low": ma.entry_zone_low if ma.entry_zone_low is not None else sr.support,
-                    "entry_zone_high": ma.entry_zone_high if ma.entry_zone_high is not None else sr.resistance,
+                    # support_resistance is null in Flow-built output (no tool computes it).
+                    "entry_zone_low": ma.entry_zone_low if ma.entry_zone_low is not None else (sr.support if sr else None),
+                    "entry_zone_high": ma.entry_zone_high if ma.entry_zone_high is not None else (sr.resistance if sr else None),
                     "entry_zone_status": ma.entry_zone_status,
                     "regime": ma.regime,
                     "momentum_score": ma.momentum_score,
@@ -614,13 +622,57 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
 
     @listen(market_analysis)
     async def technical_analysis(self):
+        """Flow-owned phase (CORR-10, D-14): the Flow calls the indicator tool and builds
+        every number and label; the LLM writes only overall_signal, key_signals,
+        comprehensive_analysis, investment_recommendation and the summary.
+
+        The tool runs off the event loop (call_tool), so it overlaps the fundamental
+        phase's tool calls (STALL-02). The agent has no tools, so the per-attempt
+        tool-call guard has nothing to check: the Flow calls the tool unconditionally,
+        and a failed ticker is recorded and excluded, never given invented indicators.
+        """
         self._check_error()
         self._emit_start(1)
-        ctx = self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis())
-        result, self.state.technical_output = await self._run_phase(
-            "technical_analysis", 1, TechnicalAnalysisOutput, build_args=(ctx,),
+        phase = "technical_analysis"
+        mo = self.state.market_output
+        tickers = list(dict.fromkeys(
+            c.ticker.strip().upper() for c in (mo.candidate_stocks if mo else []) if c.ticker.strip()
+        ))
+        if not tickers:
+            raise RuntimeError(f"{phase}: no candidate tickers from market_analysis")
+
+        tracker = self._tracker
+        if tracker:
+            tracker.start_phase(phase, llm=self._phase_llm(phase))
+        tool_result = await call_tool(
+            self._factory.flow_tool(phase, "calculate_technical_indicators"),
+            phase_index=1, step_callback=self._step_callback,
+            thought=f"Calculating indicators for {len(tickers)} tickers",
+            tickers_json=json.dumps(tickers),
         )
-        self._emit_progress(1, result)
+        records, failed = build_technical_records(tool_result, tickers)
+        if not records:
+            reasons = "; ".join(f"{f.ticker}: {f.error}" for f in failed)[:300]
+            raise RuntimeError(
+                f"{phase}: no ticker has indicator data; refusing to publish invented indicators ({reasons})"
+            )
+        if failed:
+            logger.warning(
+                "%s: indicators failed for %s; excluded from later phases",
+                phase, ", ".join(f.ticker for f in failed),
+            )
+
+        ctx = "\n\n".join([
+            self._fmt_ctx("Market Analysis Output", self._slim_market_for_analysis()),
+            self._fmt_ctx("Technical Data (computed by the pipeline)", technical_narrative_context(records, failed)),
+        ])
+        result, narrative = await self._run_phase(
+            phase, 1, TechnicalNarrativeOutput, build_args=(ctx,),
+            validate=lambda n: require_technical_coverage(n, records),
+            start_tracker=False,
+        )
+        self.state.technical_output = merge_technical(self.state.sector, tickers, records, narrative, failed)
+        self._emit_progress_model(1, self.state.technical_output, result)
         return result.raw or ""
 
     @listen(market_analysis)

@@ -131,5 +131,5 @@ class TestTaskFactoryWiring:
         from prospect_ai_crew import TaskFactory
 
         factory = TaskFactory()
-        tool = factory._phase_config["technical_analysis"]["agent_tools"][0]
+        tool = factory.flow_tool("technical_analysis", "calculate_technical_indicators")
         assert tool._prospectai_timed_phase == "technical_analysis"

@@ -15,7 +15,6 @@ from schemas.agent_outputs import (
     StockTechnicalAnalysis,
     SupportResistance,
     TechnicalAnalysisOutput,
-    TechnicalScore,
 )
 from utils.portfolio_bounds_validator import validate
 from tests.fixtures_deterministic_enforcement import (
@@ -64,7 +63,6 @@ def _technical_output(ticker, entry_zone_low, entry_zone_high, current_price):
                     entry_zone_high=entry_zone_high,
                     regime="REVERTING",
                 ),
-                technical_score=TechnicalScore(percentage=70.0, grade="B", recommendation="Buy"),
                 investment_recommendation="B" * 60,
             ),
         ],

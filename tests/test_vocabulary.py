@@ -34,7 +34,6 @@ from schemas.agent_outputs import (
     StockTechnicalAnalysis,
     SupportResistance,
     TechnicalAnalysisOutput,
-    TechnicalScore,
     ValuationLabel,
     ValuationMetrics,
 )
@@ -196,7 +195,6 @@ def _technical() -> TechnicalAnalysisOutput:
                 key_signals=["x"], support_resistance=SupportResistance(support=9.0, resistance=12.0),
                 comprehensive_analysis="c" * 60, entry_zone_status="CURRENT_ENTRY",
             ),
-            technical_score=TechnicalScore(percentage=60.0, grade="B", recommendation="Buy"),
             investment_recommendation="r" * 60,
         )],
         summary="s" * 120,

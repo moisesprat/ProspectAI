@@ -73,24 +73,35 @@ class RawIndicators(BaseModel):
     adx: Optional[float] = None
 
 
+# Closed vocabularies of the technical phase (D-11). The numeric ones are built by
+# the Flow from tool output (utils/technical_records.py); only overall_signal is
+# written by the LLM, and only as one of these four exact values.
+OverallSignal = Literal["BULLISH", "BEARISH", "MIXED", "NEUTRAL"]
+TrendStrength = Literal["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
+EntryZoneStatus = Literal["PULLBACK_ENTRY", "CURRENT_ENTRY", "BELOW_ZONE"]
+Regime = Literal["TRENDING", "REVERTING", "NEUTRAL"]
+
+
 class MomentumAnalysis(BaseModel):
     momentum_score: float = Field(..., ge=0.0, le=10.0)
     risk_level: Literal["Low", "Medium", "High"]
-    trend_strength: Literal["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
+    # Derived from the ADX value by the Flow; None when ADX is missing (CORR-10, D-14).
+    trend_strength: Optional[TrendStrength] = None
     key_signals: List[str]
-    support_resistance: SupportResistance
+    # No tool computes support/resistance, so it is null (D-14). Old payloads still load.
+    support_resistance: Optional[SupportResistance] = None
     comprehensive_analysis: str = Field(..., min_length=50)
-    overall_signal: Optional[str] = None       # "BULLISH", "BEARISH", "MIXED", "NEUTRAL"
-    entry_zone_status: Optional[str] = None    # "PULLBACK_ENTRY", "CURRENT_ENTRY", "BELOW_ZONE"
-    entry_zone_low: Optional[float] = None     # copied verbatim from interpret_technical_indicators
-    entry_zone_high: Optional[float] = None    # copied verbatim from interpret_technical_indicators
-    regime: Optional[str] = None               # "TRENDING", "REVERTING", "NEUTRAL"
+    overall_signal: Optional[OverallSignal] = None
+    entry_zone_status: Optional[EntryZoneStatus] = None
+    entry_zone_low: Optional[float] = None     # from interpret_technical_indicators, via the Flow
+    entry_zone_high: Optional[float] = None    # from interpret_technical_indicators, via the Flow
+    regime: Optional[Regime] = None
 
 
-class TechnicalScore(BaseModel):
-    percentage: float = Field(..., ge=0.0, le=100.0)
-    grade: str
-    recommendation: Literal["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"]
+# TechnicalScore (an LLM-invented percentage, grade and recommendation, read only by
+# the dead enhanced_pdf_generator) and StockTechnicalAnalysis.technical_score were
+# removed in plan 02-15 (D-17, extends D-09). Stored payloads that still carry the
+# key load fine because unknown keys are ignored.
 
 
 class StockTechnicalAnalysis(BaseModel):
@@ -99,13 +110,36 @@ class StockTechnicalAnalysis(BaseModel):
     price_data_error: Optional[str] = None
     raw_indicators: Optional[RawIndicators] = None
     momentum_analysis: MomentumAnalysis
-    technical_score: TechnicalScore
     investment_recommendation: str = Field(..., min_length=50)
+
+
+class FailedTicker(BaseModel):
+    """A ticker whose indicators could not be computed; excluded from later phases."""
+    ticker: str
+    error: str
 
 
 class TechnicalAnalysisOutput(BaseModel):
     sector: str
     technical_analysis: List[StockTechnicalAnalysis] = Field(..., min_length=1)
+    summary: str = Field(..., min_length=100)
+    failed_tickers: List[FailedTicker] = Field(default_factory=list)
+
+
+# What the Technical Analyst LLM is allowed to write (CORR-10, D-14, D-15). The Flow
+# calls the indicator tool and builds every number and label (utils/technical_records.py)
+# and merges these fields into the published TechnicalAnalysisOutput. pydantic ignores
+# any extra key an answer adds, so the LLM cannot set a number or a label here.
+class TechnicalNarrative(BaseModel):
+    ticker: str
+    overall_signal: OverallSignal
+    key_signals: List[str] = Field(..., min_length=1)
+    comprehensive_analysis: str = Field(..., min_length=50)
+    investment_recommendation: str = Field(..., min_length=50)
+
+
+class TechnicalNarrativeOutput(BaseModel):
+    analyses: List[TechnicalNarrative] = Field(..., min_length=1)
     summary: str = Field(..., min_length=100)
 
 

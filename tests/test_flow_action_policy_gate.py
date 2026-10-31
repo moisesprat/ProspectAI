@@ -19,7 +19,6 @@ from schemas.agent_outputs import (
     StockTechnicalAnalysis,
     SupportResistance,
     TechnicalAnalysisOutput,
-    TechnicalScore,
 )
 from tests.fixtures_deterministic_enforcement import (
     CRITIC_OUTPUT_INVERTED_CURRENT_ENTRY_BUG,
@@ -68,7 +67,6 @@ def _technical_output_for(ticker, entry_zone_status):
                     entry_zone_high=200.0,
                     regime="TRENDING",
                 ),
-                technical_score=TechnicalScore(percentage=75.0, grade="B", recommendation="Buy"),
                 investment_recommendation="B" * 60,
             ),
         ],
