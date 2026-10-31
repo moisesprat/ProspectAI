@@ -1,8 +1,8 @@
 """One test per phase proving LLM-echoed numbers and grades never reach published output (CORR-10, D-15).
 
-Plan 02-13 covers the fundamental phase, plan 02-15 the technical phase and plan
-02-16 the market phase. The other phases are added by plans 02-17 (draft) and 02-18
-(critique, final);
+Plan 02-13 covers the fundamental phase, plan 02-15 the technical phase, plan 02-16
+the market phase, plan 02-17 the draft phase and plan 02-18 the critique and final
+phases (all six phases are covered);
 see .planning/phases/02-stall-elimination-schema-valid-output/02-LLM-ROLE-AUDIT.md.
 """
 import asyncio
@@ -16,6 +16,7 @@ import pytest
 from prospect_ai_flow import ProspectAIFlow
 from schemas.agent_outputs import (
     CandidateStock,
+    CriticOutput,
     FundamentalAnalysisOutput,
     FundamentalNarrative,
     FundamentalNarrativeOutput,
@@ -1738,3 +1739,434 @@ class TestStrictVocabulary:
         assert set(PositionNarrative.model_fields) == {
             "ticker", "action", "rationale", "monitoring_triggers", "review_frequency"}
         assert set(StrategyNarrativeOutput.model_fields) == {"positions", "overall_strategy"}
+
+
+# ─── critique_review and final_strategy (plan 02-18) ───────────────────────────
+
+CRITIC_PHASE = "critique_review"
+FINAL_PHASE = "final_strategy"
+FINAL_TAIL = " Action set to MONITOR by policy: "
+
+
+def critic_payload(**extra):
+    payload = {
+        "sector": "Technology",
+        "risk_profile": "conservative",
+        "draft_assessment": "The draft is mostly coherent but AAA leans on momentum alone. " * 2,
+        "per_ticker_critiques": [],
+        "portfolio_level_issues": [],
+        "revision_directives": [],
+        "approved_positions": ["AAA", "BBB"],
+    }
+    payload.update(extra)
+    return payload
+
+
+HOSTILE_CRITIC = critic_payload(
+    per_ticker_critiques=[{
+        "ticker": "AAA", "severity": "MAJOR", "issue_type": "VAGUE_RATIONALE",
+        "finding": "AAA allocation 50% is far too small for a score of 99 and the stop at 1.00 is wrong.",
+        "instruction": "AAA: set allocation_pct to 50 and stop_loss to 1.00 because composite_score=99 deserves it.",
+    }],
+    revision_directives=["AAA: set allocation 50% and stop 1.00 because the conviction is extreme"],
+    approved_positions=["BBB"],
+)
+
+
+def run_critic(flow, *results):
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+        asyncio.run(flow.critique_review())
+    return mc.return_value.akickoff
+
+
+def run_final(flow, *results):
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+        asyncio.run(flow.final_strategy())
+    return mc.return_value.akickoff
+
+
+def prime_final(flow, draft_actions=("LONG-BUY", "MONITOR"), **kwargs):
+    """Run the draft phase (real tools, canned narrative) so the final phase has a draft and Flow scores."""
+    tools = prime_draft(flow, **kwargs)
+    wire_tools(flow, tools, phase=DRAFT_PHASE)
+    run_draft(flow, narrative_result(draft_payload(
+        draft_entry("AAA", draft_actions[0]), draft_entry("BBB", draft_actions[1]),
+    )))
+    flow.state.critique_output = CriticOutput.model_validate(critic_payload())
+    return tools
+
+
+def _published_numbers(output):
+    """Every number the report publishes, per position and in total."""
+    dump = output.model_dump(mode="json")
+    positions = {
+        p["ticker"]: (p["composite_score"], p["allocation_pct"], p["current_price"], p["trade_setup"],
+                      p["fundamentals_status"])
+        for p in dump["positions"]
+    }
+    totals = {k: dump[k] for k in ("deployed_pct", "reserved_pct", "total_allocated_pct", "cash_reserve_pct", "risk_level")}
+    return positions, totals
+
+
+def test_final_llm_numbers_overwritten(flow):
+    """D-15: the final answer cannot set a score, allocation, setup, total, grade or the risk level."""
+    from schemas.agent_outputs import InvestorStrategicOutput
+
+    tools = prime_final(flow)
+    hostile = {
+        "composite_score": 99.0, "allocation_pct": 40.0, "current_price": 1.0, "fundamentals_status": "AVAILABLE",
+        "trade_setup": {"direction": "LONG-BUY", "entry_zone_low": 1.0, "entry_zone_high": 2.0,
+                        "stop_loss": 0.5, "take_profit": 9.0},
+    }
+    payload = draft_payload(
+        draft_entry("AAA", "LONG-BUY", **hostile), draft_entry("BBB", "MONITOR", **hostile),
+        deployed_pct=80.0, reserved_pct=10.0, cash_reserve_pct=10.0, total_allocated_pct=90.0, risk_level="Low",
+        sector="Hostile", risk_profile="aggressive",
+    )
+    run_final(flow, narrative_result(payload))
+
+    out = flow.state.final_output
+    assert isinstance(out, InvestorStrategicOutput)
+    by = _positions(out)
+    assert (by["AAA"].composite_score, by["BBB"].composite_score) == (73.4, 38.0)      # the Flow's own scores
+    assert (by["AAA"].allocation_pct, by["BBB"].allocation_pct) == (15.0, 0.0)          # the allocator's
+    setup = by["AAA"].trade_setup
+    assert setup is not None and setup.stop_loss == 96.03 and (setup.entry_zone_low, setup.entry_zone_high) == (99.0, 99.0)
+    assert by["BBB"].trade_setup is None
+    assert (by["AAA"].current_price, by["BBB"].current_price) == (99.0, 50.0)
+    assert (by["AAA"].fundamentals_status, by["BBB"].fundamentals_status) == ("AVAILABLE", "UNKNOWN")
+    assert (out.deployed_pct, out.reserved_pct, out.cash_reserve_pct, out.total_allocated_pct) == (15.0, 0.0, 85.0, 15.0)
+    assert out.risk_level == "Very High"                                                  # rule-derived, not "Low"
+    assert out.sector == "Technology" and out.risk_profile == "conservative"
+    assert by["AAA"].action == "LONG-BUY" and "AAA rationale written by the model" in by["AAA"].rationale
+    assert out.overall_strategy == "o" * 120
+    # What publishes survives the Flow's own final repricing and the bounds validator unchanged.
+    final = flow._finalize_and_validate_portfolio(out.model_dump(mode="json"), "conservative")
+    assert final["positions"][0]["composite_score"] == 73.4 and final["positions"][0]["allocation_pct"] == 15.0
+    assert tools[ALLOCATOR_TOOL].calls and len(tools[ALLOCATOR_TOOL].calls) == 2          # draft call + final call
+
+
+def test_final_actions_are_the_ones_allocated(flow):
+    """The allocator runs on the FINAL actions, not on the draft's."""
+    tools = prime_final(flow)
+    assert _positions(flow.state.draft_output)["AAA"].allocation_pct == 15.0
+    run_final(flow, narrative_result(draft_payload(draft_entry("AAA", "MONITOR"), draft_entry("BBB", "AVOID"))))
+    sent = json.loads(tools[ALLOCATOR_TOOL].calls[-1]["stocks_json"])
+    assert [(s["ticker"], s["action"]) for s in sent["stocks"]] == [("AAA", "MONITOR"), ("BBB", "AVOID")]
+    out = flow.state.final_output
+    by = _positions(out)
+    assert by["AAA"].allocation_pct == 0.0 and out.deployed_pct == 0.0 and out.risk_level == "Low"
+    assert flow.state.draft_output.positions[0].action == "LONG-BUY"                       # the draft is untouched
+
+
+def test_final_clamp(flow):
+    """D-08: LONG-BUY on UNKNOWN fundamentals publishes MONITOR with a warning, never a BoundsViolationError."""
+    prime_final(flow)
+    run_final(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB", "LONG-BUY"))))
+    by = _positions(flow.state.final_output)
+    assert by["BBB"].action == "MONITOR" and by["BBB"].allocation_pct == 0.0
+    assert FINAL_TAIL in by["BBB"].rationale and "FUNDAMENTALS_UNKNOWN" in by["BBB"].rationale.split(FINAL_TAIL)[1]
+    assert by["AAA"].action == "LONG-BUY" and FINAL_TAIL not in by["AAA"].rationale
+    [clamp] = flow.state.policy_clamps
+    assert clamp["ticker"] == "BBB" and clamp["phase"] == FINAL_PHASE and clamp["to_action"] == "MONITOR"
+    assert clamp["message"].startswith("BBB: final action LONG-BUY set to MONITOR by policy")
+
+    # Through run_analysis: the warning reaches the result, and the bounds validator has nothing to reject.
+    def kickoff(inputs=None):
+        pass
+
+    flow.kickoff = kickoff
+    out = flow.run_analysis({"sector": "Technology"})
+    assert [p["action"] for p in out["result"]["positions"]] == ["LONG-BUY", "MONITOR"]
+    warned = [w for w in out["validation_warnings"] if w["field"] == "action"]
+    assert [w["ticker"] for w in warned] == ["BBB"] and "final action LONG-BUY" in warned[0]["message"]
+
+
+def test_final_clamp_appends_to_the_draft_clamps_and_warnings_name_the_published_action(flow):
+    """A draft clamp then a different final action: each warning says which phase and what finally published."""
+    prime_final(flow, draft_actions=("LONG-BUY", "LONG-BUY"))          # draft clamps BBB LONG-BUY -> MONITOR
+    assert [c["phase"] for c in flow.state.policy_clamps] == [DRAFT_PHASE]
+    run_final(flow, narrative_result(draft_payload(draft_entry("AAA", "WAIT-FOR-ENTRY"), draft_entry("BBB", "AVOID"))))
+    # AAA WAIT-FOR-ENTRY at CURRENT_ENTRY is clamped again; BBB was changed by the draft clamp only.
+    assert [(c["ticker"], c["phase"]) for c in flow.state.policy_clamps] == [("BBB", DRAFT_PHASE), ("AAA", FINAL_PHASE)]
+
+    flow.kickoff = lambda inputs=None: None
+    out = flow.run_analysis({"sector": "Technology"})
+    published = {p["ticker"]: p["action"] for p in out["result"]["positions"]}
+    assert published == {"AAA": "MONITOR", "BBB": "AVOID"}
+    warned = {(w["ticker"]): w["message"] for w in out["validation_warnings"] if w["field"] == "action"}
+    assert len(warned) == 2
+    assert "draft action LONG-BUY set to MONITOR" in warned["BBB"] and "published action is AVOID" in warned["BBB"]
+    assert "final action WAIT-FOR-ENTRY set to MONITOR" in warned["AAA"] and "published action" not in warned["AAA"]
+
+
+def test_final_context_shows_the_draft_the_critic_and_the_eligible_actions(flow):
+    prime_final(flow)
+    run_final(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))))
+    ctx = flow._factory.build_task.call_args.args[3]
+    for heading in ("=== Draft Strategy Output ===", "=== Critic Review Output ===",
+                    "=== Scores and eligible actions (computed by the pipeline) ==="):
+        assert heading in ctx
+    section = ctx.split("=== Scores and eligible actions (computed by the pipeline) ===")[1]
+    rows = {r["ticker"]: r for r in json.loads(section.strip().split("\n\n=== ")[0])["tickers"]}
+    assert rows["AAA"]["eligible_actions"] == ["LONG-BUY", "MONITOR", "AVOID"]
+    assert rows["BBB"]["eligible_actions"] == ["MONITOR", "AVOID"]
+    assert flow._factory.build_task.call_args.kwargs["risk_profile"] == "conservative"
+
+
+def test_final_missing_position_is_retried_and_named(flow):
+    prime_final(flow)
+    short = narrative_result(draft_payload(draft_entry("AAA")))
+    full = narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB")))
+    assert run_final(flow, short, full).await_count == 2
+    assert "positions[BBB]" in flow._factory.build_task.call_args_list[-1].kwargs["feedback"]
+    assert "final_strategy" in flow._factory.build_task.call_args_list[-1].kwargs["feedback"]
+    with pytest.raises(PhaseSchemaError) as info:
+        run_final(flow, short, short, short)
+    assert info.value.phase == FINAL_PHASE and "positions[BBB]" in str(info.value)
+
+
+def test_final_without_flow_scores_fails_closed(flow):
+    from utils.portfolio_bounds_validator import BoundsViolationError
+
+    prime_final(flow)
+    flow.state.composite_scores = {}
+    with pytest.raises(BoundsViolationError) as info:
+        run_final(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+    assert info.value.violations[0]["rule"] == "composite_score_missing"
+    assert flow.state.final_output is None
+
+
+def test_final_without_a_draft_fails_clearly(flow):
+    prime_final(flow)
+    flow.state.draft_output = None
+    with pytest.raises(RuntimeError, match="final_strategy"):
+        run_final(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+
+
+def test_final_allocator_error_raises_bounds_violation(flow):
+    from utils.portfolio_bounds_validator import BoundsViolationError
+
+    tools = prime_final(flow)
+    tools[ALLOCATOR_TOOL] = StubTool(ALLOCATOR_TOOL, json.dumps({"error": "Computation error: boom"}))
+    wire_tools(flow, tools, phase=FINAL_PHASE)
+    with pytest.raises(BoundsViolationError):
+        run_final(flow, narrative_result(draft_payload(draft_entry("AAA"), draft_entry("BBB"))))
+    assert flow.state.final_output is None
+
+
+def test_final_emits_the_contract_sequence_and_times_the_allocator(flow):
+    events, steps = [], []
+    flow._progress_callback = events.append
+    flow._step_callback = lambda idx, step: steps.append(idx)
+    tools = prime_final(flow)
+    wire_tools(flow, tools, instrument=True, phase=FINAL_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    events.clear()
+    steps.clear()
+    loop_thread = threading.get_ident()
+    run_final(flow, narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB"))))
+    assert [(e["event"], e["task_index"]) for e in events] == [("agent_start", 5), ("task_complete", 5)]
+    assert steps == [5]                                               # one synthetic step: the allocation
+    assert tools[ALLOCATOR_TOOL].idents[-1] != loop_thread
+    assert flow._tracker.to_dict()["tool_calls"][-1]["phase"] == FINAL_PHASE
+
+
+def test_final_agent_has_no_tools_and_the_flow_holds_the_allocator(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+    from prospect_ai_crew import TaskFactory
+    from schemas.agent_outputs import StrategyNarrativeOutput
+
+    factory = TaskFactory()
+    task = factory.build_task(FINAL_PHASE, "Technology", "2026-04-29", "=== ctx ===")
+    assert list(task.tools or []) == []
+    assert task.output_pydantic is StrategyNarrativeOutput
+    assert factory._phase_config[FINAL_PHASE]["agent_tools"] == []
+    assert factory.flow_tool(FINAL_PHASE, ALLOCATOR_TOOL).name == ALLOCATOR_TOOL
+    critic = factory.build_task(CRITIC_PHASE, "Technology", "2026-04-29", "=== ctx ===")
+    assert list(critic.tools or []) == [] and factory._phase_config[CRITIC_PHASE]["flow_tools"] == {}
+
+
+# ── critique_review: compliant by design (RESEARCH F10 row 5, D-14), pinned by D-15 ──
+
+def test_critic_cannot_change_numbers(flow):
+    """D-15: a Critic demanding allocation 50% and stop 1.00 changes nothing the report publishes."""
+    from schemas.agent_outputs import CriticOutput
+
+    final_answer = narrative_result(draft_payload(draft_entry("AAA", "LONG-BUY"), draft_entry("BBB", "MONITOR")))
+
+    prime_final(flow)
+    run_critic(flow, narrative_result(critic_payload()))
+    assert isinstance(flow.state.critique_output, CriticOutput)
+    run_final(flow, final_answer)
+    control = _published_numbers(flow.state.final_output)
+
+    prime_final(flow)
+    run_critic(flow, narrative_result(HOSTILE_CRITIC))
+    assert "allocation 50%" in flow.state.critique_output.revision_directives[0]
+    run_final(flow, final_answer)
+    hostile = _published_numbers(flow.state.final_output)
+
+    assert hostile == control
+    positions, totals = hostile
+    assert positions["AAA"][1] == 15.0 and positions["AAA"][3]["stop_loss"] == 96.03       # the allocator's, not 50 / 1.00
+    assert positions["AAA"][0] == 73.4
+    assert totals["deployed_pct"] == 15.0
+
+
+def test_critic_directive_for_an_ineligible_action_is_dropped_before_the_final_phase(flow):
+    prime_final(flow)
+    ctx_critic = critic_payload(
+        revision_directives=["BBB: change action from MONITOR to LONG-BUY because the fundamentals look fine to me"],
+    )
+    run_critic(flow, narrative_result(ctx_critic))
+    gated = json.loads(flow._gated_slim_critique())
+    assert gated["revision_directives"] == []              # BBB is UNKNOWN: LONG-BUY is outside its eligible actions
+
+
+def test_critic_reference_table_is_flow_built(flow):
+    """The Critic's reference table is the technical and fundamental records, with the schema's labels."""
+    prime_draft(flow)
+    rows = {r["ticker"]: r for r in json.loads(flow._critic_reference_table())["reference_table"]}
+    to, fo = flow.state.technical_output, flow.state.fundamental_output
+    for a in to.technical_analysis:
+        row = rows[a.ticker]
+        assert row["rsi"] == a.raw_indicators.rsi
+        assert row["stochastic_status"] == a.raw_indicators.stochastic_status
+        assert row["macd_status"] == a.raw_indicators.macd_status
+        assert row["entry_zone_status"] == a.momentum_analysis.entry_zone_status
+        assert row["momentum_score"] == a.momentum_analysis.momentum_score
+    for a in fo.fundamental_analysis:
+        row, rating = rows[a.ticker], a.fundamental_rating
+        assert (row["valuation"], row["quality"]) == (rating.valuation, rating.quality)
+    assert rows["AAA"]["fundamentals_status"] == "AVAILABLE" and rows["BBB"]["fundamentals_status"] == "UNKNOWN"
+    assert rows["AAA"]["average_sentiment"] == 0.2
+
+
+# ── D-11 end state: no enum field has a case or whitespace normaliser ──────────
+
+def test_severity_strict():
+    from pydantic import ValidationError
+    from schemas.agent_outputs import CritiqueItem
+
+    base = {"ticker": "AAA", "issue_type": "VAGUE_RATIONALE", "finding": "f" * 40, "instruction": "i" * 40}
+    CritiqueItem.model_validate({**base, "severity": "MAJOR"})
+    for bad in ("major", "Major", " MAJOR", "MAJOR ", "SEVERE"):
+        with pytest.raises(ValidationError):
+            CritiqueItem.model_validate({**base, "severity": bad})
+    with pytest.raises(ValidationError) as info:
+        CriticOutput.model_validate(critic_payload(per_ticker_critiques=[{**base, "severity": "major"}]))
+    assert "per_ticker_critiques.0.severity" in str(info.value)
+
+
+def _momentum(**over):
+    from schemas.agent_outputs import MomentumAnalysis, SupportResistance
+
+    base = dict(
+        momentum_score=7.0, risk_level="Medium", trend_strength="Strong", key_signals=["RSI neutral", "MACD up"],
+        support_resistance=SupportResistance(support=48.0, resistance=52.0), comprehensive_analysis="C" * 60,
+        entry_zone_status="PULLBACK_ENTRY", entry_zone_low=48.0, entry_zone_high=52.0, regime="REVERTING",
+    )
+    base.update(over)
+    return MomentumAnalysis(**base)
+
+
+@pytest.mark.parametrize("variant", ["lower", "padded"])
+def test_d11_end_state_no_enum_normalisers(variant):
+    """D-11: a lower-case or space-padded value fails each of the five fields that used to be normalised."""
+    from pydantic import ValidationError
+    from schemas.agent_outputs import CritiqueItem, PositionRecommendation, TradeSetup
+
+    def bad(value):
+        return value.lower() if variant == "lower" else f" {value} "
+
+    _momentum()                                                      # the valid form constructs
+    with pytest.raises(ValidationError):
+        _momentum(risk_level=bad("Medium"))
+    setup = dict(entry_zone_low=9.0, entry_zone_high=10.0, stop_loss=8.0, take_profit=12.0)
+    TradeSetup(direction="LONG-BUY", **setup)
+    with pytest.raises(ValidationError):
+        TradeSetup(direction=bad("LONG-BUY"), **setup)
+    pos = dict(ticker="AAA", composite_score=50.0, allocation_pct=0.0, rationale="r" * 60,
+               monitoring_triggers=["t"], action="MONITOR", review_frequency="WEEKLY")
+    PositionRecommendation(**pos)
+    for field, value in (("action", "MONITOR"), ("review_frequency", "WEEKLY")):
+        with pytest.raises(ValidationError):
+            PositionRecommendation(**{**pos, field: bad(value)})
+    crit = {"ticker": "AAA", "issue_type": "VAGUE_RATIONALE", "finding": "f" * 40, "instruction": "i" * 40}
+    CritiqueItem(severity="MINOR", **crit)
+    with pytest.raises(ValidationError):
+        CritiqueItem(severity=bad("MINOR"), **crit)
+
+
+def test_no_enum_field_carries_a_field_validator():
+    """Structural form of D-11: no Literal field of any published or LLM-facing model has a field validator."""
+    import typing
+
+    from pydantic import BaseModel
+    from schemas import agent_outputs
+
+    def is_literal(annotation):
+        if typing.get_origin(annotation) is typing.Literal:
+            return True
+        return any(is_literal(a) for a in typing.get_args(annotation))
+
+    offenders = []
+    for name, cls in vars(agent_outputs).items():
+        if not (isinstance(cls, type) and issubclass(cls, BaseModel)) or cls.__module__ != agent_outputs.__name__:
+            continue
+        for decorator in cls.__pydantic_decorators__.field_validators.values():
+            for field in decorator.info.fields:
+                if field in cls.model_fields and is_literal(cls.model_fields[field].annotation):
+                    offenders.append(f"{name}.{field}")
+    assert offenders == []
+
+
+def test_every_phase_has_a_d15_test():
+    """ROADMAP SC7: one hostile-answer test per phase lives in this module."""
+    import sys
+
+    module = sys.modules[__name__]
+    for name in ("test_market_llm_numbers_overwritten", "test_technical_llm_numbers_and_labels_overwritten",
+                 "test_fundamental_llm_numbers_and_grades_overwritten", "test_draft_llm_numbers_overwritten",
+                 "test_critic_cannot_change_numbers", "test_final_llm_numbers_overwritten"):
+        assert callable(getattr(module, name)), name
+
+
+class TestClampWarnings:
+    def test_a_warning_names_the_published_action_only_when_it_differs(self):
+        from utils.strategy_assembly import clamp_warnings
+
+        clamps = [
+            {"ticker": "AAA", "to_action": "MONITOR", "message": "AAA: final action LONG-BUY set to MONITOR by policy: r"},
+            {"ticker": "BBB", "to_action": "MONITOR", "message": "BBB: draft action LONG-BUY set to MONITOR by policy: r"},
+            {"ticker": "CCC", "to_action": "MONITOR", "message": "CCC: draft action LONG-BUY set to MONITOR by policy: r"},
+        ]
+        got = clamp_warnings(clamps, {"AAA": "MONITOR", "BBB": "AVOID"})
+        assert [w["severity"] for w in got] == ["warning"] * 3 and [w["field"] for w in got] == ["action"] * 3
+        assert got[0]["message"] == clamps[0]["message"]
+        assert got[1]["message"] == clamps[1]["message"] + " The published action is AVOID."
+        assert got[2]["message"] == clamps[2]["message"]                    # no published position: nothing to add
+
+    def test_clamp_records_carry_their_phase(self):
+        from utils.strategy_assembly import clamp_actions
+
+        pos = TestStrategyAssemblyUnits._pos("AAA", "LONG-BUY")
+        eligible = {"AAA": frozenset({"MONITOR", "AVOID"})}
+        _, draft = clamp_actions([pos], eligible)
+        _, final = clamp_actions([pos], eligible, phase="final_strategy")
+        assert draft[0]["phase"] == "draft_strategy" and draft[0]["message"].startswith("AAA: draft action LONG-BUY")
+        assert final[0]["phase"] == "final_strategy" and final[0]["message"].startswith("AAA: final action LONG-BUY")
+
+    def test_require_position_coverage_names_the_phase(self):
+        from schemas.agent_outputs import StrategyNarrativeOutput
+        from utils.strategy_assembly import require_position_coverage
+
+        short = StrategyNarrativeOutput.model_validate(draft_payload(draft_entry("AAA")))
+        with pytest.raises(PhaseOutputError, match="final_strategy"):
+            require_position_coverage(short, ["AAA", "BBB"], phase="final_strategy")

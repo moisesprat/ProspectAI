@@ -284,3 +284,47 @@ class TestBuyOnUnknownFundamentalsCaught:
             v["rule"] == "buy_with_unknown_fundamentals" and v["ticker"] == "MRK"
             for v in exc_info.value.violations
         )
+
+
+# ── Composite score comes from Flow state, never from the LLM's dict (plan 02-18, T-02-46) ──
+
+class TestRepriceUsesFlowComposite:
+    @staticmethod
+    def _structured(composite):
+        return {
+            "sector": "Energy", "risk_profile": "conservative",
+            "positions": [{
+                "ticker": "XOM", "action": "LONG-BUY", "composite_score": composite,
+                "allocation_pct": 0.0, "current_price": 118.0, "trade_setup": None,
+            }],
+        }
+
+    def test_reprice_uses_flow_composite(self, flow):
+        from utils.portfolio_allocator_tool import PortfolioAllocatorTool
+
+        flow.state.technical_output = _technical_output("XOM", 114.0, 116.5, 118.0)
+        flow.state.composite_scores = {"XOM": {"ticker": "XOM", "composite_score": 61.5}}
+        sent = []
+        real = PortfolioAllocatorTool._run
+
+        def spy(self, stocks_json):
+            sent.append(json.loads(stocks_json))
+            return real(self, stocks_json)
+
+        with patch.object(PortfolioAllocatorTool, "_run", spy):
+            flow._reprice_final_output(self._structured(composite=99.0), "conservative")
+        assert [s["composite_score"] for s in sent[0]["stocks"]] == [61.5]
+
+    def test_a_ticker_without_a_flow_score_fails_closed(self, flow):
+        flow.state.technical_output = _technical_output("XOM", 114.0, 116.5, 118.0)
+        flow.state.composite_scores = {}
+        with pytest.raises(BoundsViolationError) as info:
+            flow._reprice_final_output(self._structured(composite=99.0), "conservative")
+        [violation] = info.value.violations
+        assert violation["rule"] == "composite_score_missing" and violation["ticker"] == "XOM"
+
+    def test_no_zero_default_for_a_missing_score(self, flow):
+        flow.state.technical_output = _technical_output("XOM", 114.0, 116.5, 118.0)
+        flow.state.composite_scores = {"OTHER": {"ticker": "OTHER", "composite_score": 70.0}}
+        with pytest.raises(BoundsViolationError):
+            flow._finalize_and_validate_portfolio(self._structured(composite=70.0), "conservative")
