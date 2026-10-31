@@ -449,17 +449,19 @@ tasks:
                   appears in the rationale nor triggers."
         Every CRITICAL and MAJOR issue must have a corresponding directive.
 
-      STEP 5 — Output a pure Python dict (no markdown):
-        sector: str
-        risk_profile: str — "$risk_profile" (echo back verbatim)
-        draft_assessment: str — one paragraph summarizing key weaknesses found, grounded
-                                 in the reference_table (no praise; if the draft has no
-                                 grounded weaknesses, say so plainly instead of inventing one)
-        per_ticker_critiques[]: ticker(str) severity(str) issue_type(str) finding(str) instruction(str)
-          (may be an empty list — see RULES)
-        portfolio_level_issues: str[] — overall_strategy/reasoning consistency issues (may be empty)
-        revision_directives: str[] — "[TICKER]: [change] because [exact data]" (may be empty)
-        approved_positions: str[] — tickers fully compliant (may be empty)
+      STEP 5 — Output JSON only, shaped exactly like this example (no markdown wrapper):
+      $output_example
+        Allowed values:
+      $allowed_values
+        Notes on the fields:
+        risk_profile: "$risk_profile" (echo back verbatim)
+        draft_assessment: one paragraph summarizing key weaknesses found, grounded in the
+          reference_table (no praise; if the draft has no grounded weaknesses, say so plainly
+          instead of inventing one)
+        per_ticker_critiques: one entry per finding (may be an empty list — see RULES)
+        portfolio_level_issues: overall_strategy/reasoning consistency issues (may be empty)
+        revision_directives: "[TICKER]: [change] because [exact data]" (may be empty)
+        approved_positions: tickers fully compliant (may be empty)
 
       RULES:
       - For each ticker, check all failure-mode criteria. If a position is fully
@@ -476,29 +478,58 @@ tasks:
       - approved_positions lists tickers where the draft is FULLY correct (can be empty).
       - Never soften a finding with "however" or "overall reasonable". Report the flaw.
     expected_output: >
-      Python dict with sector='$sector', draft_assessment, per_ticker_critiques
+      JSON object with sector='$sector', risk_profile, draft_assessment, per_ticker_critiques
       (list with ticker/severity/issue_type/finding/instruction), portfolio_level_issues,
       revision_directives, and approved_positions.
+    output_example:
+      sector: "Technology"
+      risk_profile: "conservative"
+      draft_assessment: "The draft's weakest call is AAPL: the rationale leans on momentum_score=7.4 while skipping the VERY_EXPENSIVE valuation the reference table shows, so the conviction is not earned by the evidence. MSFT is handled coherently as a watch-list name with measurable triggers."
+      per_ticker_critiques:
+        - ticker: "AAPL"
+          severity: "MAJOR"
+          issue_type: "VALUATION_IGNORED"
+          finding: "The reference table grades AAPL valuation=VERY_EXPENSIVE, yet the LONG-BUY rationale never mentions valuation risk."
+          instruction: "AAPL: add the valuation risk to the rationale and state why the long still clears the bar despite valuation=VERY_EXPENSIVE."
+      portfolio_level_issues: []
+      revision_directives:
+        - "AAPL: acknowledge the valuation risk in the rationale because valuation=VERY_EXPENSIVE is not mentioned anywhere in the draft"
+      approved_positions:
+        - "MSFT"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Task 6: Final Strategy
-  # Agent:   Investor Strategic (revision pass)
-  # Context: draft_strategy + critique_review
-  # Tools:   none — the Flow re-invokes allocate_portfolio itself after this task
-  #          and overwrites every numeric allocation/trade-setup field on the
-  #          output (see deterministic-enforcement-v1-9-1). This task decides
-  #          actions and rationale only.
-  # Output:  InvestorStrategicOutput (FINAL — post-critic revision)
+  # Agent:   Investor Strategic (revision pass; same agent text as the draft)
+  # Context: the Flow-numbered draft + the gated Critic review + each ticker's score
+  #          and eligible actions
+  # Tools:   none for the agent; the Flow clamps each action to its eligible set, takes
+  #          composite_score from its own scores, calls allocate_portfolio itself and
+  #          builds the published portfolio (see deterministic-enforcement-v1-9-1 and
+  #          utils/strategy_assembly.py). This task decides actions and rationale only.
+  # Output:  StrategyNarrativeOutput {positions[{ticker, action, rationale,
+  #          monitoring_triggers, review_frequency}], overall_strategy}; the Flow
+  #          merges it into the published InvestorStrategicOutput (FINAL, post-critic)
   # ─────────────────────────────────────────────────────────────────────────────
   final_strategy:
     description: |
-      Receive the draft (Task 4) and the Critic's review (Task 5).
-      Produce the revised final portfolio by applying the Critic's directives.
+      Receive the draft (Task 4) and the Critic's review (Task 5) and produce the revised
+      final portfolio: one decision per stock, with the reasoning behind it.
 
       RISK PROFILE: $risk_profile — same general disposition as in the Draft (see
       draft_strategy's RISK PROFILE guidance). Numeric bounds (allocation caps,
       stop-distance, R/R) are enforced deterministically after this task runs —
-      the Critic no longer reviews them and neither do you.
+      the Critic no longer reviews them and neither do you. You do not compute or
+      write any number: composite scores, allocations, trade setups, capital
+      percentages and the portfolio risk level are calculated by the pipeline after
+      you answer.
+
+      The context sections are Draft Strategy Output, Critic Review Output and
+      "Scores and eligible actions (computed by the pipeline)". Everything in them is
+      final; use the values as given. In the scores section each ticker lists the
+      eligible_actions you may choose for it, and fundamentals_unknown says whether
+      its quality or growth could not be graded. Write a position for every ticker in
+      "tickers", and for no other ticker. A ticker under "excluded" had no indicator
+      data this run: write nothing for it.
 
       STEP 1 — Treat the Critic's revision_directives as a second analyst's
         counter-argument, not a checklist to execute. For EACH directive:
@@ -512,50 +543,61 @@ tasks:
         outcome, even if your final judgment is to keep the original action.
         MINOR critiques may be accepted or defended with less rigor.
 
-      STEP 2 — Decide the final action per position (LONG-BUY, WAIT-FOR-ENTRY,
-        MONITOR, AVOID) by applying the directives you accepted in STEP 1. Do NOT
-        call allocate_portfolio and do NOT compute allocation_pct, trade_setup,
-        deployed_pct, reserved_pct, cash_reserve_pct, or total_allocated_pct
-        yourself — the Flow recomputes every one of those fields deterministically
-        after this task runs, from your decided actions, and discards whatever you
-        write here. Copy the draft's numeric fields verbatim as placeholders so the
-        output schema validates; do not invent or recalculate them.
+      STEP 2 — Decide the final action per position by applying the directives you
+        accepted in STEP 1. Choose only from the ticker's eligible_actions: an action
+        outside that list is replaced by MONITOR with a note that the policy changed
+        it, which wastes your analysis. If a draft rationale ends with "Action set to
+        MONITOR by policy", the pipeline changed that action; decide again from
+        eligible_actions and write a fresh rationale instead of repeating that sentence.
+        Allocations, trade setups, deployed, reserved and cash percentages, composite
+        scores and the risk level are recomputed after you answer, from your decided
+        actions: write none of them, and do not copy the draft's.
 
       STEP 3 — Write revised qualitative content.
-        rationale: 100-150 words per position. If a critique was addressed, state
-          what changed and why. If rejected, cite the specific number that supports
-          the original decision.
-        monitoring_triggers: directionally consistent with the action.
+        rationale: 100-150 words per position citing specific data points from the context.
+          If a critique was addressed, state what changed and why. If rejected, cite the
+          specific number that supports the original decision. You may quote a value from
+          the context; do not put a number in any field of your answer.
+        monitoring_triggers: 2-3 triggers, directionally consistent with the action.
           For LONG-BUY: use RSI > 75 (overbought exit) or price below stop_loss as
           review triggers. Do NOT use RSI < 50 — that level is normal in bull runs.
-        review_frequency: DAILY / WEEKLY / MONTHLY.
-        overall_strategy: 2-3 paragraphs summarising the final portfolio.
-
-      STEP 4 — Output a pure JSON dict (no markdown fences):
-        sector: str
-        risk_profile: str — "$risk_profile" (echo back verbatim)
-        positions[]: ticker(str) action(str) composite_score(float) allocation_pct(float)
-          current_price(float|null) trade_setup(obj|null)
-          rationale(str 100-150 words) monitoring_triggers(str[]) review_frequency(str)
-        deployed_pct: float
-        reserved_pct: float
-        total_allocated_pct: float
-        cash_reserve_pct: float
-        overall_strategy: str (2-3 paragraphs)
-        risk_level: str — Low/Medium/High/Very High
+          For WAIT-FOR-ENTRY: at least one trigger must describe price falling to the
+          entry zone, never price rising toward it.
+          For MONITOR: triggers must describe conditions that would upgrade to
+          WAIT-FOR-ENTRY or LONG-BUY.
+        review_frequency: how often to review the position, one of the allowed values below.
+        overall_strategy: 2-3 paragraphs summarising the final portfolio and how the
+          Critic's review changed it. Do not state percentages of capital or a portfolio
+          risk level: the pipeline calculates and publishes those itself.
 
       RULES:
-      - Output only the JSON dict — no text before or after, no markdown fences.
-      - All CRITICAL critique issues must be addressed (changed or defended).
-      - All numeric fields (composite_score, allocation_pct, entry zones, stops) must
-        be copied verbatim from the draft — never recalculated or invented.
-      - Valid actions: LONG-BUY, WAIT-FOR-ENTRY, MONITOR, AVOID.
-        HOLD, SHORT-SELL, and SCALED-ENTRY are not valid actions.
-      - risk_level: Low / Medium / High / Very High.
-      - review_frequency: DAILY / WEEKLY / MONTHLY.
+      - Output only the JSON object — no text before or after, no markdown fences.
+      - Every CRITICAL and MAJOR critique must be addressed (changed or defended).
+      - Valid actions are the four listed below. HOLD, SHORT-SELL and SCALED-ENTRY are
+        not valid actions.
+
+      Output JSON only, shaped exactly like this example (no markdown wrapper):
+      $output_example
+        Allowed values:
+      $allowed_values
     expected_output: >
-      JSON dict with sector='$sector', positions
-      (ticker/action/allocation_pct/current_price/trade_setup/scaled_entry_setups/
-      rationale/monitoring_triggers/review_frequency), deployed_pct, reserved_pct,
-      total_allocated_pct, cash_reserve_pct, overall_strategy, and risk_level.
-      This is the FINAL revised portfolio.
+      JSON object with positions (one per ticker in the scores section, each with ticker,
+      action, rationale, monitoring_triggers and review_frequency) and overall_strategy.
+      This is the FINAL portfolio after the Critic's review.
+    output_example:
+      positions:
+        - ticker: "AAPL"
+          action: "LONG-BUY"
+          rationale: "The Critic's MAJOR point on AAPL is persuasive: valuation=VERY_EXPENSIVE was missing from the draft case, so I now state it. I keep the long because three signals still agree: momentum_score=7.4 with a bullish MACD, composite_score=73.4, and quality High with Moderate Growth, while price sits inside the entry zone (CURRENT_ENTRY). The residual risk is a de-rating if growth slows, which is why the review stays daily and the exit is a break of the stop level."
+          monitoring_triggers:
+            - "RSI rises above 75 (overbought exit)"
+            - "Price closes below the stop_loss level"
+          review_frequency: "DAILY"
+        - ticker: "MSFT"
+          action: "MONITOR"
+          rationale: "The Critic approved MSFT and I leave the call unchanged: fundamentals are solid (quality High, growth Moderate Growth) but momentum_score=5.2 with ADX=18 shows no trend, and entry_zone_status=PULLBACK_ENTRY means price has not reached a level that gives a conservative profile a margin of safety. Patience costs little here; the upgrade conditions are measurable and listed below."
+          monitoring_triggers:
+            - "RSI drops below 55 while the price holds the entry zone"
+            - "MACD turns bullish on a weekly close"
+          review_frequency: "WEEKLY"
+      overall_strategy: "The final portfolio keeps one high-conviction long and one watch-list name. The Critic's review changed the case for the long rather than the action: the valuation risk is now named and weighed, and the conviction survives it because momentum, graded fundamentals and the entry zone still agree. The second name stays on watch until price action confirms the business quality.\n\nFor a conservative profile this means deploying capital only where several independent signals align and leaving the rest in cash. The main risk remains concentration in one deployed idea, so the long is reviewed daily and the watched name weekly."
