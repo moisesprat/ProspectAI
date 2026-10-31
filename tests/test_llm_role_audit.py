@@ -1,7 +1,8 @@
 """One test per phase proving LLM-echoed numbers and grades never reach published output (CORR-10, D-15).
 
-Plan 02-13 covers the fundamental phase. The other phases are added by plans
-02-15 (technical), 02-16 (market), 02-17 (draft) and 02-18 (critique, final);
+Plan 02-13 covers the fundamental phase and plan 02-15 the technical phase. The
+other phases are added by plans 02-16 (market), 02-17 (draft) and 02-18 (critique,
+final);
 see .planning/phases/02-stall-elimination-schema-valid-output/02-LLM-ROLE-AUDIT.md.
 """
 import asyncio
@@ -147,10 +148,10 @@ def flow():
         yield f
 
 
-def wire_tools(flow, tools, instrument=False):
+def wire_tools(flow, tools, instrument=False, phase=PHASE):
     if instrument:
         for tool in tools.values():
-            instrument_tool(tool, PHASE, lambda: flow._tracker)
+            instrument_tool(tool, phase, lambda: flow._tracker)
     flow._factory.flow_tool.side_effect = lambda phase, name: tools[name]
 
 
@@ -469,3 +470,305 @@ class TestCallTool:
     def test_no_callback_still_runs_the_tool(self):
         tool = StubTool("fetch_fundamental_data", "OUT")
         assert asyncio.run(call_tool(tool, phase_index=2, step_callback=None, thought="t")) == "OUT"
+
+
+# ─── technical_analysis (plan 02-15) ───────────────────────────────────────────
+
+TECH_PHASE = "technical_analysis"
+
+
+def tech_entry(ticker, price=99.0, adx=32.0, **interp):
+    """One successful calculate_technical_indicators entry, in the tool's documented shape."""
+    interpretation = {
+        "ticker": ticker, "entry_zone_low": 95.0, "entry_zone_high": 98.0,
+        "entry_zone_status": "CURRENT_ENTRY", "regime": "TRENDING",
+        "momentum_score": 7.1, "risk_level": "High",
+    }
+    interpretation.update(interp)
+    return {
+        "ticker": ticker,
+        "stock_data": {"current_price": price},
+        "technical_indicators": {
+            "momentum": {
+                "rsi": {"current": 58.0},
+                "stochastic": {"status": "Neutral"},
+                "macd": {"status": "Bullish"},
+            },
+            "trend": {
+                "moving_averages": {"status": "Strong Uptrend"},
+                "adx": {"current": adx, "status": "Moderate Trend"},
+            },
+        },
+        "interpretation": interpretation,
+    }
+
+
+TECH_RESULT = {"technical_analysis": [tech_entry("AAA"), {"ticker": "BBB", "error": "No data found for BBB"}]}
+
+
+def tech_tools(result=TECH_RESULT):
+    return {"calculate_technical_indicators": StubTool("calculate_technical_indicators", result)}
+
+
+def tech_narrative_entry(ticker, **extra):
+    entry = {
+        "ticker": ticker,
+        "overall_signal": "BULLISH",
+        "key_signals": [f"{ticker} RSI at 58 is neutral", f"{ticker} MACD is bullish"],
+        "comprehensive_analysis": f"{ticker} trades in an uptrend with MACD bullish and RSI neutral. " * 2,
+        "investment_recommendation": f"{ticker} is technically constructive; wait for the zone. " * 2,
+    }
+    entry.update(extra)
+    return entry
+
+
+def tech_payload(*entries, **extra):
+    payload = {"analyses": list(entries), "summary": "t" * 120}
+    payload.update(extra)
+    return payload
+
+
+def run_technical(flow, *results):
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=list(results))
+        asyncio.run(flow.technical_analysis())
+    return mc.return_value.akickoff
+
+
+def test_technical_llm_numbers_and_labels_overwritten(flow):
+    """D-15: hostile numbers and labels in the technical answer never reach the output."""
+    import schemas.agent_outputs as schemas
+    from schemas.agent_outputs import FailedTicker, TechnicalAnalysisOutput
+
+    assert not hasattr(schemas, "TechnicalScore")
+    wire_tools(flow, tech_tools(), phase=TECH_PHASE)
+    hostile = {
+        "momentum_score": 9.9, "trend_strength": "Moderate", "entry_zone_low": 1.0,
+        "entry_zone_high": 2.0, "entry_zone_status": "BELOW_ZONE", "regime": "REVERTING",
+        "risk_level": "Low", "current_price": 5.0, "raw_indicators": {"rsi": 99.0},
+        "support_resistance": {"support": 1.0, "resistance": 2.0},
+        "technical_score": {"percentage": 99.0, "grade": "A", "recommendation": "Strong Buy"},
+    }
+    payload = tech_payload(
+        tech_narrative_entry("AAA", overall_signal="MIXED", **hostile),
+        tech_narrative_entry("BBB", **hostile),
+    )
+    run_technical(flow, narrative_result(payload))
+
+    out = flow.state.technical_output
+    assert isinstance(out, TechnicalAnalysisOutput)
+    assert [a.ticker for a in out.technical_analysis] == ["AAA"]
+    aaa = out.technical_analysis[0]
+    assert aaa.current_price == 99.0
+    ri = aaa.raw_indicators
+    assert (ri.rsi, ri.stochastic_status, ri.macd_status, ri.ma_status, ri.adx) == (
+        58.0, "Neutral", "Bullish", "Strong Uptrend", 32.0)
+    ma = aaa.momentum_analysis
+    assert (ma.momentum_score, ma.risk_level) == (7.1, "High")
+    assert ma.trend_strength == "Strong"
+    assert (ma.entry_zone_low, ma.entry_zone_high) == (95.0, 98.0)
+    assert (ma.entry_zone_status, ma.regime) == ("CURRENT_ENTRY", "TRENDING")
+    assert ma.support_resistance is None
+    assert not hasattr(aaa, "technical_score")
+    assert "technical_score" not in out.model_dump_json()
+    # What the LLM does own.
+    assert ma.overall_signal == "MIXED"
+    assert ma.key_signals == ["AAA RSI at 58 is neutral", "AAA MACD is bullish"]
+    assert "AAA trades in an uptrend" in ma.comprehensive_analysis
+    assert "AAA is technically constructive" in aaa.investment_recommendation
+    assert out.summary == "t" * 120
+    # BBB failed: only in failed_tickers, nothing the model wrote about it.
+    assert out.failed_tickers == [FailedTicker(ticker="BBB", error="No data found for BBB")]
+    assert "BBB" not in {a.ticker for a in out.technical_analysis}
+    assert "BBB trades" not in out.model_dump_json()
+
+
+@pytest.mark.parametrize("adx,label", [
+    (0.0, "Very Weak"), (10, "Very Weak"), (14.99, "Very Weak"), (15, "Weak"), (19.9, "Weak"),
+    (20, "Neutral"), (24.9, "Neutral"), (25, "Strong"), (39.9, "Strong"), (40, "Very Strong"),
+    (80, "Very Strong"), (None, None),
+])
+def test_trend_strength_thresholds(adx, label):
+    from utils.technical_records import trend_strength_from_adx
+
+    assert trend_strength_from_adx(adx) == label
+
+
+@pytest.mark.parametrize("bad", ["x", True, float("nan"), float("inf"), [1]])
+def test_trend_strength_is_null_for_unusable_adx(bad):
+    from utils.technical_records import trend_strength_from_adx
+
+    assert trend_strength_from_adx(bad) is None
+
+
+def test_overall_signal_strict():
+    from pydantic import ValidationError
+    from schemas.agent_outputs import TechnicalNarrative
+
+    ok = tech_narrative_entry("AAA")
+    assert TechnicalNarrative.model_validate(ok).overall_signal == "BULLISH"
+    for bad in ("bullish", "Bullish", " BULLISH", "UP"):
+        with pytest.raises(ValidationError):
+            TechnicalNarrative.model_validate({**ok, "overall_signal": bad})
+
+
+def test_all_failed_raises(flow):
+    result = {"technical_analysis": [{"ticker": "AAA", "error": "x"}, {"ticker": "BBB", "error": "y"}]}
+    wire_tools(flow, tech_tools(result), phase=TECH_PHASE)
+    with patch.object(flow, "_make_crew") as mc:
+        mc.return_value.akickoff = AsyncMock(side_effect=AssertionError("LLM must not be called"))
+        with pytest.raises(RuntimeError, match="technical_analysis"):
+            asyncio.run(flow.technical_analysis())
+    flow._factory.build_task.assert_not_called()
+    assert flow.state.technical_output is None
+
+
+def test_whole_call_error_raises(flow):
+    wire_tools(flow, tech_tools({"error": "tickers_json array is empty"}), phase=TECH_PHASE)
+    with pytest.raises(RuntimeError, match="technical_analysis"):
+        asyncio.run(flow.technical_analysis())
+
+
+def test_missing_narrative_retried(flow):
+    from utils.technical_records import build_technical_records, require_technical_coverage
+    from schemas.agent_outputs import TechnicalNarrativeOutput
+
+    records, failed = build_technical_records(TECH_RESULT)
+    assert list(records) == ["AAA"] and [f.ticker for f in failed] == ["BBB"]
+    only_bbb = TechnicalNarrativeOutput.model_validate(tech_payload(tech_narrative_entry("BBB")))
+    with pytest.raises(PhaseOutputError) as info:
+        require_technical_coverage(only_bbb, records)
+    assert info.value.fields == ["analyses[AAA]"]
+
+    wire_tools(flow, tech_tools(), phase=TECH_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    akickoff = run_technical(
+        flow,
+        narrative_result(tech_payload(tech_narrative_entry("BBB"))),
+        narrative_result(tech_payload(tech_narrative_entry("AAA"))),
+    )
+    assert akickoff.await_count == 2
+    calls = flow._factory.build_task.call_args_list
+    assert "feedback" not in calls[0].kwargs
+    assert "analyses[AAA]" in calls[1].kwargs["feedback"]
+    phase = next(p for p in flow._tracker.to_dict()["phases"] if p["name"] == TECH_PHASE)
+    assert phase["attempts"] == 2
+    assert flow.state.technical_output is not None
+
+
+def test_failed_tickers_logged_with_warning(flow, caplog):
+    wire_tools(flow, tech_tools(), phase=TECH_PHASE)
+    with caplog.at_level("WARNING"):
+        run_technical(flow, narrative_result(tech_payload(tech_narrative_entry("AAA"))))
+    assert "BBB" in caplog.text and "technical_analysis" in caplog.text
+
+
+def test_technical_flow_tool_off_loop_and_timed(flow):
+    tools = tech_tools()
+    wire_tools(flow, tools, instrument=True, phase=TECH_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    loop_thread = threading.get_ident()
+    run_technical(flow, narrative_result(tech_payload(tech_narrative_entry("AAA"))))
+    tool = tools["calculate_technical_indicators"]
+    assert len(tool.idents) == 1 and tool.idents[0] != loop_thread
+    assert json.loads(tool.calls[0]["tickers_json"]) == ["AAA", "BBB"]
+    calls = flow._tracker.to_dict()["tool_calls"]
+    assert [(c["phase"], c["tool"]) for c in calls] == [(TECH_PHASE, "calculate_technical_indicators")]
+    assert flow._tracker.tool_call_count(TECH_PHASE) == 1
+
+
+def test_technical_agent_has_no_tools(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
+    from prospect_ai_crew import TaskFactory
+    from schemas.agent_outputs import TechnicalNarrativeOutput
+
+    factory = TaskFactory()
+    task = factory.build_task(TECH_PHASE, "Technology", "2026-04-29", "=== ctx ===")
+    assert list(task.tools or []) == []
+    assert task.output_pydantic is TechnicalNarrativeOutput
+    tool = factory.flow_tool(TECH_PHASE, "calculate_technical_indicators")
+    assert tool is factory._phase_config[TECH_PHASE]["flow_tools"]["calculate_technical_indicators"]
+    assert factory._phase_config[TECH_PHASE]["agent_tools"] == []
+
+
+class TestBuildTechnicalRecords:
+    def test_record_values_come_only_from_the_tool(self):
+        from utils.technical_records import build_technical_records
+
+        records, failed = build_technical_records(TECH_RESULT, ["AAA", "BBB"])
+        rec = records["AAA"]
+        assert rec["current_price"] == 99.0
+        assert rec["trend_strength"] == "Strong"
+        assert rec["momentum_analysis"]["momentum_score"] == 7.1
+        assert failed[0].ticker == "BBB"
+
+    def test_missing_adx_is_null_trend_strength_not_a_guess(self):
+        from utils.technical_records import build_technical_records
+
+        entry = tech_entry("AAA")
+        entry["technical_indicators"]["trend"]["adx"] = {"current": None, "status": None}
+        records, _ = build_technical_records({"technical_analysis": [entry]})
+        assert records["AAA"]["trend_strength"] is None
+        assert records["AAA"]["raw_indicators"].adx is None
+
+    @pytest.mark.parametrize("break_it", [
+        lambda e: e.pop("interpretation"),
+        lambda e: e["interpretation"].update(error="Computation error: x"),
+        lambda e: e["interpretation"].pop("momentum_score"),
+        lambda e: e["interpretation"].update(momentum_score=float("nan")),
+        lambda e: e["interpretation"].update(momentum_score=11.0),
+        lambda e: e["interpretation"].update(risk_level="HIGH"),
+        lambda e: e["interpretation"].update(entry_zone_status="SOMEWHERE"),
+        lambda e: e["interpretation"].update(regime="WILD"),
+        lambda e: e["interpretation"].pop("entry_zone_low"),
+        lambda e: e["stock_data"].update(current_price=0),
+    ])
+    def test_an_unusable_entry_is_failed_never_defaulted(self, break_it):
+        from utils.technical_records import build_technical_records
+
+        entry = tech_entry("AAA")
+        break_it(entry)
+        records, failed = build_technical_records({"technical_analysis": [entry]})
+        assert records == {}
+        assert [f.ticker for f in failed] == ["AAA"]
+
+    def test_error_text_is_cut_to_200_chars(self):
+        from utils.technical_records import build_technical_records
+
+        _, failed = build_technical_records(
+            {"technical_analysis": [{"ticker": "AAA", "error": "e" * 500}]})
+        assert len(failed[0].error) == 200
+
+    def test_requested_ticker_the_tool_never_returned_is_failed(self):
+        from utils.technical_records import build_technical_records
+
+        records, failed = build_technical_records(
+            {"technical_analysis": [tech_entry("AAA")]}, ["AAA", "ZZZ"])
+        assert list(records) == ["AAA"]
+        assert [f.ticker for f in failed] == ["ZZZ"]
+
+    def test_whole_call_error_fails_every_requested_ticker(self):
+        from utils.technical_records import build_technical_records
+
+        records, failed = build_technical_records({"error": "boom"}, ["AAA", "BBB"])
+        assert records == {}
+        assert [(f.ticker, f.error) for f in failed] == [("AAA", "boom"), ("BBB", "boom")]
+
+
+class TestMergeTechnical:
+    def test_market_order_is_kept_and_unknown_narrative_ignored(self, caplog):
+        from schemas.agent_outputs import TechnicalNarrativeOutput
+        from utils.technical_records import build_technical_records, merge_technical
+
+        result = {"technical_analysis": [tech_entry("AAA"), tech_entry("CCC")]}
+        records, failed = build_technical_records(result)
+        narrative = TechnicalNarrativeOutput.model_validate(tech_payload(
+            tech_narrative_entry("CCC"), tech_narrative_entry("AAA"), tech_narrative_entry("ZZZ")))
+        with caplog.at_level("INFO"):
+            out = merge_technical("Technology", ["CCC", "AAA"], records, narrative, failed)
+        assert [a.ticker for a in out.technical_analysis] == ["CCC", "AAA"]
+        assert "ZZZ" in caplog.text
