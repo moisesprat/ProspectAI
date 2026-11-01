@@ -1,3 +1,4 @@
+import copy
 import threading
 import time
 from dataclasses import dataclass, field
@@ -104,6 +105,13 @@ class ExecutionTracker:
         finally:
             tracker.finish()
         metrics = tracker.to_dict()
+
+    ``market_corpus`` is an additive field of metrics contract v2 (the version number does
+    not change): the size-capped record of what the market phase's model saw
+    (``utils.market_records.corpus_record``). It appears only after ``set_market_corpus``,
+    so a run without a market phase looks exactly as before, and it is part of the partial
+    snapshot of a failed run. Like the rest of the metrics it is public (SSE, stored
+    report), which is why the record holds link hosts only.
     """
 
     def __init__(self) -> None:
@@ -114,6 +122,7 @@ class ExecutionTracker:
         self._phases: Dict[str, PhaseMetrics] = {}
         self._model_totals: Dict[str, Dict[str, int]] = {}
         self._tool_calls: List[ToolCallRecord] = []
+        self._market_corpus: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -127,6 +136,11 @@ class ExecutionTracker:
 
     def set_sector(self, sector: str) -> None:
         self._sector = sector
+
+    def set_market_corpus(self, record: Optional[Dict[str, Any]]) -> None:
+        """Store the market corpus record (None clears it)."""
+        with self._lock:
+            self._market_corpus = copy.deepcopy(record) if record is not None else None
 
     # ── Tool calls ─────────────────────────────────────────────────────────────
 
@@ -316,6 +330,7 @@ class ExecutionTracker:
 
         with self._lock:
             records = list(self._tool_calls)
+            market_corpus = copy.deepcopy(self._market_corpus)
         by_phase: Dict[str, List[ToolCallRecord]] = {}
         for rec in records:
             by_phase.setdefault(rec.phase, []).append(rec)
@@ -402,7 +417,7 @@ class ExecutionTracker:
                 "ok": top_rec.ok,
             }
 
-        return {
+        metrics: Dict[str, Any] = {
             "run_at": self._run_at.strftime("%Y-%m-%dT%H:%M:%SZ") if self._run_at else "",
             "sector": self._sector,
             "pipeline_elapsed_sec": pipeline_elapsed,
@@ -417,6 +432,9 @@ class ExecutionTracker:
             "slowest_phase": slowest_phase,
             "slowest_tool_call": slowest_call,
         }
+        if market_corpus is not None:
+            metrics["market_corpus"] = market_corpus
+        return metrics
 
     @staticmethod
     def _tool_rollup(calls: List[ToolCallRecord]) -> List[Dict[str, Any]]:

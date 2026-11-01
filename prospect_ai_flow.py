@@ -33,11 +33,12 @@ from utils.market_records import (
     REDDIT_TOOL_NAME,
     SERPER_TOOL_NAME,
     build_market_corpus,
+    corpus_record,
     market_narrative_context,
     merge_market,
     reddit_fallback_required,
     require_market_picks,
-    serper_query,
+    serper_queries,
 )
 from utils.phase_runner import extract_model, run_phase
 from utils.technical_records import (
@@ -641,13 +642,17 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     @start()
     async def market_analysis(self):
         """Flow-owned phase (CORR-10, D-14): the Flow calls Reddit and, when Reddit asks for
-        fallback, Serper; the LLM only chooses up to 5 tickers from that corpus and writes
-        their rationales and the summary.
+        fallback, Serper three times (three fixed queries, one after another); the LLM only
+        chooses up to 5 tickers from that corpus and writes their rationales and the summary.
 
-        Both tools run off the event loop (call_tool, STALL-02), so their bounded sleeps never
-        block it. Every number, the sentiment flag and the timestamp are built by
-        utils.market_records.merge_market, never taken from the LLM. A tool that raises is
-        logged by exception class and treated as no data, never as invented data.
+        Every tool call runs off the event loop (call_tool, STALL-02), so the bounded sleeps never
+        block it. The Serper calls are sequential on purpose: a deterministic step and call order,
+        and each query keeps its own plan 02-08 retry budget, so the worst case is three budgets
+        of sleep, all on worker threads. Every number, the sentiment flag and the timestamp are
+        built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
+        only if it is well formed and grounded in the corpus (CR-01). A tool that raises is
+        logged by exception class and treated as no data, never as invented data. The corpus the
+        model saw is stored on the tracker (market_corpus) before the LLM runs.
         """
         self._check_error()
         self._emit_start(0)
@@ -668,20 +673,30 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             logger.warning("%s: Reddit tool failed (%s); using the Serper fallback", phase, type(exc).__name__)
             reddit = None
 
-        serper = None
-        fallback_required = reddit_fallback_required(reddit)
-        if fallback_required:
-            try:
-                serper = await call_tool(
-                    self._factory.flow_tool(phase, SERPER_TOOL_NAME),
-                    phase_index=0, step_callback=self._step_callback,
-                    thought=f"Searching the web for {sector} sector stocks",
-                    search_query=serper_query(sector, today),
-                )
-            except Exception as exc:
-                logger.warning("%s: Serper search failed (%s); no market data this run", phase, type(exc).__name__)
+        serper_results = []
+        queries: List[str] = []
+        failed_queries = 0
+        if reddit_fallback_required(reddit):
+            queries = serper_queries(sector, today)
+            for number, query in enumerate(queries, 1):
+                try:
+                    serper_results.append(await call_tool(
+                        self._factory.flow_tool(phase, SERPER_TOOL_NAME),
+                        phase_index=0, step_callback=self._step_callback,
+                        thought=f"Searching the web for {sector} sector stocks ({number} of {len(queries)})",
+                        search_query=query,
+                    ))
+                except Exception as exc:
+                    failed_queries += 1
+                    logger.warning(
+                        "%s: Serper search %d of %d failed (%s)", phase, number, len(queries), type(exc).__name__,
+                    )
 
-        corpus = build_market_corpus(reddit, serper, sector)
+        corpus = build_market_corpus(
+            reddit, serper_results or None, sector, queries=queries, failed_queries=failed_queries,
+        )
+        if tracker:
+            tracker.set_market_corpus(corpus_record(corpus))
         logger.info("%s: corpus source=%s", phase, corpus["source"])
         ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
         result, narrative = await self._run_phase(
