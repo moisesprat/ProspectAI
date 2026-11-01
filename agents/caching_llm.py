@@ -238,6 +238,17 @@ class _EffortInterceptor(BaseInterceptor[httpx.Request, httpx.Response]):
         return message
 
 
+def _refusal_category(response: Any) -> str:
+    """The refusal category of a response, read defensively and cut short. Never the
+    explanation text or any content (stop_details is a dict on the SDK object, may be
+    absent)."""
+    details = getattr(response, "stop_details", None)
+    category = details.get("category") if isinstance(details, dict) else getattr(details, "category", None)
+    if not isinstance(category, str) or not category:
+        return "unknown"
+    return category[:_REFUSAL_CATEGORY_MAX_CHARS]
+
+
 class AnthropicCachingCompletion(AnthropicCompletion):
     """`AnthropicCompletion` with prompt-caching markers injected automatically.
 
@@ -282,8 +293,21 @@ class AnthropicCachingCompletion(AnthropicCompletion):
         thinking = params.get("thinking")
         if isinstance(thinking, dict) and "budget_tokens" in thinking:
             params["thinking"] = {k: v for k, v in thinking.items() if k != "budget_tokens"}
+        self._drop_rejected_tool_choice(params)
         self._force_first_tool_call(params)
         return params
+
+    def _drop_rejected_tool_choice(self, params: dict[str, Any]) -> None:
+        """Drop a forced tool choice (type ``any`` or ``tool``) for a model whose table
+        row says the API rejects it (Sonnet 5.5). This covers crewai's own single-tool
+        forcing as well as ours; ``auto`` and ``none`` are kept, and a model with no
+        row is left alone."""
+        row = model_shape(self.model)
+        if row is None or row.forced_tool_choice:
+            return
+        choice = params.get("tool_choice")
+        if isinstance(choice, dict) and choice.get("type") in _FORCED_TOOL_CHOICE_TYPES:
+            del params["tool_choice"]
 
     def _force_first_tool_call(self, params: dict[str, Any]) -> None:
         """Require a tool call on the first turn of a thinking-off request, for a model
@@ -311,6 +335,12 @@ class AnthropicCachingCompletion(AnthropicCompletion):
     @staticmethod
     def _extract_anthropic_token_usage(response: Any) -> dict[str, Any]:
         usage_dict = AnthropicCompletion._extract_anthropic_token_usage(response)
+        if getattr(response, "stop_reason", None) == "refusal":
+            logger.warning(
+                "Anthropic response refused (stop_reason=refusal, category=%s); "
+                "no answer is published from it",
+                _refusal_category(response),
+            )
         if hasattr(response, "usage") and response.usage:
             usage_dict["cache_creation_input_tokens"] = (
                 getattr(response.usage, "cache_creation_input_tokens", 0) or 0
