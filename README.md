@@ -19,7 +19,7 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 ## Features
 
 - **Multi-Agent System**: Five specialized AI agents across a six-task pipeline for rigorous investment analysis
-- **Anthropic Claude**: Powered by Claude models (Haiku 5.5 by default; Sonnet and Opus supported)
+- **Anthropic Claude**: Powered by Claude models (Haiku 5.5 for the market, technical and fundamental steps, Sonnet 5.5 for the draft, critic and final steps; other Sonnet and Opus models supported)
 - **Ollama Support**: Run fully locally with Ollama models
 - **Real Reddit Integration**: Live Reddit sentiment analysis using public JSON endpoints — no credentials required
 - **Sector Analysis**: Analyze 5 major sectors (Technology, Healthcare, Finance, Energy, Consumer)
@@ -107,7 +107,8 @@ Create a `.env` file in the directory where you'll run `prospectai` (see `env.ex
 MODEL_PROVIDER=anthropic
 
 # Optional on Anthropic: a global model id for all agents (raw id, no provider prefix).
-# Unset, each agent uses its model from config/agents.yaml (claude-haiku-5-5).
+# Unset, each agent uses its model from config/agents.yaml (claude-haiku-5-5 for market,
+# technical and fundamental; claude-sonnet-5-5 for investor_strategic and critic).
 # MODEL=claude-sonnet-4-6
 
 # Required when MODEL_PROVIDER=anthropic
@@ -182,7 +183,7 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 | Variable | Required | Description |
 |---|---|---|
 | `MODEL_PROVIDER` | Yes | `anthropic` or `ollama` (CLI `--ollama` sets `ollama`) |
-| `MODEL` | Ollama only | Optional on Anthropic (each agent defaults to its `config/agents.yaml` model, `claude-haiku-5-5`); a global override for all agents when set. Required with `--ollama` (e.g. `qwen3.5:9b`) |
+| `MODEL` | Ollama only | Optional on Anthropic (each agent defaults to its `config/agents.yaml` model: `claude-haiku-5-5` for market, technical and fundamental, `claude-sonnet-5-5` for investor_strategic and critic); a global override for all agents when set. Required with `--ollama` (e.g. `qwen3.5:9b`) |
 | `ANTHROPIC_API_KEY` | If `MODEL_PROVIDER=anthropic` | Anthropic API key |
 | `OLLAMA_BASE_URL` | If `MODEL_PROVIDER=ollama` | Ollama server URL |
 | `AGENT_MARKET_ANALYST_MODEL` | No | Overrides `MODEL` for the Market Analyst agent only |
@@ -207,7 +208,8 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 
 | Model | Use Case |
 |---|---|
-| `claude-haiku-5-5` | Default for every agent (set in `config/agents.yaml`) |
+| `claude-haiku-5-5` | Default for the market, technical and fundamental steps (set in `config/agents.yaml`) |
+| `claude-sonnet-5-5` | Default for the draft, critic and final steps (set in `config/agents.yaml`) |
 | `claude-sonnet-4-6` | Higher quality, slower and costlier |
 | `claude-opus-4-6` | Highest quality, deeper reasoning |
 
@@ -309,6 +311,10 @@ twine upload dist/*
 | No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
 
 ## Release Notes
+
+### Unreleased — A stronger model for the analysis, review and final steps
+- The draft, review and final steps of every analysis now run on Claude Sonnet 5.5, a stronger model than before. The research steps that gather market, technical and fundamental data stay on the faster Claude Haiku 5.5.
+- Reports are still built the same way: every number is computed from live data, and the model only writes the commentary and chooses each stock's action.
 
 ### v1.11.1 — Stock picks now come from what the research found
 - The market research step now runs three web searches instead of one, and a stock is kept only if its ticker symbol actually appears in the search results, so a report can no longer feature a stock the research never mentioned.
