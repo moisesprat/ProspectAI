@@ -71,9 +71,11 @@ class CaptureTransport(httpx.AsyncBaseTransport):
     """Applies the LLM's own interceptor (as crewai's transport would), records
     the outbound request, and returns a canned 200 Messages response."""
 
-    def __init__(self, llm, content_blocks):
+    def __init__(self, llm, content_blocks, stop_reason="end_turn", stop_details=None):
         self._llm = llm
         self._content = content_blocks
+        self._stop_reason = stop_reason
+        self._stop_details = stop_details
         self.requests: list[dict] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -94,18 +96,22 @@ class CaptureTransport(httpx.AsyncBaseTransport):
             "role": "assistant",
             "model": self._llm.model,
             "content": self._content,
-            "stop_reason": "end_turn",
+            "stop_reason": self._stop_reason,
             "stop_sequence": None,
             "usage": {"input_tokens": 1, "output_tokens": 1},
         }
+        if self._stop_details is not None:
+            message["stop_details"] = self._stop_details
         return httpx.Response(200, json=message)
 
 
-def install_capture(llm, content_blocks=None) -> CaptureTransport:
+def install_capture(
+    llm, content_blocks=None, stop_reason="end_turn", stop_details=None
+) -> CaptureTransport:
     """Replace ``llm.async_client`` with one whose transport captures requests."""
     if content_blocks is None:
         content_blocks = [{"type": "text", "text": _ANSWER_JSON}]
-    transport = CaptureTransport(llm, content_blocks)
+    transport = CaptureTransport(llm, content_blocks, stop_reason, stop_details)
     llm.async_client = AsyncAnthropic(
         api_key="k", http_client=httpx.AsyncClient(transport=transport)
     )
@@ -349,3 +355,175 @@ async def test_older_model_override_is_not_forced(clean_env):
     clean_env.setenv("AGENT_MARKET_ANALYST_MODEL", HAIKU_45)
     captured = await _capture_phase(_factory(), "market_analysis", tools=[REAL_TOOL])
     assert captured["body"].get("tool_choice") != {"type": "any"}
+
+
+# ─── Sonnet 5.5 and override cases (plan 02-25, Task 2) ───────────────────────
+# Sonnet 5.5 rejects thinking of type disabled or enabled and a forced tool choice,
+# so these cases build the LLM directly and through the agents, under every override
+# an operator can make, and assert on the final wire body.
+
+def _direct_llm(model, mode):
+    from agents.caching_llm import make_caching_llm
+
+    return make_caching_llm(f"anthropic/{model}", thinking=mode, api_key="test-key")
+
+
+async def _direct_body(model, mode, *, tools=None, available_functions=None):
+    llm = _direct_llm(model, mode)
+    transport = install_capture(llm)
+    result = await llm.acall(
+        [{"role": "user", "content": "hi"}],
+        tools=tools,
+        available_functions=available_functions,
+        response_model=_Answer,
+    )
+    assert isinstance(result, _Answer)
+    return transport.requests[0]
+
+
+def _forced(body):
+    return (body.get("tool_choice") or {}).get("type") in ("any", "tool")
+
+
+@pytest.mark.asyncio
+async def test_sonnet_thinking_off_is_between_tools_not_disabled(clean_env):
+    off = (await _direct_body(SONNET_55, "off"))["body"]
+    assert off["thinking"] == {"type": "between_tools"}
+    assert body_effort(off) not in ("xhigh", "max")
+    low = (await _direct_body(SONNET_55, "low"))["body"]
+    assert low["thinking"] == {"type": "adaptive"}
+    assert body_effort(low) == "low"
+    for body in (off, low):
+        assert body["thinking"]["type"] not in ("disabled", "enabled")
+
+
+@pytest.mark.asyncio
+async def test_sonnet_never_gets_a_forced_tool_choice(clean_env):
+    for mode in ("off", "low"):
+        for functions in (None, {"real_tool": lambda **kw: "r"}):
+            req = await _direct_body(
+                SONNET_55, mode, tools=[REAL_TOOL], available_functions=functions
+            )
+            body = req["body"]
+            label = (mode, functions is not None)
+            assert not _forced(body), (label, body.get("tool_choice"))
+            assert any(t.get("name") == "real_tool" for t in body["tools"]), label
+            assert "output_format" in body, label
+
+
+@pytest.mark.asyncio
+async def test_any_agent_can_be_moved_to_sonnet_by_env(clean_env):
+    clean_env.setenv("AGENT_MARKET_ANALYST_MODEL", SONNET_55)
+    market = await _capture_phase(_factory(), "market_analysis", tools=[REAL_TOOL])
+    body = market["body"]
+    assert body["model"] == SONNET_55
+    assert body["thinking"] == {"type": "between_tools"}
+    assert not _forced(body)
+    assert any(t.get("name") == "real_tool" for t in body["tools"])
+
+    clean_env.delenv("AGENT_MARKET_ANALYST_MODEL")
+    clean_env.setenv("MODEL", SONNET_55)
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL])
+    for phase, req in captured.items():
+        body = req["body"]
+        assert body["model"] == SONNET_55, phase
+        mode = yaml_agent(PHASE_AGENT_KEY[phase])["thinking"]
+        assert_thinking_matches(body, SONNET_55, mode, phase)
+        assert not _forced(body), phase
+
+
+@pytest.mark.asyncio
+async def test_env_rollback_restores_the_haiku_only_shape(clean_env):
+    clean_env.setenv("AGENT_INVESTOR_STRATEGIC_MODEL", HAIKU_55)
+    clean_env.setenv("AGENT_CRITIC_MODEL", HAIKU_55)
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL])
+    for phase, req in captured.items():
+        body = req["body"]
+        assert body["model"] == HAIKU_55, phase
+        mode = yaml_agent(PHASE_AGENT_KEY[phase])["thinking"]
+        assert_thinking_matches(body, HAIKU_55, mode, phase)
+        assert not (body.get("tool_choice") or {}).get("type") == "tool", phase
+        # A thinking-off Haiku phase with tools forces the first tool turn (1.11.1).
+        if mode == "off":
+            assert body["tool_choice"] == {"type": "any"}, phase
+        else:
+            assert body.get("tool_choice") != {"type": "any"}, phase
+    for phase in HAIKU_PHASES:
+        assert captured[phase]["body"]["thinking"] == {"type": "disabled"}, phase
+        assert captured[phase]["body"]["tool_choice"] == {"type": "any"}, phase
+
+
+@pytest.mark.asyncio
+async def test_haiku_45_override_on_a_sonnet_agent_is_model_gated(clean_env):
+    clean_env.setenv("AGENT_CRITIC_MODEL", HAIKU_45)
+    factory = _factory()
+    critic = (await _capture_phase(factory, "critique_review"))["body"]
+    assert critic["model"] == HAIKU_45
+    assert "thinking" not in critic
+    assert "output_config" not in critic
+    draft = (await _capture_phase(factory, "draft_strategy"))["body"]
+    assert draft["model"] == SONNET_55
+    assert draft["thinking"] == {"type": "adaptive"} or draft["thinking"] == {"type": "between_tools"}
+    mode = yaml_agent("investor_strategic")["thinking"]
+    assert_thinking_matches(draft, SONNET_55, mode, "draft_strategy")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [HAIKU_55, SONNET_55])
+@pytest.mark.parametrize("mode", ["off", "low"])
+async def test_yaml_declared_thinking_is_what_is_sent(clean_env, model, mode):
+    body = (await _direct_body(model, mode))["body"]
+    assert_thinking_matches(body, model, mode, (model, mode))
+
+
+@pytest.mark.asyncio
+async def test_fresh_conversation_carries_no_thinking_blocks(clean_env):
+    llm = _direct_llm(SONNET_55, "low")
+    thinking_first = [
+        {"type": "thinking", "thinking": "reasoning", "signature": "sig"},
+        {"type": "text", "text": "answer"},
+    ]
+    install_capture(llm, thinking_first)
+    await llm.acall([{"role": "user", "content": "first"}])
+    transport = install_capture(llm, thinking_first)
+    await llm.acall([{"role": "user", "content": "second, a new conversation"}])
+    messages = transport.requests[0]["body"]["messages"]
+    assert len(messages) == 1
+    blocks = messages[0]["content"]
+    assert not any(
+        isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+        for b in (blocks if isinstance(blocks, list) else [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusal_response_is_not_a_valid_answer_and_is_logged_by_category(
+    clean_env, caplog
+):
+    import logging
+
+    llm = _direct_llm(SONNET_55, "low")
+    install_capture(
+        llm,
+        content_blocks=[],
+        stop_reason="refusal",
+        stop_details={
+            "type": "refusal",
+            "category": "general_harms",
+            "explanation": "SECRET-EXPLANATION-TEXT",
+        },
+    )
+    with caplog.at_level(logging.DEBUG, logger="agents.caching_llm"):
+        result = await llm.acall(
+            [{"role": "user", "content": "SECRET-PROMPT-TEXT"}], response_model=_Answer
+        )
+    assert not isinstance(result, _Answer)
+    refusals = [
+        r for r in caplog.records
+        if r.name == "agents.caching_llm" and r.levelno == logging.WARNING
+    ]
+    assert len(refusals) == 1
+    text = refusals[0].getMessage()
+    assert "general_harms" in text
+    assert "refusal" in text.lower()
+    assert "SECRET" not in caplog.text
