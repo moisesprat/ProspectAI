@@ -57,11 +57,16 @@ def test_smoke_offline_pass(smoke_env, capsys):
     assert code == 0
     assert out.count("PASS") == 2 and "FAIL" not in out
     assert "tokens_in=11" in out and "stop_reason=end_turn" in out
-    assert "thinking" in out  # block types of case B include the thinking block
+    from tests.test_llm_request_shape import expected_thinking, yaml_agent
+
+    mode = yaml_agent("investor_strategic")["thinking"]  # case B runs draft_strategy
+    if mode == "low":
+        assert "thinking" in out  # block types of case B include the thinking block
     assert len(seen) == 2  # exactly two live calls
     assert seen[0]["thinking"] == {"type": "disabled"} and "tools" in seen[0]
-    assert seen[1]["thinking"] == {"type": "adaptive"}
-    assert seen[1]["output_config"]["effort"] == "low"
+    thinking, effort = expected_thinking(seen[1]["model"], mode)
+    assert seen[1]["thinking"] == thinking
+    assert (seen[1].get("output_config") or {}).get("effort") == effort
 
 
 def test_smoke_offline_fail(smoke_env, capsys):

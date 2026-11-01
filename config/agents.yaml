@@ -8,13 +8,25 @@
 # they tell the LLM exactly what inputs to expect and what output schema to produce.
 #
 # Model strategy (MODEL-01):
-#   All five agents run claude-haiku-5-5 (D-01). AGENT_<NAME>_MODEL still overrides one agent.
+#   Split by role (an operator request of 2026-11-01 that supersedes D-01 for these two
+#   agents only): investor_strategic (the draft and final steps share it) and critic run
+#   claude-sonnet-5-5, because those steps carry the judgement; market_analyst,
+#   technical_analyst and fundamental_analyst stay on claude-haiku-5-5. Thinking and
+#   max_tokens are deliberately unchanged, so a live comparison isolates the model.
+#   AGENT_<NAME>_MODEL and a global MODEL still win over the model written here (set
+#   AGENT_INVESTOR_STRATEGIC_MODEL and AGENT_CRITIC_MODEL to claude-haiku-5-5 to roll
+#   back to the all-Haiku behaviour without a release).
 #   thinking: off | low, per agent, default off (D-03).
-#     off -> {"type": "disabled"}; low -> {"type": "adaptive"} with output_config.effort "low".
-#     A model that does not support adaptive thinking (e.g. an override to Haiku 4.5)
-#     is sent neither, so the package stays valid under an older model pin.
-#   No sampling parameters (temperature, top_p, top_k): Haiku 5.5 rejects non-default
-#   values, so none are configured or sent (D-02).
+#     low -> {"type": "adaptive"} with output_config.effort "low" (both 5.5 models).
+#     off -> the model's own wire value, from the capability table in agents/caching_llm.py:
+#            {"type": "disabled"} on Haiku 5.5, {"type": "between_tools"} on Sonnet 5.5
+#            (thinking disabled is a 400 there). If Sonnet 5.5 ever rejects low, setting
+#            thinking to "off" for that agent is a one-word fallback.
+#     A model with no row in that table (e.g. an override to Haiku 4.5) is sent neither,
+#     so the package stays valid under an older model pin.
+#   No sampling parameters (temperature, top_p, top_k): the 5.5 models reject non-default
+#   values, so none are configured or sent (D-02). Sonnet 5.5 also rejects budget_tokens,
+#   thinking disabled and a forced tool choice; the package never sends them.
 #   thinking tokens count toward max_tokens, so thinking agents get a larger max_tokens.
 
 agents:
@@ -137,6 +149,8 @@ agents:
   # Tools:  none (pure judgment: the Flow scores, allocates and sizes, plans 02-17 and 02-18)
   # Output: the action per ticker with its rationale, monitoring triggers and review cadence,
   #         plus the overall strategy text; no number or grade
+  # Model:  claude-sonnet-5-5 (plan 02-25): the draft and final steps carry the judgement,
+  #         so they get the stronger model; thinking and max_tokens are unchanged.
   # ─────────────────────────────────────────────────────────────────────────────
   investor_strategic:
     name: "Investor Strategic Agent"
@@ -167,7 +181,7 @@ agents:
     max_tokens: 16000
     llm:
       provider: "anthropic"
-      model: "claude-haiku-5-5"
+      model: "claude-sonnet-5-5"
       api_key: null
       base_url: null
 
@@ -177,6 +191,8 @@ agents:
   # Tools:  none (pure adversarial analysis)
   # Output: {sector, draft_assessment, per_ticker_critiques, portfolio_level_issues,
   #          revision_directives, approved_positions}
+  # Model:  claude-sonnet-5-5 (plan 02-25): the review step carries the judgement, so it
+  #         gets the stronger model; thinking and max_tokens are unchanged.
   # ─────────────────────────────────────────────────────────────────────────────
   critic:
     name: "Critic Agent"
@@ -207,7 +223,7 @@ agents:
     max_tokens: 16000
     llm:
       provider: "anthropic"
-      model: "claude-haiku-5-5"
+      model: "claude-sonnet-5-5"
       api_key: null
       base_url: null
 

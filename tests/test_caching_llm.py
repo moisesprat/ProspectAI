@@ -4,7 +4,8 @@ import json
 import pytest
 from pydantic import BaseModel
 
-from agents.caching_llm import AnthropicCachingCompletion, make_caching_llm
+from agents import caching_llm
+from agents.caching_llm import AnthropicCachingCompletion, make_caching_llm, model_shape
 from tests.test_llm_request_shape import install_capture
 
 
@@ -137,3 +138,37 @@ async def test_cache_markers_with_thinking(thinking_low):
     assert body["thinking"] == {"type": "adaptive"}
     block = body["messages"][0]["content"][0]
     assert block["cache_control"] == {"type": "ephemeral"}
+
+
+# ─── Capability table (plan 02-25) ─────────────────────────────────────────────
+
+def test_model_shape_rows():
+    haiku_row = model_shape("claude-haiku-5-5")
+    assert haiku_row is not None and haiku_row.thinking_off == {"type": "disabled"}
+    assert haiku_row.forced_tool_choice and haiku_row.native_structured_output
+    sonnet_row = model_shape("claude-sonnet-5-5")
+    assert sonnet_row is not None and sonnet_row.thinking_off == {"type": "between_tools"}
+    assert not sonnet_row.forced_tool_choice and sonnet_row.native_structured_output
+    assert model_shape("anthropic/claude-sonnet-5-5-20261101") is sonnet_row
+    assert model_shape("CLAUDE-SONNET-5-5") is sonnet_row
+
+
+def test_model_shape_is_none_for_other_models():
+    for other in ("claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", ""):
+        assert model_shape(other) is None, other
+        assert not caching_llm.supports_adaptive_thinking(other), other
+
+
+def test_ensure_native_structured_outputs_is_idempotent_and_keeps_crewai_entries():
+    from crewai.llms.providers.anthropic import completion
+
+    before = completion.NATIVE_STRUCTURED_OUTPUT_MODELS
+    caching_llm._ensure_native_structured_outputs()
+    caching_llm._ensure_native_structured_outputs()
+    after = completion.NATIVE_STRUCTURED_OUTPUT_MODELS
+    assert after == before
+    assert len(after) == len(set(after))
+    for entry in ("claude-haiku-4-5", "claude-opus-4-5", "claude-sonnet-4-5"):
+        assert entry in after
+    for row in caching_llm.MODEL_SHAPES:
+        assert after.count(row.fragment) == 1

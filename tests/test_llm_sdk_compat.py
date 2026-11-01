@@ -46,7 +46,7 @@ def test_installed_anthropic_satisfies_crewai_extra():
 
 def test_native_allow_list_patched():
     """MODEL-01: crewai only keeps real tools on the native structured-output path
-    for ids in its allow-list. agents.caching_llm appends Haiku 5.5 at import."""
+    for ids in its allow-list. agents.caching_llm appends the 5.5 models at import."""
     from crewai.llms.providers.anthropic import completion
 
     import agents.caching_llm  # noqa: F401  (the import applies the patch)
@@ -54,6 +54,9 @@ def test_native_allow_list_patched():
     allow_list = completion.NATIVE_STRUCTURED_OUTPUT_MODELS
     assert isinstance(allow_list, tuple) and all(isinstance(m, str) for m in allow_list)
     assert completion._supports_native_structured_outputs("claude-haiku-5-5")
+    assert completion._supports_native_structured_outputs("claude-sonnet-5-5")
+    assert completion._supports_native_structured_outputs("claude-sonnet-5-5-20261101")
+    assert not completion._supports_native_structured_outputs("claude-sonnet-5")
 
 
 def test_crewai_hooks_present():

@@ -8,6 +8,12 @@ a version number:
   A3  Haiku 5.5 accepts adaptive thinking with ``output_config.effort = low``
       together with ``output_format``.
 
+Since plan 02-25 the draft, critic and final steps run claude-sonnet-5-5 (agents.yaml), so
+case B below runs the draft_strategy phase and follows agents.yaml, i.e. Sonnet 5.5;
+scripts/smoke_sonnet55.py is the dedicated Sonnet 5.5 check (both Sonnet agents, with a
+named fallback). The Haiku 5.5 adaptive-plus-effort shape is still pinned offline by the
+environment-rollback test in tests/test_llm_request_shape.py.
+
 Cost: two small calls (cents). This script is run by a human with their own key;
 it is never run by CI and the offline test mocks the transport.
 
@@ -200,6 +206,8 @@ async def _run_cases(factory: TaskFactory, inner: httpx.AsyncBaseTransport) -> i
         "A", "market_analysis", factory, inner, with_tool=True,
         prompt=f"Call the {_TOOL_NAME} tool for ticker AAPL, then answer with a ticker and a one-line note.",
     )
+    # Case B follows agents.yaml: draft_strategy is Sonnet 5.5 since plan 02-25
+    # (see scripts/smoke_sonnet55.py for the dedicated Sonnet check).
     b = await _run_case(
         "B", "draft_strategy", factory, inner, with_tool=False,
         prompt="Answer with ticker AAPL and a one-line note.",
