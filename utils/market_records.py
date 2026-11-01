@@ -18,8 +18,8 @@ Three paths, chosen by what the tools returned (``source`` of the corpus):
                  data: it is dropped with a warning, and if none remain the phase
                  answer is a validation failure that spends the retry budget).
                  mention_count, average_sentiment and relevance_score are Reddit's.
-    serper       Reddit asked for fallback and the fixed Serper query returned usable
-                 results. mention_count is the number of times the ticker symbol
+    serper       Reddit asked for fallback and the three fixed Serper queries returned
+                 usable results (merged, de-duplicated and bounded, see below). mention_count is the number of times the ticker symbol
                  appears in the result titles and snippets (the Reddit tool's own
                  matching rule, see ``symbol_mention_counts``); relevance_score is that
                  count divided by the largest count among the published picks, rounded
@@ -43,8 +43,33 @@ measured sentiment.
 
 Text from Reddit and Serper is untrusted (prompt injection): the corpus the LLM reads
 is capped (a few posts or snippets, bounded length, link host only), and the LLM has no
-tool and no number field, so the worst a hostile snippet can do is steer which listed
-ticker is picked. Full ticker validation is CORR-06 (Phase 4).
+tool and no number field.
+
+Search and corpus bounds (change 02-23, G2/G3). The Flow runs three fixed Serper queries one
+after another (``serper_queries``; the model never picks a query). Their organic results are
+merged rank by rank across the queries (rank 1 of each, then rank 2 of each, ...), a repeated
+link is removed (an entry with no link repeats when its text repeats), full URLs are scrubbed
+from the text, and the corpus stops at ``MAX_SNIPPETS`` (20) results of at most
+``SNIPPET_CHARS`` (300) characters and ``MAX_CORPUS_TEXT_CHARS`` (6000) characters in total.
+``corpus_record`` is the stored view: what the model saw, host only, cut to
+``MAX_RECORD_BYTES`` (8192) so it can be kept in the run's public execution metrics.
+
+Grounding (change 02-23, review CR-01). A pick is published only if it is well formed
+(``utils.ticker_matching.is_valid_ticker``) and traceable to the data the model saw:
+
+    reddit       the ticker is one of the listed candidates
+    serper       the symbol appears in the result text by the same rule that produces
+                 ``mention_count`` (``symbol_mention_counts``), so a pick always has a
+                 count of at least 1, and a false positive (a common word) can neither be
+                 a pick nor set the largest count that normalises relevance
+    unavailable  the ticker is in the sector universe when that is non-empty; with no
+                 universe only the format check applies
+
+A pick that fails is dropped with a warning that carries the reason and the ticker cut to
+20 characters shown with its repr, never corpus text. When none is left the phase answer is
+a validation failure that spends the bounded retry budget; the retry feedback is fixed text
+per source. What this does not prove: a symbol present in the text is not shown to be a
+real listed company. That check stays Phase 4 (CORR-06).
 
 ``require_market_picks`` is the ``validate=`` callback for
 ``utils.phase_runner.run_phase``.
@@ -60,6 +85,7 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.phase_runner import PhaseOutputError
 from utils.reddit_sentiment_tool import RedditSentimentTool
+from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +96,28 @@ REDDIT_TOOL_NAME = "analyze_sector_reddit_sentiment"
 SERPER_TOOL_NAME = "Search the internet with Serper"
 
 # Bounds on untrusted text that reaches the prompt.
-MAX_SNIPPETS = 10
-SNIPPET_CHARS = 500
+MAX_SNIPPETS = 20
+SNIPPET_CHARS = 300
+MAX_CORPUS_TEXT_CHARS = 6000
+MAX_RECORD_BYTES = 8192
 MAX_SAMPLE_POSTS = 3
 SAMPLE_POST_CHARS = 200
 
+_URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
-def serper_query(sector: str, today: str) -> str:
-    """The fixed Serper query for the fallback search."""
-    return f"{sector} sector stocks investors discussing {today}"
+
+def serper_queries(sector: str, today: str) -> List[str]:
+    """The three fixed Serper queries of the fallback search, the original wording first."""
+    return [
+        f"{sector} sector stocks investors discussing {today}",
+        f"{sector} sector stocks to watch analyst picks {today}",
+        f"most discussed trending {sector} stocks this week {today}",
+    ]
+
+
+def _scrub(text: str) -> str:
+    """Remove full URLs (they can carry tokens and tracking) and collapse the whitespace they leave."""
+    return " ".join(_URL.sub(" ", text).split())
 
 
 # ── Small sanitizers: anything unusable is None, never a default ───────────────
@@ -131,49 +170,133 @@ def _reddit_candidates(reddit_result: Dict[str, Any]) -> List[Dict[str, Any]]:
             "average_sentiment": _ranged(item.get("average_sentiment"), -1.0, 1.0),
             "relevance_score": _ranged(item.get("relevance_score"), 0.0, 1.0),
             "sample_posts": [
-                p[:SAMPLE_POST_CHARS] for p in (posts if isinstance(posts, list) else []) if isinstance(p, str)
+                _scrub(p)[:SAMPLE_POST_CHARS] for p in (posts if isinstance(posts, list) else []) if isinstance(p, str)
             ][:MAX_SAMPLE_POSTS],
         }
     return list(out.values())
 
 
 def _serper_snippets(serper_result: Any) -> List[Dict[str, str]]:
-    organic = serper_result.get("organic") if isinstance(serper_result, dict) else None
-    if not isinstance(organic, list):
-        return []
+    """The bounded merged corpus: one result dict, or a list of them (a non-dict entry is ignored).
+
+    Each entry is exactly ``{"text", "host"}``. Results are taken rank by rank across the lists,
+    a repeated link is dropped (no link: a repeated text is dropped), full URLs are scrubbed from
+    the text before it is cut to SNIPPET_CHARS, and the corpus stops at MAX_SNIPPETS results or
+    when the next one would take the text past MAX_CORPUS_TEXT_CHARS.
+    """
+    results = serper_result if isinstance(serper_result, list) else [serper_result]
+    organic_lists = []
+    for result in results:
+        organic = result.get("organic") if isinstance(result, dict) else None
+        if isinstance(organic, list):
+            organic_lists.append(organic)
+
     snippets: List[Dict[str, str]] = []
-    for item in organic:
-        if not isinstance(item, dict):
-            continue
-        title = item.get("title") if isinstance(item.get("title"), str) else ""
-        snippet = item.get("snippet") if isinstance(item.get("snippet"), str) else ""
-        text = f"{title} {snippet}".strip()
-        if not text:
-            continue
-        link = item.get("link")
-        try:
-            host = (urlparse(link).hostname or "") if isinstance(link, str) else ""
-        except ValueError:
-            host = ""
-        snippets.append({"text": text[:SNIPPET_CHARS], "host": host})
-        if len(snippets) >= MAX_SNIPPETS:
-            break
+    seen_links: set = set()
+    seen_texts: set = set()
+    total = 0
+    for rank in range(max((len(o) for o in organic_lists), default=0)):
+        for organic in organic_lists:
+            item = organic[rank] if rank < len(organic) else None
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title") if isinstance(item.get("title"), str) else ""
+            snippet = item.get("snippet") if isinstance(item.get("snippet"), str) else ""
+            text = _scrub(f"{title} {snippet}")[:SNIPPET_CHARS]
+            if not text:
+                continue
+            link = item.get("link")
+            if isinstance(link, str) and link.strip():
+                if link.strip() in seen_links:
+                    continue
+                seen_links.add(link.strip())
+            else:
+                if text in seen_texts:
+                    continue
+                seen_texts.add(text)
+            if len(snippets) >= MAX_SNIPPETS or total + len(text) > MAX_CORPUS_TEXT_CHARS:
+                return snippets
+            try:
+                host = (urlparse(link).hostname or "") if isinstance(link, str) else ""
+            except ValueError:
+                host = ""
+            snippets.append({"text": text, "host": host})
+            total += len(text)
     return snippets
 
 
-def build_market_corpus(reddit_result: Any, serper_result: Any, sector: str) -> Dict[str, Any]:
+def build_market_corpus(
+    reddit_result: Any,
+    serper_results: Any,
+    sector: str,
+    queries: Optional[List[str]] = None,
+    failed_queries: int = 0,
+) -> Dict[str, Any]:
     """The data the LLM chooses from, with ``source`` in reddit / serper / unavailable.
 
     reddit:      ``candidates`` (ticker, the three Reddit numbers, up to 3 sample post titles)
-    serper:      ``snippets`` (title plus snippet text, link host only)
+    serper:      ``snippets`` (title plus snippet text, link host only) merged from one result or a
+                 list of results, plus the ``queries`` that were run and the ``failed_queries`` count
     unavailable: ``universe``, the sector's static ticker list (empty when unknown)
     """
     if not reddit_fallback_required(reddit_result):
         return {"source": "reddit", "candidates": _reddit_candidates(reddit_result)}
-    snippets = _serper_snippets(serper_result)
+    snippets = _serper_snippets(serper_results)
     if snippets:
-        return {"source": "serper", "snippets": snippets}
+        return {
+            "source": "serper",
+            "snippets": snippets,
+            "queries": list(queries or []),
+            "failed_queries": failed_queries,
+        }
     return {"source": "unavailable", "universe": list(RedditSentimentTool.SECTOR_TICKERS.get(sector, []))}
+
+
+def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
+    """The JSON-safe record of what the model saw, stored in ``execution_metrics.market_corpus``.
+
+    serper:      source, queries, failed_queries, results (text and host per entry), truncated
+    reddit:      source, candidates (ticker, the three numbers, sample posts), truncated
+    unavailable: source, universe, truncated
+
+    The record never holds a full URL (hosts only, URLs already scrubbed from the text). Its size
+    is measured as the backend writes it (``json.dumps`` with its defaults, the largest of the
+    usual encodings); over ``MAX_RECORD_BYTES`` it drops trailing entries until it fits and sets
+    ``truncated``, so the earliest results are the ones kept.
+    """
+    source = corpus["source"]
+    if source == "serper":
+        key = "results"
+        record: Dict[str, Any] = {
+            "source": source,
+            "queries": [str(q)[:200] for q in corpus.get("queries", [])],
+            "failed_queries": int(corpus.get("failed_queries", 0)),
+            key: [{"text": s["text"], "host": s["host"]} for s in corpus["snippets"]],
+            "truncated": False,
+        }
+    elif source == "reddit":
+        key = "candidates"
+        record = {
+            "source": source,
+            key: [
+                {
+                    "ticker": c["ticker"],
+                    "mention_count": c["mention_count"],
+                    "average_sentiment": c["average_sentiment"],
+                    "relevance_score": c["relevance_score"],
+                    "sample_posts": list(c["sample_posts"]),
+                }
+                for c in corpus["candidates"]
+            ],
+            "truncated": False,
+        }
+    else:
+        key = "universe"
+        record = {"source": source, key: list(corpus["universe"]), "truncated": False}
+    while record[key] and len(json.dumps(record).encode("utf-8")) > MAX_RECORD_BYTES:
+        record[key].pop()
+        record["truncated"] = True
+    return record
 
 
 def market_narrative_context(corpus: Dict[str, Any]) -> str:
@@ -187,14 +310,21 @@ def market_narrative_context(corpus: Dict[str, Any]) -> str:
     elif source == "serper":
         body = {
             "search_results": corpus["snippets"],
-            "note": "Choose tickers that appear in these search results.",
+            "note": (
+                "Choose only tickers whose symbol itself appears in these search results. "
+                "A pick whose symbol is not in the results is discarded."
+            ),
         }
     else:
         body = {
             "universe": corpus["universe"],
             "note": (
                 "No Reddit or search data was available this run. "
-                + ("Choose tickers from universe." if corpus["universe"] else "Choose well-known companies of the sector.")
+                + (
+                    "Choose tickers from universe only; others are discarded."
+                    if corpus["universe"]
+                    else "Choose well-known companies of the sector; use their real ticker symbols."
+                )
             ),
         }
     return json.dumps({"source": source, **body})
@@ -202,24 +332,19 @@ def market_narrative_context(corpus: Dict[str, Any]) -> str:
 
 # ── Serper-path counts and sentiment ───────────────────────────────────────────
 
-def _symbol_pattern(ticker: str) -> "re.Pattern[str]":
-    """Whole-symbol match: the bare symbol as written (upper case) or a $cashtag in any case.
-
-    The Reddit tool matches case-insensitively, which suits post text but would count the
-    article "a" for ticker A in search snippets, so the bare form is case-sensitive here.
-    """
-    symbol = re.escape(ticker)
-    return re.compile(r"(?:\$(?i:" + symbol + r")|(?<!\w)" + symbol + r")(?!\w)")
-
-
 def symbol_mention_counts(tickers: Iterable[str], snippets: Iterable[str]) -> Dict[str, int]:
-    """How many times each ticker symbol appears in the snippet texts (0 when never)."""
+    """How many times each ticker symbol appears in the snippet texts (0 when never).
+
+    The one counter for the Serper path: it produces ``mention_count`` and decides whether a
+    pick is grounded. One-letter and common-word symbols count only in an explicit form
+    (a cashtag or an exchange-qualified form), see ``utils.ticker_matching``.
+    """
     texts = list(snippets)
     counts: Dict[str, int] = {}
     for ticker in dict.fromkeys(_ticker(t) for t in tickers):
         if not ticker:
             continue
-        pattern = _symbol_pattern(ticker)
+        pattern = symbol_pattern(ticker, guard_ambiguous=True)
         counts[ticker] = sum(len(pattern.findall(text)) for text in texts)
     return counts
 
@@ -237,38 +362,87 @@ def serper_sentiment_by_ticker(corpus: Dict[str, Any], tickers: Iterable[str]) -
 
 # ── Picks ──────────────────────────────────────────────────────────────────────
 
-def _picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """(kept picks as (TICKER, rationale), dropped tickers) in the LLM's order, de-duplicated."""
-    listed = {c["ticker"] for c in corpus.get("candidates", [])} if corpus["source"] == "reddit" else None
+_SOURCE_HINTS = {
+    "reddit": "choose tickers from the listed candidates only; a ticker is 1 to 5 capital letters",
+    "serper": (
+        "choose only tickers whose symbol itself appears in the search results; "
+        "a ticker is 1 to 5 capital letters"
+    ),
+    "universe": "choose tickers from the listed universe only; a ticker is 1 to 5 capital letters",
+    "open": "choose well-formed tickers: 1 to 5 capital letters",
+}
+
+
+def _picks(
+    narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """(kept picks as (TICKER, rationale), dropped picks as (ticker, reason)), in the LLM's order, de-duplicated.
+
+    Every pick is checked in this order: the format check (all sources), then the source
+    rule. Reasons are a closed set: invalid_format, not_in_reddit_candidates,
+    not_in_search_results, not_in_sector_universe.
+    """
+    source = corpus["source"]
+    items = narrative.candidates if narrative is not None else []
+    tickers = [_ticker(item.ticker) for item in items]
+    listed = {c["ticker"] for c in corpus.get("candidates", [])} if source == "reddit" else set()
+    universe = set(corpus.get("universe", [])) if source == "unavailable" else set()
+    counts: Dict[str, int] = {}
+    if source == "serper":
+        counts = symbol_mention_counts(
+            [t for t in tickers if is_valid_ticker(t)], [s["text"] for s in corpus["snippets"]]
+        )
+
     kept: Dict[str, str] = {}
-    dropped: List[str] = []
-    for item in narrative.candidates if narrative is not None else []:
-        ticker = _ticker(item.ticker)
-        if not ticker or ticker in kept or ticker in dropped:
+    dropped: Dict[str, str] = {}
+    for item, ticker in zip(items, tickers):
+        if ticker in kept or ticker in dropped:
             continue
-        if listed is not None and ticker not in listed:
-            dropped.append(ticker)
+        if not is_valid_ticker(ticker):
+            dropped[ticker] = "invalid_format"
+        elif source == "reddit" and ticker not in listed:
+            dropped[ticker] = "not_in_reddit_candidates"
+        elif source == "serper" and counts.get(ticker, 0) <= 0:
+            dropped[ticker] = "not_in_search_results"
+        elif source == "unavailable" and universe and ticker not in universe:
+            dropped[ticker] = "not_in_sector_universe"
         else:
             kept[ticker] = item.rationale
-    return list(kept.items()), dropped
+    return list(kept.items()), list(dropped.items())
+
+
+def _log_dropped(dropped: List[Tuple[str, str]]) -> None:
+    """One warning per dropped pick: the phase, the reason and the ticker cut to 20 characters (repr).
+
+    The ticker is model output, so it is cut and escaped before it reaches a log line; corpus
+    text is never logged.
+    """
+    for ticker, reason in dropped:
+        logger.warning("%s: pick dropped (%s): %s", PHASE, reason, repr(ticker[:20]))
+
+
+def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> PhaseOutputError:
+    """The shared failure when no pick can be published: fixed text per source, no ticker, no corpus text."""
+    _log_dropped(dropped)
+    source = corpus["source"]
+    if source == "unavailable":
+        hint = _SOURCE_HINTS["universe" if corpus.get("universe") else "open"]
+    else:
+        hint = _SOURCE_HINTS[source]
+    message = f"{PHASE}: no chosen ticker is well formed and grounded in the data; fields: candidates"
+    return PhaseOutputError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}])
 
 
 def require_market_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> None:
     """Raise PhaseOutputError naming ``candidates`` when no pick can be published.
 
-    On the Reddit path that means no pick is a listed candidate; on the other paths only
-    an answer with no usable ticker at all fails.
+    On every source a pick must be well formed and grounded (see the module docstring), so an
+    answer that leaves none spends the bounded retry budget. Dropped picks are logged only
+    when this raises; ``merge_market`` logs them once when the phase succeeds.
     """
-    kept, _ = _picks(narrative, corpus)
-    if kept:
-        return
-    if corpus["source"] == "reddit":
-        message = f"{PHASE}: no chosen ticker is one of the listed Reddit candidates; fields: candidates"
-        hint = "choose tickers from the listed candidates only"
-    else:
-        message = f"{PHASE}: no usable ticker was chosen; fields: candidates"
-        hint = "choose at least one ticker"
-    raise PhaseOutputError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}])
+    kept, dropped = _picks(narrative, corpus)
+    if not kept:
+        raise _no_picks_error(corpus, dropped)
 
 
 def merge_market(
@@ -279,13 +453,14 @@ def merge_market(
 ) -> MarketAnalysisOutput:
     """Published output: the LLM's picks and rationales plus numbers the Flow measured.
 
-    Picks outside the Reddit candidate list are dropped with a warning (no measured data
-    for them). ``now_utc`` is the analysis timestamp, set by the Flow.
+    Picks that are not well formed or not grounded in the corpus are dropped with a warning
+    (no measured data for them); none left raises through the same shared error as
+    ``require_market_picks``. ``now_utc`` is the analysis timestamp, set by the Flow.
     """
-    require_market_picks(narrative, corpus)
     kept, dropped = _picks(narrative, corpus)
-    for ticker in dropped:
-        logger.warning("%s: pick not among the Reddit candidates dropped: %.20s", PHASE, ticker)
+    if not kept:
+        raise _no_picks_error(corpus, dropped)
+    _log_dropped(dropped)
     tickers = [t for t, _ in kept]
 
     source = corpus["source"]

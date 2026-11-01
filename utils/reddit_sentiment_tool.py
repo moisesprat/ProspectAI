@@ -32,6 +32,8 @@ from crewai.tools import BaseTool
 
 import requests
 
+from utils.ticker_matching import symbol_pattern
+
 _USER_AGENT = "ProspectAI/1.0 (investment research bot)"
 _BASE_URL = "https://www.reddit.com"
 
@@ -202,14 +204,13 @@ class RedditSentimentTool(BaseTool):
         sector_cfg = self.SECTOR_CONFIG.get(sector, {})
         subreddits = sector_cfg.get("subreddits", self.DEFAULT_SUBREDDITS)
 
-        # Compile patterns for each ticker — match both plain word (\bAAPL\b)
-        # and cashtag format ($AAPL), which is common on WSB and r/stocks.
+        # Compile patterns for each ticker through the shared matcher: the bare symbol as
+        # written (case-sensitive, whole word) or a cashtag ($AAPL) in any case, which is
+        # common on WSB and r/stocks. A dotted share-class ticker such as BRK.B matches
+        # too (it used to be escaped twice and never matched), and the ordinary lower-case
+        # words now, net and app are not counted as NOW, NET and APP (review WR-01).
         ticker_patterns: Dict[str, re.Pattern] = {
-            ticker: re.compile(
-                r"(?:\$|(?<!\w))" + re.escape(ticker.replace(".", r"\.")) + r"(?!\w)",
-                re.IGNORECASE,
-            )
-            for ticker in tickers
+            ticker: symbol_pattern(ticker, guard_ambiguous=False) for ticker in tickers
         }
 
         mention_counts: Dict[str, int] = {t: 0 for t in tickers}

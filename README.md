@@ -310,6 +310,11 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Stock picks now come from what the research found
+- The market research step now runs three web searches instead of one, and a stock is kept only if its ticker symbol actually appears in the search results, so a report can no longer feature a stock the research never mentioned.
+- Each analysis now keeps a short record of the search results its stock picks came from, so a recommendation can be traced back to its sources.
+- Ordinary words and one-letter tickers are no longer counted as stock mentions, and tickers with a dot, such as BRK.B, are now recognised.
+
 ### v1.11.0 — More reliable, grounded analyses
 - Every number and grade in a report is now computed from live data. The AI model only writes the commentary and chooses each stock's action.
 - Stocks whose fundamentals can't be graded are marked unavailable and can only be Monitor or Avoid.
