@@ -148,7 +148,9 @@ def test_no_sleep_on_loop_full_run(flow):
         4: _json_result(_critic()),
         5: narrative_result(draft_payload(draft_entry("AAA"))),
     }
-    serper_posts = [_serper_response(503), _serper_response(200, SERPER_BODY)]
+    # Three fixed queries: the first one hits a 503 and retries once, the other two answer at once.
+    serper_posts = [_serper_response(503), _serper_response(200, SERPER_BODY),
+                    _serper_response(200, SERPER_BODY), _serper_response(200, SERPER_BODY)]
     with patch.object(flow, "_make_crew", side_effect=_crew_factory(results, loop_threads)), \
          patch.object(flow, "_slim_draft", return_value=""), \
          patch.object(flow, "_critic_reference_table", return_value=""), \
@@ -163,7 +165,7 @@ def test_no_sleep_on_loop_full_run(flow):
     assert len(loop_threads) == 1
     # The market phase really took the Reddit-then-Serper path, including the 503 retry.
     assert flow.state.market_output.sentiment_available is False
-    assert post.call_count == 2
+    assert post.call_count == 4
     # Non-vacuous: pacing sleeps (Reddit) and a backoff sleep (Serper) happened ...
     modules = {module for _, module, _ in sleeps}
     assert {REDDIT_MODULE, SERPER_MODULE} <= modules
@@ -207,9 +209,35 @@ def test_reddit_429_run_continues(flow):
     assert clock.now < RedditSentimentTool.TIME_BUDGET_SECONDS
     assert clock.sleeps == []
     assert clock.request_count == RedditSentimentTool.MAX_CONSECUTIVE_FAILURES
-    # The run continued: Serper was asked and the market phase published from its results.
-    assert post.call_count == 1
+    # The run continued: Serper was asked three times and the market phase published from its results.
+    assert post.call_count == 3
     out = flow.state.market_output
     assert [c.ticker for c in out.candidate_stocks] == ["AAA", "BBB"]
     assert out.candidate_stocks[0].mention_count == 3
     assert out.sentiment_available is False
+
+
+def test_serper_outage_spends_at_most_three_retry_budgets(flow):
+    """A Serper outage (every request a 503) makes three queries, each inside its own 02-08 budget,
+    every sleep on a worker thread, and the market phase still completes on the unavailable path."""
+    import asyncio
+
+    from utils.patient_serper_tool import MAX_RETRIES, RETRY_BUDGET_SECONDS
+
+    sleeps, loop_threads = [], set()
+    results = {0: narrative_result(mkt_payload(mkt_entry("AAPL")))}
+    with patch.object(flow, "_make_crew", side_effect=_crew_factory(results, loop_threads)), \
+         patch.object(time, "sleep", _sleep_recorder(sleeps)), \
+         patch("requests.get", return_value=_reddit_posts_without_tickers()), \
+         patch("requests.post", side_effect=lambda *a, **k: _serper_response(503)) as post:
+        flow.state.sector, flow.state.today = "Technology", "2026-04-29"
+        asyncio.run(flow.market_analysis())
+
+    assert post.call_count == 3 * (MAX_RETRIES + 1)
+    serper_sleeps = [(ident, seconds) for ident, module, seconds in sleeps if module == SERPER_MODULE]
+    assert 0 < sum(seconds for _, seconds in serper_sleeps) <= 3 * RETRY_BUDGET_SECONDS
+    assert [ident for ident, _ in serper_sleeps if ident in loop_threads] == []
+    out = flow.state.market_output
+    assert [c.ticker for c in out.candidate_stocks] == ["AAPL"]
+    assert out.candidate_stocks[0].mention_count is None
+    assert flow._tracker.to_dict()["market_corpus"]["source"] == "unavailable"

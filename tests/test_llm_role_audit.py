@@ -781,6 +781,12 @@ MARKET_PHASE = "market_analysis"
 REDDIT_TOOL = "analyze_sector_reddit_sentiment"
 SERPER_TOOL = "Search the internet with Serper"
 
+QUERIES_TECH = [
+    "Technology sector stocks investors discussing 2026-04-29",
+    "Technology sector stocks to watch analyst picks 2026-04-29",
+    "most discussed trending Technology stocks this week 2026-04-29",
+]
+
 REDDIT_OK = {
     "sector": "Technology",
     "candidate_stocks": [
@@ -892,9 +898,7 @@ def test_serper_path_counts(flow):
     # Option A (operator decision, plan 02-16 task 1): no sentiment on the Serper path.
     assert all(c.average_sentiment is None for c in out.candidate_stocks)
     assert out.sentiment_available is False
-    assert tools[SERPER_TOOL].calls == [
-        {"search_query": "Technology sector stocks investors discussing 2026-04-29"}
-    ]
+    assert [c["search_query"] for c in tools[SERPER_TOOL].calls] == QUERIES_TECH
 
 
 def test_serper_counts_are_counts_of_the_symbol_in_titles_and_snippets(flow):
@@ -946,7 +950,7 @@ def test_reddit_tool_exception_falls_back_to_serper(flow, caplog):
     wire_tools(flow, tools, phase=MARKET_PHASE)
     with caplog.at_level("WARNING"):
         run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
-    assert len(tools[SERPER_TOOL].calls) == 1
+    assert len(tools[SERPER_TOOL].calls) == 3
     assert _by_ticker(flow.state.market_output)["AAA"].mention_count == 4
     assert "RuntimeError" in caplog.text and "secret detail" not in caplog.text
 
@@ -1088,6 +1092,213 @@ def test_serper_pick_counts_use_the_same_matcher(flow):
     assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (expected["AAA"], expected["BBB"]) == (3, 1)
 
 
+# ─── Three searches, bounded corpus, stored market_corpus (change 02-23) ──────
+
+class SerperSequence(StubTool):
+    """A Serper stand-in answering call by call; an Exception item is raised, the thread is recorded first."""
+
+    def __init__(self, *items):
+        super().__init__(SERPER_TOOL, None)
+        self.items = list(items)
+
+    def _run(self, **kwargs):
+        self.idents.append(threading.get_ident())
+        self.calls.append(kwargs)
+        item = self.items[len(self.calls) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _results(*entries):
+    """A Serper answer from (text, link) pairs; a None link gives an entry with no link."""
+    organic = []
+    for text, link in entries:
+        entry = {"title": text, "snippet": ""}
+        if link is not None:
+            entry["link"] = link
+        organic.append(entry)
+    return {"organic": organic}
+
+
+def test_serper_queries_are_three_fixed_strings():
+    from utils.market_records import serper_queries
+
+    assert serper_queries("Technology", "2026-04-29") == QUERIES_TECH
+
+
+def test_flow_runs_the_three_queries_in_order_off_loop(flow):
+    steps = []
+    flow._step_callback = lambda idx, step: steps.append((step.tool, step.log))
+    tools = market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK)
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    loop_thread = threading.get_ident()
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    serper = tools[SERPER_TOOL]
+    assert [c["search_query"] for c in serper.calls] == QUERIES_TECH
+    assert all(ident != loop_thread for ident in serper.idents)
+    assert [tool for tool, _ in steps] == [REDDIT_TOOL, SERPER_TOOL, SERPER_TOOL, SERPER_TOOL]
+    for number, (_, log) in enumerate(steps[1:], 1):
+        assert f"({number} of 3)" in log and "Technology" in log
+
+
+def test_identical_results_from_three_queries_count_once(flow):
+    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK), phase=MARKET_PHASE)
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+    stocks = _by_ticker(flow.state.market_output)
+    assert (stocks["AAA"].mention_count, stocks["BBB"].mention_count) == (4, 1)
+    assert (stocks["AAA"].relevance_score, stocks["BBB"].relevance_score) == (1.0, 0.25)
+
+
+def test_results_are_merged_rank_by_rank_with_duplicates_removed():
+    from utils.market_records import build_market_corpus
+
+    q1 = _results(("a1", "https://x.example/1"), ("a2", "https://x.example/2"), ("a3", "https://x.example/3"),
+                  ("same text", None))
+    q2 = _results(("b1", "https://x.example/2"), ("b2", "https://x.example/4"), ("b3", "https://x.example/5"))
+    q3 = _results(("c1", "https://x.example/1"), ("c2", "https://x.example/6"), ("same text", None))
+    corpus = build_market_corpus(REDDIT_FALLBACK, [q1, q2, q3], "Technology")
+    assert [s["text"] for s in corpus["snippets"]] == ["a1", "b1", "b2", "c2", "a3", "b3", "same text"]
+
+
+def test_corpus_is_bounded_and_urls_are_scrubbed():
+    from utils.market_records import build_market_corpus
+
+    def long_results(tag):
+        return _results(*[
+            (f"{tag}{i} " + "word " * 100 + f"see https://tracker.example.com/path?token=SECRET{i} for more",
+             f"https://{tag}{i}.example.com/a")
+            for i in range(10)
+        ])
+
+    corpus = build_market_corpus(REDDIT_FALLBACK, [long_results("p"), long_results("q"), long_results("r")], "Technology")
+    texts = [s["text"] for s in corpus["snippets"]]
+    assert 0 < len(texts) <= 20
+    assert all(len(t) <= 300 for t in texts)
+    assert sum(len(t) for t in texts) <= 6000
+    assert not any("http" in t or "SECRET" in t for t in texts)
+    short = _results(("see https://a.example.com/x?y=1 now", "https://a.example.com/x"))
+    scrubbed = build_market_corpus(REDDIT_FALLBACK, short, "Technology")["snippets"][0]["text"]
+    assert "http" not in scrubbed and scrubbed.startswith("see") and scrubbed.endswith("now")
+
+
+def test_failed_query_is_skipped_and_logged_by_class(flow, caplog):
+    tools = market_tools(reddit=REDDIT_FALLBACK)
+    tools[SERPER_TOOL] = SerperSequence(
+        SERPER_OK, __import__("requests").exceptions.ConnectionError("net down"),
+        _results(("AAA again", "https://other.example.com/z")),
+    )
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    assert "ConnectionError" in caplog.text and "net down" not in caplog.text
+    assert _by_ticker(flow.state.market_output)["AAA"].mention_count == 5  # 4 from query 1, 1 from query 3
+    record = flow._tracker.to_dict()["market_corpus"]
+    assert record["source"] == "serper" and record["failed_queries"] == 1
+    assert record["queries"] == QUERIES_TECH
+
+
+def test_all_queries_failing_is_the_unavailable_path(flow):
+    err = __import__("requests").exceptions.ConnectionError("net down")
+    tools = market_tools(reddit=REDDIT_FALLBACK, serper=err)
+    wire_tools(flow, tools, phase=MARKET_PHASE)
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"))))
+    assert len(tools[SERPER_TOOL].calls) == 3
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAPL"]
+    record = flow._tracker.to_dict()["market_corpus"]
+    assert record["source"] == "unavailable" and "AAPL" in record["universe"]
+
+
+def test_corpus_record_shapes():
+    from utils.market_records import MAX_RECORD_BYTES, build_market_corpus, corpus_record
+
+    serper = build_market_corpus(REDDIT_FALLBACK, [SERPER_OK, SERPER_OK], "Technology",
+                                 queries=QUERIES_TECH, failed_queries=1)
+    reddit = build_market_corpus(REDDIT_OK, None, "Technology")
+    unavailable = build_market_corpus(REDDIT_FALLBACK, None, "Technology")
+    records = {c["source"]: corpus_record(c) for c in (serper, reddit, unavailable)}
+
+    srec = records["serper"]
+    assert set(srec) == {"source", "queries", "failed_queries", "results", "truncated"}
+    assert srec["queries"] == QUERIES_TECH and srec["failed_queries"] == 1 and srec["truncated"] is False
+    assert all(set(r) == {"text", "host"} for r in srec["results"])
+    assert srec["results"][0] == {"text": "Headline 1 AAA surges while BBB lags", "host": "news1.example.com"}
+
+    rrec = records["reddit"]
+    assert set(rrec) == {"source", "candidates", "truncated"}
+    first = rrec["candidates"][0]
+    assert first["ticker"] == "AAA" and (first["mention_count"], first["average_sentiment"], first["relevance_score"]) == (12, 0.31, 1.0)
+    assert first["sample_posts"] == ["AAA beats estimates", "Why AAA is a buy"]
+
+    urec = records["unavailable"]
+    assert set(urec) == {"source", "universe", "truncated"} and "AAPL" in urec["universe"]
+
+    for record in records.values():
+        raw = json.dumps(record)
+        assert len(raw.encode("utf-8")) <= MAX_RECORD_BYTES and "http" not in raw
+
+
+def test_corpus_record_is_trimmed_to_8k():
+    from utils.market_records import MAX_RECORD_BYTES, build_market_corpus, corpus_record
+
+    results = _results(*[(f"{i:02d} " + "\u00e9" * 297, f"https://h{i}.example.com/a") for i in range(30)])
+    corpus = build_market_corpus(REDDIT_FALLBACK, results, "Technology", queries=QUERIES_TECH)
+    assert len(corpus["snippets"]) == 20
+    record = corpus_record(corpus)
+    assert len(json.dumps(record).encode("utf-8")) <= MAX_RECORD_BYTES
+    assert record["truncated"] is True
+    kept = record["results"]
+    assert 0 < len(kept) < 20
+    assert [r["text"] for r in kept] == [s["text"] for s in corpus["snippets"][: len(kept)]]
+
+
+def test_tracker_exposes_market_corpus_additively():
+    tracker = ExecutionTracker()
+    tracker.start()
+    assert "market_corpus" not in tracker.to_dict()
+    assert "market_corpus" not in tracker.snapshot()
+    record = {"source": "serper", "queries": ["q"], "failed_queries": 0, "results": [], "truncated": False}
+    tracker.set_market_corpus(record)
+    assert tracker.to_dict()["market_corpus"] == record
+    snap = tracker.snapshot()
+    assert snap["market_corpus"] == record and snap["partial"] is True
+    assert tracker.to_dict()["metrics_version"] == 2
+    tracker.set_market_corpus(None)
+    assert "market_corpus" not in tracker.to_dict()
+
+
+def _market_kickoff(flow, then_raise=None):
+    def kickoff(inputs=None):
+        wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK), phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+        if then_raise:
+            raise then_raise
+        flow.state.final_output = MagicMock(model_dump=lambda mode=None: {"positions": [], "overall_strategy": "x"})
+
+    return kickoff
+
+
+def test_market_corpus_reaches_execution_metrics(flow):
+    flow.kickoff = _market_kickoff(flow)
+    with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=lambda s, p: s):
+        out = flow.run_analysis({"sector": "Technology"})
+    record = out["execution_metrics"]["market_corpus"]
+    assert record["source"] == "serper" and record["queries"][0].startswith("Technology sector stocks")
+    assert len(record["queries"]) == 3
+    assert "https://" not in json.dumps(record)
+
+
+def test_market_corpus_is_in_partial_metrics_of_a_failed_run(flow):
+    flow.kickoff = _market_kickoff(flow, then_raise=RuntimeError("boom"))
+    with pytest.raises(RuntimeError, match="boom") as info:
+        flow.run_analysis({"sector": "Technology"})
+    assert info.value.partial_metrics["market_corpus"]["source"] == "serper"
+
+
 def test_require_market_picks_names_candidates():
     from schemas.agent_outputs import MarketNarrativeOutput
     from utils.market_records import build_market_corpus, require_market_picks
@@ -1118,11 +1329,13 @@ def test_market_tools_off_loop_and_timed(flow):
     flow._tracker.start()
     loop_thread = threading.get_ident()
     run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+    assert len(tools[REDDIT_TOOL].idents) == 1
+    assert len(tools[SERPER_TOOL].idents) == 3
     for tool in tools.values():
-        assert len(tool.idents) == 1 and tool.idents[0] != loop_thread
+        assert all(ident != loop_thread for ident in tool.idents)
     calls = flow._tracker.to_dict()["tool_calls"]
-    assert [(c["phase"], c["tool"]) for c in calls] == [(MARKET_PHASE, REDDIT_TOOL), (MARKET_PHASE, SERPER_TOOL)]
-    assert flow._tracker.tool_call_count(MARKET_PHASE) == 2
+    assert [(c["phase"], c["tool"]) for c in calls] == [(MARKET_PHASE, REDDIT_TOOL)] + [(MARKET_PHASE, SERPER_TOOL)] * 3
+    assert flow._tracker.tool_call_count(MARKET_PHASE) == 4
 
 
 def test_market_emits_steps_start_and_one_task_complete(flow):
@@ -1131,7 +1344,7 @@ def test_market_emits_steps_start_and_one_task_complete(flow):
     flow._step_callback = lambda idx, step: steps.append((idx, step.tool, step.log))
     wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK), phase=MARKET_PHASE)
     run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
-    assert [s[:2] for s in steps] == [(0, REDDIT_TOOL), (0, SERPER_TOOL)]
+    assert [s[:2] for s in steps] == [(0, REDDIT_TOOL)] + [(0, SERPER_TOOL)] * 3
     assert steps[0][2] == "Reading Reddit discussion for Technology"
     kinds = [e["event"] for e in events]
     assert kinds.count("agent_start") == 1 and kinds.count("task_complete") == 1
@@ -1271,8 +1484,8 @@ class TestBuildMarketCorpus:
 
         serper = _organic(*(["x" * 5000] * 50))
         corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Technology")
-        assert len(corpus["snippets"]) <= 10
-        assert all(len(s["text"]) <= 500 for s in corpus["snippets"])
+        assert len(corpus["snippets"]) <= 20
+        assert all(len(s["text"]) <= 300 for s in corpus["snippets"])
 
     def test_reddit_flagged_fallback_is_not_used_even_with_candidates(self):
         from utils.market_records import build_market_corpus
