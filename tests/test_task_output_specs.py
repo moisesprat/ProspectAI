@@ -379,6 +379,34 @@ def test_market_prompt_is_narrative_only():
         assert wanted in description
 
 
+def test_market_example_tickers_are_neutral_placeholders():
+    """CR-01: the example's tickers were the ones the model copied into a report (change 02-23)."""
+    from utils.reddit_sentiment_tool import RedditSentimentTool
+    from utils.ticker_matching import is_valid_ticker
+
+    example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
+    tickers = [entry["ticker"] for entry in example["candidates"]]
+    universe = {t for tickers_ in RedditSentimentTool.SECTOR_TICKERS.values() for t in tickers_}
+    commonly_copied = {"AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"}
+    assert tickers and not commonly_copied & set(tickers)
+    assert not universe & set(tickers)
+    assert all(is_valid_ticker(t) for t in tickers)
+    text = " ".join(entry["rationale"] for entry in example["candidates"]) + " " + example["summary"]
+    for name in ("Apple", "Microsoft", "iPhone", "Azure", "Copilot", "Nvidia"):
+        assert name not in text, f"market example still names {name}"
+
+
+def test_market_prompt_states_the_grounding_rule():
+    description = render_task("market_analysis")["description"]
+    for wanted in ("ticker symbol itself", "is discarded", "Do not copy the example",
+                   "Market Data (collected by the pipeline)", "candidates", "rationale", "summary",
+                   "untrusted", "ETF"):
+        assert wanted in description, f"market prompt lacks {wanted!r}"
+    for forbidden in ("analyze_sector_reddit_sentiment", "SerperDevTool", "STEP 1", "data_source",
+                      "analysis_timestamp", "fallback_required", "mention_count = 0"):
+        assert forbidden not in description
+
+
 def test_market_example_has_no_number_or_flag_fields():
     example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
     assert set(example) == {"candidates", "summary"}
