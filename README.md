@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.11.0**
+**Current release: v1.11.1**
 
 ### ⚠️ Important Disclaimer
 
@@ -310,7 +310,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Stock picks now come from what the research found
+### v1.11.1 — Stock picks now come from what the research found
 - The market research step now runs three web searches instead of one, and a stock is kept only if its ticker symbol actually appears in the search results, so a report can no longer feature a stock the research never mentioned.
 - Each analysis now keeps a short record of the search results its stock picks came from, so a recommendation can be traced back to its sources.
 - Ordinary words and one-letter tickers are no longer counted as stock mentions, and tickers with a dot, such as BRK.B, are now recognised.
@@ -331,13 +331,6 @@ twine upload dist/*
 ### v1.9.4 — Analyses work again
 - Fixed an issue in 1.9.3 where every analysis failed right after starting, caused by an incompatible version of the AI provider's library.
 - Added an automatic check that stops an incompatible AI library version from ever being released again.
-
-### v1.9.3 — Performance insights and safer releases
-- Every analysis now records how long each step and each data source takes, so slow runs can be diagnosed and sped up. The timings appear in a collapsible section of the report's execution metrics.
-- If an analysis fails partway through, the timings gathered up to that point are kept with the error instead of being lost.
-- The AI model for each run is now passed to that run directly, so one run can no longer change another's model settings.
-- Dependencies are locked to exact versions, and every change must pass the full test suite before it can be merged.
-- Releases now go through a single verified process, and the live service reports exactly which version it is running.
 
 ## Roadmap
 
