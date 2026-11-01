@@ -1,4 +1,4 @@
-"""Offline request-shape gate for Claude Haiku 5.5 (MODEL-01; D-01, D-02, D-03).
+"""Offline request-shape gate for Claude Haiku 5.5 and Sonnet 5.5 (MODEL-01; D-01, D-02, D-03).
 
 Builds the five agents through ``TaskFactory`` (market, technical, fundamental,
 investor_strategic, critic -- six phases, draft and final share investor_strategic),
@@ -10,6 +10,12 @@ Why a wire capture and not a mock of ``messages.create``: the shape Haiku 5.5
 refuses (sampling keys, ``budget_tokens``, prefill) and the shape that silently
 drops real tools (crewai's structured-output allow-list) are only visible in the
 final body.
+
+Model split (plan 02-25): investor_strategic (draft and final steps) and critic run
+claude-sonnet-5-5, the other three agents claude-haiku-5-5. Sonnet 5.5 also rejects
+thinking of type disabled or enabled and a forced tool choice. The expected thinking
+body is written here from the documented API facts (``expected_thinking``), never
+read back from the production capability table, so a table mistake fails a test.
 """
 import json
 
@@ -23,10 +29,23 @@ from prospect_ai_crew import TaskFactory
 from prospect_ai_flow import PHASES
 
 HAIKU_55 = "claude-haiku-5-5"
+SONNET_55 = "claude-sonnet-5-5"
 HAIKU_45 = "claude-haiku-4-5-20251001"
 SAMPLING_KEYS = ("temperature", "top_p", "top_k")
 THINKING_OFF_PHASES = ("market_analysis", "technical_analysis", "fundamental_analysis")
 THINKING_LOW_PHASES = ("draft_strategy", "critique_review", "final_strategy")
+SONNET_PHASES = THINKING_LOW_PHASES
+HAIKU_PHASES = THINKING_OFF_PHASES
+
+# Phase to the agents.yaml key whose model and thinking mode that phase uses.
+PHASE_AGENT_KEY = {
+    "market_analysis": "market_analyst",
+    "technical_analysis": "technical_analyst",
+    "fundamental_analysis": "fundamental_analyst",
+    "draft_strategy": "investor_strategic",
+    "critique_review": "critic",
+    "final_strategy": "investor_strategic",
+}
 
 REAL_TOOL = {
     "type": "function",
@@ -121,15 +140,81 @@ async def _capture_phase(factory, phase, tools=None):
 
 async def _capture_all(factory, tools=None):
     return {p: await _capture_phase(factory, p, tools) for p in PHASES}
+# ─── Expectation helpers (written from the documented API facts) ───────────────
+
+def yaml_agent(agent_key):
+    """The agent's entry from config/agents.yaml, read with PyYAML."""
+    from pathlib import Path
+
+    import yaml
+
+    import config as config_pkg
+
+    raw = yaml.safe_load((Path(config_pkg.__file__).parent / "agents.yaml").read_text())
+    return raw["agents"][agent_key]
+
+
+def expected_thinking(model, mode):
+    """(thinking body, effort) the Messages API accepts for ``model`` and ``mode``.
+
+    Haiku 5.5: off is ``disabled``; low is ``adaptive`` with effort low.
+    Sonnet 5.5: ``disabled`` is a 400, so off is ``between_tools`` (nothing else in
+    the dict, no effort); low is ``adaptive`` with effort low.
+    Any other model is sent neither thinking nor effort.
+    """
+    if HAIKU_55 in model:
+        if mode == "off":
+            return {"type": "disabled"}, None
+        return {"type": "adaptive"}, "low"
+    if SONNET_55 in model:
+        if mode == "off":
+            return {"type": "between_tools"}, None
+        return {"type": "adaptive"}, "low"
+    return None, None
+
+
+def body_effort(body):
+    return (body.get("output_config") or {}).get("effort")
+
+
+def assert_thinking_matches(body, model, mode, label):
+    thinking, effort = expected_thinking(model, mode)
+    assert body.get("thinking") == thinking, (label, body.get("thinking"), thinking)
+    assert body_effort(body) == effort, (label, body_effort(body), effort)
+    assert "budget_tokens" not in (body.get("thinking") or {}), label
+
 
 
 # ─── Tests ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_all_agents_default_to_haiku_55(clean_env):
+async def test_models_follow_the_split(clean_env):
     captured = await _capture_all(_factory())
-    for phase, req in captured.items():
-        assert req["body"]["model"] == HAIKU_55, (phase, req["body"]["model"])
+    for phase in HAIKU_PHASES:
+        assert captured[phase]["body"]["model"] == HAIKU_55, phase
+    for phase in SONNET_PHASES:
+        assert captured[phase]["body"]["model"] == SONNET_55, phase
+
+
+@pytest.mark.asyncio
+async def test_sonnet_phases_never_carry_a_rejected_shape(clean_env):
+    for tools in (None, [REAL_TOOL]):
+        captured = await _capture_all(_factory(), tools=tools)
+        for phase in SONNET_PHASES:
+            req = captured[phase]
+            body = req["body"]
+            label = (phase, bool(tools))
+            assert body["model"] == SONNET_55, label
+            for key in SAMPLING_KEYS:
+                assert key not in body, (label, key)
+            assert "budget_tokens" not in (body.get("thinking") or {}), label
+            assert body["thinking"]["type"] not in ("disabled", "enabled"), label
+            mode = yaml_agent(PHASE_AGENT_KEY[phase])["thinking"]
+            assert_thinking_matches(body, SONNET_55, mode, label)
+            assert "output_format" in body, label
+            assert "structured-outputs-2025-11-13" in req["beta"], label
+            assert (body.get("tool_choice") or {}).get("type") not in ("any", "tool"), label
+            assert body["messages"][-1]["role"] == "user", label
 
 
 @pytest.mark.asyncio
@@ -143,17 +228,12 @@ async def test_no_sampling_params(clean_env):
 @pytest.mark.asyncio
 async def test_thinking_per_agent(clean_env):
     captured = await _capture_all(_factory())
-    for phase in THINKING_OFF_PHASES:
-        assert captured[phase]["body"]["thinking"] == {"type": "disabled"}, phase
-    for phase in THINKING_LOW_PHASES:
-        body = captured[phase]["body"]
-        assert body["thinking"] == {"type": "adaptive"}, phase
-        assert body["output_config"]["effort"] == "low", phase
     for phase, req in captured.items():
         body = req["body"]
-        assert "budget_tokens" not in body["thinking"], phase
-        if body["thinking"].get("type") == "disabled":
-            assert body.get("output_config", {}).get("effort") not in ("xhigh", "max"), phase
+        mode = yaml_agent(PHASE_AGENT_KEY[phase])["thinking"]
+        assert_thinking_matches(body, body["model"], mode, phase)
+        if (body.get("thinking") or {}).get("type") in ("disabled", "between_tools"):
+            assert body_effort(body) not in ("xhigh", "max"), phase
 
 
 @pytest.mark.asyncio
@@ -163,7 +243,7 @@ async def test_effort_rewrite_keeps_content_length_consistent(clean_env):
 
 
 @pytest.mark.asyncio
-async def test_real_tool_survives_on_haiku_55(clean_env):
+async def test_real_tool_survives_on_every_phase(clean_env):
     captured = await _capture_all(_factory(), tools=[REAL_TOOL])
     for phase, req in captured.items():
         body = req["body"]

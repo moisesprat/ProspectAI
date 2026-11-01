@@ -99,13 +99,14 @@ class TestFlowInjection:
 class TestAgentModelIds:
     def test_agent_model_ids_yaml_default(self, clean_env):
         ids = ProspectAIFlow().agent_model_ids()
-        assert ids == ["claude-haiku-5-5"] * 6
+        assert ids == ["claude-haiku-5-5"] * 3 + ["claude-sonnet-5-5"] * 3
 
     def test_agent_model_ids_env_override(self, clean_env):
         clean_env.setenv("AGENT_CRITIC_MODEL", HAIKU)
         ids = ProspectAIFlow().agent_model_ids()
         assert ids[4] == HAIKU
-        assert [m for i, m in enumerate(ids) if i != 4] == ["claude-haiku-5-5"] * 5
+        split = ["claude-haiku-5-5"] * 3 + ["claude-sonnet-5-5"] * 3
+        assert [m for i, m in enumerate(ids) if i != 4] == [m for i, m in enumerate(split) if i != 4]
 
     def test_global_model_changes_all_six(self, clean_env):
         clean_env.setenv("MODEL", "claude-x")
