@@ -64,6 +64,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
@@ -100,6 +101,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
@@ -134,6 +136,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     max_iter: 20
     llm:
@@ -178,6 +181,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "low"
+    prompt_caching: "off"
     max_tokens: 16000
     llm:
       provider: "anthropic"
@@ -220,6 +224,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "low"
+    prompt_caching: "off"
     max_tokens: 16000
     llm:
       provider: "anthropic"

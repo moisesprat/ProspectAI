@@ -15,12 +15,16 @@ def _long_text(chars: int) -> str:
 
 @pytest.fixture
 def sonnet():
-    return AnthropicCachingCompletion(model="claude-sonnet-4-6", api_key="test-key")
+    return AnthropicCachingCompletion(
+        model="claude-sonnet-4-6", api_key="test-key", prompt_caching="on"
+    )
 
 
 @pytest.fixture
 def haiku():
-    return AnthropicCachingCompletion(model="claude-haiku-4-5-20251001", api_key="test-key")
+    return AnthropicCachingCompletion(
+        model="claude-haiku-4-5-20251001", api_key="test-key", prompt_caching="on"
+    )
 
 
 def test_long_user_message_gets_cache_control(sonnet):
@@ -72,7 +76,7 @@ def test_breakpoint_budget_capped_at_four(sonnet):
 
 def test_extended_ttl_adds_ttl_field():
     llm = AnthropicCachingCompletion(
-        model="claude-sonnet-4-6", api_key="test-key", cache_ttl="1h"
+        model="claude-sonnet-4-6", api_key="test-key", cache_ttl="1h", prompt_caching="on"
     )
     messages = [{"role": "user", "content": _long_text(5000)}]
     formatted, _ = llm._format_messages_for_anthropic(messages)
@@ -129,9 +133,13 @@ async def test_thinking_first_plain_text(thinking_low):
 
 
 @pytest.mark.asyncio
-async def test_cache_markers_with_thinking(thinking_low):
-    transport = install_capture(thinking_low, _THINKING_FIRST)
-    await thinking_low.acall(
+async def test_cache_markers_with_thinking():
+    llm = make_caching_llm(
+        model="anthropic/claude-haiku-5-5", api_key="test-key", thinking="low",
+        prompt_caching="on",
+    )
+    transport = install_capture(llm, _THINKING_FIRST)
+    await llm.acall(
         [{"role": "user", "content": _long_text(10000)}], response_model=_Answer
     )
     body = transport.requests[0]["body"]
