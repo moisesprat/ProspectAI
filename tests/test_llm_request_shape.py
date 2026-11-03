@@ -133,19 +133,20 @@ def _factory():
     return TaskFactory(config=Config())
 
 
-async def _capture_phase(factory, phase, tools=None):
+async def _capture_phase(factory, phase, tools=None, messages=None):
+    """``messages`` is an optional zero-argument callable returning a FRESH message
+    list (the caching formatter rewrites message dicts in place)."""
     llm = factory._phase_config[phase]["agent"].llm
     transport = install_capture(llm)
-    result = await llm.acall(
-        [{"role": "user", "content": "hi"}], tools=tools, response_model=_Answer
-    )
+    msgs = messages() if messages is not None else [{"role": "user", "content": "hi"}]
+    result = await llm.acall(msgs, tools=tools, response_model=_Answer)
     assert isinstance(result, _Answer)
     assert len(transport.requests) == 1
     return transport.requests[0]
 
 
-async def _capture_all(factory, tools=None):
-    return {p: await _capture_phase(factory, p, tools) for p in PHASES}
+async def _capture_all(factory, tools=None, messages=None):
+    return {p: await _capture_phase(factory, p, tools, messages) for p in PHASES}
 # ─── Expectation helpers (written from the documented API facts) ───────────────
 
 def yaml_agent(agent_key):
@@ -527,3 +528,154 @@ async def test_refusal_response_is_not_a_valid_answer_and_is_logged_by_category(
     assert "general_harms" in text
     assert "refusal" in text.lower()
     assert "SECRET" not in caplog.text
+
+
+# ─── Prompt caching switch (quick 261103-urg) ──────────────────────────────────
+# Live runs on 1.12.0 showed zero cache reads: every step's prompt is unique and used
+# once, so the markers only paid the write premium. Caching is now a per-agent
+# ``prompt_caching: "off" | "on"`` key in agents.yaml, off by default. The long
+# prompts below are above both cache thresholds (Haiku 2048 tokens x 4 chars = 8192),
+# so a negative test using "hi" would pass vacuously.
+
+LONG_TEXT = "x" * 10000
+
+
+def has_cache_control(obj):
+    """True when any dict at any depth carries a ``cache_control`` key."""
+    if isinstance(obj, dict):
+        return "cache_control" in obj or any(has_cache_control(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(has_cache_control(v) for v in obj)
+    return False
+
+
+def long_messages():
+    """A NEW list of NEW dicts each call (the formatter mutates them in place)."""
+    return [
+        {"role": "system", "content": LONG_TEXT},
+        {"role": "user", "content": LONG_TEXT},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [None, [REAL_TOOL]])
+async def test_prompt_caching_default_sends_no_cache_control_on_any_phase(clean_env, tools):
+    for key in set(PHASE_AGENT_KEY.values()):
+        assert yaml_agent(key)["prompt_caching"] == "off", key
+    captured = await _capture_all(_factory(), tools=tools, messages=long_messages)
+    for phase, shot in captured.items():
+        body = shot["body"]
+        assert not has_cache_control(body), phase
+        assert not has_cache_control(body["system"]), phase
+        assert not has_cache_control(body["messages"]), phase
+        assert not has_cache_control(body.get("tools")), phase
+        assert "extended-cache-ttl" not in shot["beta"], phase
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_unset_key_defaults_to_off(clean_env, tmp_path):
+    from pathlib import Path
+
+    import yaml
+
+    import config as config_pkg
+    from agents.market_analyst_agent import MarketAnalystAgent
+
+    raw = yaml.safe_load((Path(config_pkg.__file__).parent / "agents.yaml").read_text())
+    raw["agents"]["market_analyst"].pop("prompt_caching")
+    path = tmp_path / "agents.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    agent = MarketAnalystAgent(config_path=str(path))
+    assert agent.prompt_caching == "off"
+    llm = agent._get_llm()
+    transport = install_capture(llm)
+    await llm.acall(long_messages(), response_model=_Answer)
+    assert not has_cache_control(transport.requests[0]["body"])
+
+
+def enable_prompt_caching(monkeypatch, *agent_keys):
+    """Make the named agents load prompt_caching "on" (TaskFactory builds its agents
+    from the shipped agents.yaml, so the settings are patched at the loader)."""
+    from config.agent_config_loader import AgentConfigLoader
+
+    original = AgentConfigLoader.get_agent_settings
+
+    def patched(self, agent_key):
+        settings = dict(original(self, agent_key))
+        if agent_key in agent_keys:
+            settings["prompt_caching"] = "on"
+        return settings
+
+    monkeypatch.setattr(AgentConfigLoader, "get_agent_settings", patched)
+
+
+ALL_AGENT_KEYS = tuple(dict.fromkeys(PHASE_AGENT_KEY.values()))
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_on_restores_markers_on_every_phase(clean_env):
+    enable_prompt_caching(clean_env, *ALL_AGENT_KEYS)
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    for phase, shot in captured.items():
+        body = shot["body"]
+        assert isinstance(body["system"], list), phase
+        assert body["system"][0]["cache_control"] == {"type": "ephemeral"}, phase
+        user = body["messages"][0]["content"]
+        assert isinstance(user, list), phase
+        assert user[0]["cache_control"] == {"type": "ephemeral"}, phase
+        assert not has_cache_control(body.get("tools")), phase
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_is_per_agent(clean_env):
+    enable_prompt_caching(clean_env, "critic")
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    assert has_cache_control(captured["critique_review"]["body"])
+    for phase in PHASES:
+        if phase != "critique_review":
+            assert not has_cache_control(captured[phase]["body"]), phase
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_leaves_thinking_effort_tool_choice_and_sampling_unchanged(
+    clean_env,
+):
+    off = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    enable_prompt_caching(clean_env, *ALL_AGENT_KEYS)
+    on = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    for phase in PHASES:
+        a, b = off[phase], on[phase]
+        agent_key = PHASE_AGENT_KEY[phase]
+        mode = yaml_agent(agent_key)["thinking"]
+        for shot in (a, b):
+            body = shot["body"]
+            assert not any(k in body for k in SAMPLING_KEYS), phase
+            assert_thinking_matches(body, body["model"], mode, phase)
+        assert a["body"]["model"] == b["body"]["model"], phase
+        assert a["body"].get("thinking") == b["body"].get("thinking"), phase
+        assert body_effort(a["body"]) == body_effort(b["body"]), phase
+        assert a["body"].get("tool_choice") == b["body"].get("tool_choice"), phase
+        names = lambda x: [t.get("name") for t in x["body"].get("tools", [])]  # noqa: E731
+        assert names(a) == names(b) and "real_tool" in names(a), phase
+        assert ("output_format" in a["body"]) == ("output_format" in b["body"]), phase
+        assert a["beta"] == b["beta"], phase
+        forced = {"type": "any"} if phase in THINKING_OFF_PHASES else None
+        assert a["body"].get("tool_choice") == forced, phase
+        assert b["body"].get("tool_choice") == forced, phase
+
+
+@pytest.mark.parametrize("value", ["maybe", "ON", "1h", True, False])
+def test_yaml_prompt_caching_values_are_closed(clean_env, tmp_path, value):
+    from pathlib import Path
+
+    import yaml
+
+    import config as config_pkg
+    from agents.market_analyst_agent import MarketAnalystAgent
+
+    raw = yaml.safe_load((Path(config_pkg.__file__).parent / "agents.yaml").read_text())
+    raw["agents"]["market_analyst"]["prompt_caching"] = value
+    bad = tmp_path / "agents.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="market_analyst.*prompt_caching"):
+        MarketAnalystAgent(config_path=str(bad))

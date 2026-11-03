@@ -6,6 +6,13 @@ and overrides `_format_messages_for_anthropic` to attach
 long user messages. Anthropic then serves repeated prefixes from its prompt
 cache, cutting input-token cost ~90% on cache reads.
 
+The markers are attached only when an agent sets ``prompt_caching`` to ``"on"`` in
+``config/agents.yaml``; the default is ``"off"``. It is off because live runs on 1.12.0
+showed zero cache reads in every step: each step's prompt is unique and used once, so
+caching only paid the cache-write premium. With it off no request carries a
+``cache_control`` marker, and the extended-TTL beta header and ``cache_ttl`` are not
+applied. The token counters (``cache_creation_tokens``) stay and simply read 0.
+
 Why a subclass (not a `crewai.LLM` subclass): in crewai 1.12.2 `LLM(...)` is
 a `__new__` factory that dispatches to per-provider classes
 (`AnthropicCompletion`, `OpenAICompatibleCompletion`, ...). Subclassing `LLM`
@@ -82,6 +89,7 @@ _EXTENDED_TTL_BETA_HEADER = "extended-cache-ttl-2025-04-11"
 
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")
 THINKING_MODES = ("off", "low")
+PROMPT_CACHING_MODES = ("off", "on")
 _LOW_EFFORT = "low"
 _FORCED_TOOL_CHOICE_TYPES = ("any", "tool")
 _REFUSAL_CATEGORY_MAX_CHARS = 40
@@ -252,6 +260,9 @@ def _refusal_category(response: Any) -> str:
 class AnthropicCachingCompletion(AnthropicCompletion):
     """`AnthropicCompletion` with prompt-caching markers injected automatically.
 
+    Markers are injected only when ``prompt_caching="on"`` (default ``"off"``, the
+    per-agent ``prompt_caching`` key in agents.yaml); ``cache_ttl`` applies only then.
+
     Also tracks `cache_creation_input_tokens` per LLM instance — CrewAI's
     upstream `_extract_anthropic_token_usage` discards this field, so it would
     otherwise be invisible. Exposed via `self._token_usage["cache_creation_tokens"]`
@@ -263,11 +274,17 @@ class AnthropicCachingCompletion(AnthropicCompletion):
         *args: Any,
         cache_ttl: str = "5m",
         thinking_mode: str = "off",
+        prompt_caching: str = "off",
         **kwargs: Any,
     ) -> None:
         if thinking_mode not in THINKING_MODES:
             raise ValueError(
                 f"thinking_mode must be one of {', '.join(THINKING_MODES)}; got {thinking_mode!r}"
+            )
+        if not isinstance(prompt_caching, str) or prompt_caching not in PROMPT_CACHING_MODES:
+            raise ValueError(
+                f"prompt_caching must be one of {', '.join(PROMPT_CACHING_MODES)}; "
+                f"got {prompt_caching!r}"
             )
         model = kwargs.get("model") or (args[0] if args else "")
         row = model_shape(model)
@@ -282,6 +299,7 @@ class AnthropicCachingCompletion(AnthropicCompletion):
         super().__init__(*args, **kwargs)
         self._cache_ttl = cache_ttl
         self._thinking_mode = thinking_mode
+        self._prompt_caching = prompt_caching == "on"
         self._token_usage["cache_creation_tokens"] = 0
 
     def _prepare_completion_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -373,6 +391,9 @@ class AnthropicCachingCompletion(AnthropicCompletion):
     ) -> tuple[list[Any], Any]:
         formatted_messages, system_message = super()._format_messages_for_anthropic(messages)
 
+        if not self._prompt_caching:
+            return formatted_messages, system_message
+
         budget = _MAX_BREAKPOINTS
 
         if isinstance(system_message, str) and self._is_long_enough(system_message):
@@ -397,6 +418,7 @@ def make_caching_llm(
     *,
     cache_ttl: str = "5m",
     thinking: str = "off",
+    prompt_caching: str = "off",
     **kwargs: Any,
 ) -> Any:
     """Factory that returns an Anthropic LLM with prompt caching, or a vanilla
@@ -406,9 +428,14 @@ def make_caching_llm(
         model: Full crewai model id, e.g. "anthropic/claude-sonnet-4-6".
         cache_ttl: "5m" (default, no surcharge) or "1h" (25% write surcharge,
             useful when the same prefix is reused across runs within an hour).
+            Applies only when ``prompt_caching`` is "on"; otherwise nothing
+            TTL-related is set.
         thinking: "off" (default) or "low" -- the per-agent thinking mode from
             agents.yaml (D-03). Applied only to models that support adaptive
             thinking; ignored for other Anthropic models and other providers.
+        prompt_caching: "off" (default) or "on" -- the per-agent switch from
+            agents.yaml. Only "on" attaches cache_control markers (and, with
+            cache_ttl "1h", the extended-TTL header). Ignored for other providers.
         **kwargs: Forwarded to the underlying LLM constructor. Sampling
             parameters (temperature, top_p, top_k) are dropped (D-02).
     """
@@ -416,11 +443,15 @@ def make_caching_llm(
         kwargs.pop(key, None)
     prefix, sep, model_part = model.partition("/")
     if sep and prefix in ("anthropic", "claude"):
-        if cache_ttl == "1h":
+        if prompt_caching == "on" and cache_ttl == "1h":
             extra_headers = kwargs.pop("extra_headers", {}) or {}
             extra_headers.setdefault("anthropic-beta", _EXTENDED_TTL_BETA_HEADER)
             kwargs["extra_headers"] = extra_headers
         return AnthropicCachingCompletion(
-            model=model_part, cache_ttl=cache_ttl, thinking_mode=thinking, **kwargs
+            model=model_part,
+            cache_ttl=cache_ttl,
+            thinking_mode=thinking,
+            prompt_caching=prompt_caching,
+            **kwargs,
         )
     return LLM(model=model, **kwargs)

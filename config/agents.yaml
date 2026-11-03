@@ -1,5 +1,5 @@
 # ProspectAI Agent Configuration
-# Primary place to change agent behavior (role, goal, backstory, thinking, max_tokens).
+# Primary place to change agent behavior (role, goal, backstory, thinking, prompt_caching, max_tokens).
 # Optional per-agent LLM model via env (overrides MODEL for that agent):
 #   AGENT_MARKET_ANALYST_MODEL, AGENT_TECHNICAL_ANALYST_MODEL,
 #   AGENT_FUNDAMENTAL_ANALYST_MODEL, AGENT_INVESTOR_STRATEGIC_MODEL,
@@ -28,6 +28,14 @@
 #   values, so none are configured or sent (D-02). Sonnet 5.5 also rejects budget_tokens,
 #   thinking disabled and a forced tool choice; the package never sends them.
 #   thinking tokens count toward max_tokens, so thinking agents get a larger max_tokens.
+#   prompt_caching: off | on, per agent, default off when absent.
+#     It is off for every agent: live runs on 1.12.0 showed zero cache reads (each step's
+#     prompt is unique and used once), so caching only paid the cache-write premium.
+#     "on" restores the cache_control ephemeral markers on that agent's long system and
+#     user prompts (at least 1024 tokens on Sonnet, 2048 on Haiku, at most 4 breakpoints
+#     per request) from agents/caching_llm.py. Quote the value: YAML reads a bare on/off
+#     as a boolean. Anything other than "off" or "on" stops the run with an error naming
+#     the agent.
 
 agents:
 
@@ -64,6 +72,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
@@ -100,6 +109,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     llm:
       provider: "anthropic"
@@ -134,6 +144,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "off"
+    prompt_caching: "off"
     max_tokens: 10000
     max_iter: 20
     llm:
@@ -178,6 +189,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "low"
+    prompt_caching: "off"
     max_tokens: 16000
     llm:
       provider: "anthropic"
@@ -220,6 +232,7 @@ agents:
     verbose: true
     allow_delegation: false
     thinking: "low"
+    prompt_caching: "off"
     max_tokens: 16000
     llm:
       provider: "anthropic"

@@ -312,6 +312,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Runs skip prompt caching
+- Analyses no longer use prompt caching. Every step of a run sends a different prompt, so a cached prompt was never reused and only added cost; each run now costs a little less, and reports are unchanged.
+
 ### v1.12.0 — A stronger model for the analysis, review and final steps
 - The draft, review and final steps of every analysis now run on Claude Sonnet 5.5, a stronger model than before. The research steps that gather market, technical and fundamental data stay on the faster Claude Haiku 5.5.
 - Reports are still built the same way: every number is computed from live data, and the model only writes the commentary and chooses each stock's action.

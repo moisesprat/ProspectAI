@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from crewai import Agent, LLM
-from agents.caching_llm import make_caching_llm, THINKING_MODES
+from agents.caching_llm import make_caching_llm, THINKING_MODES, PROMPT_CACHING_MODES
 from config.config import Config
 from config.agent_config_loader import AgentConfigLoader
 
@@ -22,6 +22,7 @@ class BaseAgent(ABC):
         self.verbose = self.settings.get('verbose', True)
         self.allow_delegation = self.settings.get('allow_delegation', False)
         self.thinking = self._read_thinking()
+        self.prompt_caching = self._read_prompt_caching()
         self.max_tokens = self.settings.get('max_tokens', None)
         global_settings = self.config_loader.get_global_settings()
         self.max_iter = self.settings.get(
@@ -44,6 +45,20 @@ class BaseAgent(ABC):
             raise ValueError(
                 f"agents.yaml: {self.agent_key}.thinking must be one of "
                 f"{', '.join(THINKING_MODES)}; got {value!r}"
+            )
+        return value
+
+    def _read_prompt_caching(self) -> str:
+        """Per-agent prompt caching switch from agents.yaml: 'off' (default) or 'on'.
+
+        A bare YAML on/off loads as a boolean, so it is rejected with a hint to quote it.
+        """
+        value = self.settings.get('prompt_caching', 'off')
+        if not isinstance(value, str) or value not in PROMPT_CACHING_MODES:
+            hint = " (quote the value in YAML)" if isinstance(value, bool) else ""
+            raise ValueError(
+                f"agents.yaml: {self.agent_key}.prompt_caching must be one of "
+                f"{', '.join(PROMPT_CACHING_MODES)}; got {value!r}{hint}"
             )
         return value
 
@@ -72,6 +87,7 @@ class BaseAgent(ABC):
             api_key=api_key,
             max_tokens=self.max_tokens or 10000,
             thinking=self.thinking,
+            prompt_caching=self.prompt_caching,
         )
 
     @abstractmethod
@@ -103,3 +119,4 @@ class BaseAgent(ABC):
         self.verbose = self.settings.get('verbose', True)
         self.allow_delegation = self.settings.get('allow_delegation', False)
         self.thinking = self._read_thinking()
+        self.prompt_caching = self._read_prompt_caching()
