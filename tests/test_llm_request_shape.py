@@ -591,3 +591,91 @@ async def test_prompt_caching_unset_key_defaults_to_off(clean_env, tmp_path):
     transport = install_capture(llm)
     await llm.acall(long_messages(), response_model=_Answer)
     assert not has_cache_control(transport.requests[0]["body"])
+
+
+def enable_prompt_caching(monkeypatch, *agent_keys):
+    """Make the named agents load prompt_caching "on" (TaskFactory builds its agents
+    from the shipped agents.yaml, so the settings are patched at the loader)."""
+    from config.agent_config_loader import AgentConfigLoader
+
+    original = AgentConfigLoader.get_agent_settings
+
+    def patched(self, agent_key):
+        settings = dict(original(self, agent_key))
+        if agent_key in agent_keys:
+            settings["prompt_caching"] = "on"
+        return settings
+
+    monkeypatch.setattr(AgentConfigLoader, "get_agent_settings", patched)
+
+
+ALL_AGENT_KEYS = tuple(dict.fromkeys(PHASE_AGENT_KEY.values()))
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_on_restores_markers_on_every_phase(clean_env):
+    enable_prompt_caching(clean_env, *ALL_AGENT_KEYS)
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    for phase, shot in captured.items():
+        body = shot["body"]
+        assert isinstance(body["system"], list), phase
+        assert body["system"][0]["cache_control"] == {"type": "ephemeral"}, phase
+        user = body["messages"][0]["content"]
+        assert isinstance(user, list), phase
+        assert user[0]["cache_control"] == {"type": "ephemeral"}, phase
+        assert not has_cache_control(body.get("tools")), phase
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_is_per_agent(clean_env):
+    enable_prompt_caching(clean_env, "critic")
+    captured = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    assert has_cache_control(captured["critique_review"]["body"])
+    for phase in PHASES:
+        if phase != "critique_review":
+            assert not has_cache_control(captured[phase]["body"]), phase
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_leaves_thinking_effort_tool_choice_and_sampling_unchanged(
+    clean_env,
+):
+    off = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    enable_prompt_caching(clean_env, *ALL_AGENT_KEYS)
+    on = await _capture_all(_factory(), tools=[REAL_TOOL], messages=long_messages)
+    for phase in PHASES:
+        a, b = off[phase], on[phase]
+        agent_key = PHASE_AGENT_KEY[phase]
+        mode = yaml_agent(agent_key)["thinking"]
+        for shot in (a, b):
+            body = shot["body"]
+            assert not any(k in body for k in SAMPLING_KEYS), phase
+            assert_thinking_matches(body, body["model"], mode, phase)
+        assert a["body"]["model"] == b["body"]["model"], phase
+        assert a["body"].get("thinking") == b["body"].get("thinking"), phase
+        assert body_effort(a["body"]) == body_effort(b["body"]), phase
+        assert a["body"].get("tool_choice") == b["body"].get("tool_choice"), phase
+        names = lambda x: [t.get("name") for t in x["body"].get("tools", [])]  # noqa: E731
+        assert names(a) == names(b) and "real_tool" in names(a), phase
+        assert ("output_format" in a["body"]) == ("output_format" in b["body"]), phase
+        assert a["beta"] == b["beta"], phase
+        forced = {"type": "any"} if phase in THINKING_OFF_PHASES else None
+        assert a["body"].get("tool_choice") == forced, phase
+        assert b["body"].get("tool_choice") == forced, phase
+
+
+@pytest.mark.parametrize("value", ["maybe", "ON", "1h", True, False])
+def test_yaml_prompt_caching_values_are_closed(clean_env, tmp_path, value):
+    from pathlib import Path
+
+    import yaml
+
+    import config as config_pkg
+    from agents.market_analyst_agent import MarketAnalystAgent
+
+    raw = yaml.safe_load((Path(config_pkg.__file__).parent / "agents.yaml").read_text())
+    raw["agents"]["market_analyst"]["prompt_caching"] = value
+    bad = tmp_path / "agents.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="market_analyst.*prompt_caching"):
+        MarketAnalystAgent(config_path=str(bad))

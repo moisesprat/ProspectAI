@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from agents import caching_llm
 from agents.caching_llm import AnthropicCachingCompletion, make_caching_llm, model_shape
-from tests.test_llm_request_shape import install_capture
+from tests.test_llm_request_shape import has_cache_control, install_capture
 
 
 def _long_text(chars: int) -> str:
@@ -180,3 +180,70 @@ def test_ensure_native_structured_outputs_is_idempotent_and_keeps_crewai_entries
         assert entry in after
     for row in caching_llm.MODEL_SHAPES:
         assert after.count(row.fragment) == 1
+
+
+# ─── Prompt caching switch (quick 261103-urg) ──────────────────────────────────
+
+@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"])
+def test_prompt_caching_default_class_adds_no_markers(model):
+    llm = AnthropicCachingCompletion(model=model, api_key="test-key")
+    formatted, system = llm._format_messages_for_anthropic(
+        [
+            {"role": "system", "content": _long_text(10000)},
+            {"role": "user", "content": _long_text(10000)},
+        ]
+    )
+    assert isinstance(system, str)
+    assert isinstance(formatted[0]["content"], str)
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_default_factory_sends_no_marker_and_no_ttl_header():
+    llm = make_caching_llm(
+        "anthropic/claude-haiku-5-5", api_key="test-key", cache_ttl="1h"
+    )
+    assert "extended-cache-ttl" not in repr(llm.additional_params)
+    transport = install_capture(llm)
+    await llm.acall(
+        [{"role": "user", "content": _long_text(10000)}], response_model=_Answer
+    )
+    shot = transport.requests[0]
+    assert not has_cache_control(shot["body"])
+    assert "extended-cache-ttl" not in shot["beta"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_caching_on_with_1h_restores_ttl_header_and_marker():
+    llm = make_caching_llm(
+        "anthropic/claude-haiku-5-5", api_key="test-key", cache_ttl="1h",
+        prompt_caching="on",
+    )
+    assert (
+        llm.additional_params["extra_headers"]["anthropic-beta"]
+        == "extended-cache-ttl-2025-04-11"
+    )
+    transport = install_capture(llm)
+    await llm.acall(
+        [{"role": "user", "content": _long_text(10000)}], response_model=_Answer
+    )
+    block = transport.requests[0]["body"]["messages"][0]["content"][0]
+    assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_prompt_caching_invalid_value_raises():
+    with pytest.raises(ValueError, match="prompt_caching"):
+        AnthropicCachingCompletion(
+            model="claude-sonnet-4-6", api_key="test-key", prompt_caching="maybe"
+        )
+    with pytest.raises(ValueError, match="prompt_caching"):
+        make_caching_llm(
+            "anthropic/claude-haiku-5-5", api_key="test-key", prompt_caching=True
+        )
+
+
+def test_prompt_caching_ignored_for_ollama():
+    llm = make_caching_llm(
+        "ollama/qwen3.5:9b", base_url="http://localhost:11434", prompt_caching="on"
+    )
+    assert not isinstance(llm, AnthropicCachingCompletion)
+    assert "prompt_caching" not in repr(getattr(llm, "additional_params", {}))
