@@ -86,7 +86,7 @@ import logging
 import math
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
@@ -112,6 +112,25 @@ MAX_SAMPLE_POSTS = 3
 SAMPLE_POST_CHARS = 200
 
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
+
+
+# ── Supported sectors ──────────────────────────────────────────────────────────
+
+# Names the web app (prospectai-web ui/data.js SECTORS) and the backend (SECTOR_ETF) use for two
+# package sectors. They are accepted as supported but NOT remapped, so a run for them behaves
+# exactly as before (no Reddit config, empty universe, Serper path); remapping is a separate
+# decision (gap review WR-03).
+SECTOR_ALIASES: Dict[str, str] = {
+    "Financials": "Finance",
+    "Consumer Discretionary": "Consumer",
+}
+
+SUPPORTED_SECTORS: FrozenSet[str] = frozenset(RedditSentimentTool.SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
+
+
+def is_supported_sector(sector: Any) -> bool:
+    """True only for a str that is exactly a supported sector name (no case folding, no stripping)."""
+    return isinstance(sector, str) and sector in SUPPORTED_SECTORS
 
 
 def serper_queries(sector: str, today: str) -> List[str]:
@@ -276,7 +295,8 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
     reddit:      source, candidates (ticker, the three numbers, sample posts), truncated
     unavailable: source, universe, truncated
 
-    The record never holds a full URL (hosts only, URLs already scrubbed from the text). Its size
+    The record never holds a full URL: results carry the link host only with URLs scrubbed from
+    the text, and every stored query is scrubbed too (a caller-supplied sector can be a URL). Its size
     is measured as the backend writes it (``json.dumps`` with its defaults, the largest of the
     usual encodings); over ``MAX_RECORD_BYTES`` it drops trailing entries until it fits and sets
     ``truncated``, so the earliest results are the ones kept.
@@ -286,7 +306,7 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
         key = "results"
         record: Dict[str, Any] = {
             "source": source,
-            "queries": [str(q)[:200] for q in corpus.get("queries", [])],
+            "queries": [_scrub(str(q))[:200] for q in corpus.get("queries", [])],
             "failed_queries": int(corpus.get("failed_queries", 0)),
             key: [{"text": s["text"], "host": s["host"]} for s in corpus["snippets"]],
             "truncated": False,
