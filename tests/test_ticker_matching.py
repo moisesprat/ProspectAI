@@ -117,3 +117,49 @@ def test_reddit_cashtag_in_any_case_still_counts():
     by = _by_ticker(result)
     assert by["NOW"]["mention_count"] == 1
     assert by["NET"]["mention_count"] == 1
+
+
+# ─── Gap review WR-02: abbreviations and headline words ───
+
+GAP_REVIEW_STOPLIST = (
+    "AI", "EV", "CEO", "ETF", "USA", "EPS", "IPO", "GDP", "SEC", "FED", "HAS", "KEY", "TOP",
+    "HOT", "BIG", "PEAK", "FAST", "COST",
+)
+
+
+def test_gap_review_stoplist_is_ambiguous():
+    for symbol in GAP_REVIEW_STOPLIST:
+        assert symbol in AMBIGUOUS_SYMBOLS and is_ambiguous(symbol), symbol
+    for symbol in ("CAT", "GS", "KO", "MU", "GE", "BA"):
+        assert not is_ambiguous(symbol), symbol
+
+
+def test_bare_abbreviations_count_nothing_on_serper():
+    snippets = ["AI spending drives AI chips; the AI boom", "CEO says EV demand in the USA"]
+    counts = symbol_mention_counts(["AI", "CEO", "EV", "USA"], snippets)
+    assert counts == {"AI": 0, "CEO": 0, "EV": 0, "USA": 0}
+
+
+def test_explicit_forms_still_count_new_stoplist_symbols():
+    assert symbol_mention_counts(["AI"], ["C3.ai (NYSE: AI) jumps", "$AI rallies", "$ai again"]) == {"AI": 3}
+    assert symbol_mention_counts(["COST"], ["Costco (NASDAQ: COST) beats", "RISING COST of living"]) == {"COST": 1}
+
+
+def test_common_word_pick_cannot_set_the_relevance_scale(caplog):
+    from datetime import datetime, timezone
+
+    from schemas.agent_outputs import MarketNarrativeOutput
+    from tests.test_llm_role_audit import REDDIT_FALLBACK, _organic, mkt_entry, mkt_payload
+    from utils.market_records import build_market_corpus, merge_market
+
+    serper = _organic("AI spending drives AI chips; the AI boom lifts NVDA", "AI AI AI everywhere")
+    corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Semiconductors")
+    narrative = MarketNarrativeOutput(**mkt_payload(mkt_entry("AI"), mkt_entry("NVDA")))
+
+    with caplog.at_level("WARNING"):
+        output = merge_market("Semiconductors", corpus, narrative, datetime(2026, 11, 4, tzinfo=timezone.utc))
+
+    assert [c.ticker for c in output.candidate_stocks] == ["NVDA"]
+    assert output.candidate_stocks[0].mention_count == 1
+    assert output.candidate_stocks[0].relevance_score == 1.0
+    assert "not_in_search_results" in caplog.text
