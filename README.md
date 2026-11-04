@@ -312,6 +312,9 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — More accurate run figures and stricter stock picks
+- The token and cost figures shown for a run no longer count the draft step a second time under the final step, so the per-step, per-model and total figures now match what each step really used.
+
 ### v1.12.1 — Runs skip prompt caching
 - Analyses no longer use prompt caching. Every step of a run sends a different prompt, so a cached prompt was never reused and only added cost; each run now costs a little less, and reports are unchanged.
 

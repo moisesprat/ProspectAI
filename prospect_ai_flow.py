@@ -340,9 +340,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
 
         Owns the tracker lifecycle: start_phase once before the first attempt,
-        finish_phase once after the accepted attempt (tokens of failed attempts are
-        not added, a known metrics gap). The tool-call guard runs per attempt, so a
-        retry cannot pass on the tool calls of an earlier attempt.
+        finish_phase once after the accepted attempt; the token figures are the delta
+        of the phase LLM's counters from start_phase, so the tokens of failed attempts
+        are included (the phase's full cost). The tool-call guard runs per attempt, so
+        a retry cannot pass on the tool calls of an earlier attempt.
 
         ``start_tracker=False`` is for a phase that already started its tracker
         phase because the Flow ran tools before the first attempt (CORR-10).

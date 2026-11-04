@@ -335,3 +335,136 @@ class TestRollupAndStatus:
         d = _tracker_with_pipeline().to_dict()
         assert d["slowest_phase"] is None
         assert d["slowest_tool_call"] is None
+
+
+# ─── Per-phase token deltas (gap review CR-01) ───
+
+class _FakeLLM:
+    """Stands in for a crewai LLM: lifetime counters in a real ``_token_usage`` dict."""
+
+    def __init__(self) -> None:
+        self._token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "successful_requests": 0,
+            "cached_prompt_tokens": 0,
+            "cache_creation_tokens": 0,
+        }
+
+    def grow(self, prompt: int, completion: int, cached: int = 0, cache_write: int = 0) -> None:
+        u = self._token_usage
+        u["prompt_tokens"] += prompt
+        u["completion_tokens"] += completion
+        u["total_tokens"] += prompt + completion
+        u["successful_requests"] += 1
+        u["cached_prompt_tokens"] += cached
+        u["cache_creation_tokens"] += cache_write
+
+
+def _lifetime_usage(llm: _FakeLLM):
+    """What CrewOutput.token_usage holds in production: the LLM's lifetime summary."""
+    u = llm._token_usage
+    return _make_usage(u["prompt_tokens"], u["completion_tokens"], u["cached_prompt_tokens"])
+
+
+def _tracked_phase(tracker: ExecutionTracker, name: str) -> dict:
+    return next(p for p in tracker.to_dict()["phases"] if p["name"] == name)
+
+
+class TestPhaseTokenDeltas:
+
+    def test_shared_llm_final_reports_only_its_own_tokens(self):
+        model = "anthropic/claude-sonnet-5-5"
+        llm = _FakeLLM()
+        tracker = ExecutionTracker()
+        tracker.start()
+
+        tracker.start_phase("draft_strategy", llm=llm)
+        llm.grow(8571, 1485)
+        tracker.finish_phase("draft_strategy", _lifetime_usage(llm), model, llm=llm)
+
+        tracker.start_phase("final_strategy", llm=llm)
+        llm.grow(15356, 1502)
+        tracker.finish_phase("final_strategy", _lifetime_usage(llm), model, llm=llm)
+        tracker.finish()
+
+        draft = _tracked_phase(tracker, "draft_strategy")
+        final = _tracked_phase(tracker, "final_strategy")
+        assert (draft["input_tokens"], draft["output_tokens"]) == (8571, 1485)
+        assert (final["input_tokens"], final["output_tokens"]) == (15356, 1502)
+
+        d = tracker.to_dict()
+        assert d["totals"]["input_tokens"] == 23927
+        assert d["totals"]["output_tokens"] == 2987
+        assert d["by_model"][model]["input_tokens"] == 23927
+        assert d["by_model"][model]["output_tokens"] == 2987
+
+    def test_retry_attempts_are_counted_once(self):
+        llm = _FakeLLM()
+        tracker = ExecutionTracker()
+        tracker.start()
+        tracker.start_phase("market_analysis", llm=llm)
+        llm.grow(1000, 100)   # failed attempt
+        llm.grow(1200, 120)   # accepted attempt
+        tracker.finish_phase("market_analysis", _lifetime_usage(llm), "m", llm=llm)
+
+        phase = _tracked_phase(tracker, "market_analysis")
+        assert (phase["input_tokens"], phase["output_tokens"]) == (2200, 220)
+
+    def test_second_finish_adds_only_new_growth(self):
+        llm = _FakeLLM()
+        tracker = ExecutionTracker()
+        tracker.start()
+        tracker.start_phase("technical_analysis", llm=llm)
+        llm.grow(500, 50)
+        tracker.finish_phase("technical_analysis", _lifetime_usage(llm), "m", llm=llm)
+        llm.grow(300, 30)
+        tracker.finish_phase("technical_analysis", _lifetime_usage(llm), "m", llm=llm)
+
+        phase = _tracked_phase(tracker, "technical_analysis")
+        assert (phase["input_tokens"], phase["output_tokens"]) == (800, 80)
+        assert tracker.to_dict()["totals"]["input_tokens"] == 800
+
+    def test_cached_and_cache_write_are_deltas(self):
+        llm = _FakeLLM()
+        llm.grow(9999, 999, cached=400, cache_write=700)   # earlier work on this LLM
+        tracker = ExecutionTracker()
+        tracker.start()
+        tracker.start_phase("final_strategy", llm=llm)
+        llm.grow(100, 10, cached=40, cache_write=70)
+        tracker.finish_phase("final_strategy", _lifetime_usage(llm), "m", llm=llm)
+
+        phase = _tracked_phase(tracker, "final_strategy")
+        assert phase["input_tokens"] == 100
+        assert phase["output_tokens"] == 10
+        assert phase["cached_tokens"] == 40
+        assert phase["cache_creation_tokens"] == 70
+
+    def test_concurrent_phases_on_separate_llms(self):
+        tech_llm, fund_llm = _FakeLLM(), _FakeLLM()
+        tracker = ExecutionTracker()
+        tracker.start()
+        tracker.start_phase("technical_analysis", llm=tech_llm)
+        tracker.start_phase("fundamental_analysis", llm=fund_llm)
+        tech_llm.grow(100, 10)
+        fund_llm.grow(700, 70)
+        tech_llm.grow(200, 20)
+        tracker.finish_phase("technical_analysis", _lifetime_usage(tech_llm), "m", llm=tech_llm)
+        fund_llm.grow(50, 5)
+        tracker.finish_phase("fundamental_analysis", _lifetime_usage(fund_llm), "m", llm=fund_llm)
+
+        tech = _tracked_phase(tracker, "technical_analysis")
+        fund = _tracked_phase(tracker, "fundamental_analysis")
+        assert (tech["input_tokens"], tech["output_tokens"]) == (300, 30)
+        assert (fund["input_tokens"], fund["output_tokens"]) == (750, 75)
+
+    def test_llm_without_counter_dict_falls_back_to_token_usage(self):
+        for llm in (MagicMock(), None):
+            tracker = ExecutionTracker()
+            tracker.start()
+            tracker.start_phase("market_analysis", llm=llm)
+            tracker.finish_phase("market_analysis", _make_usage(100, 50), "m", llm=llm)
+
+            phase = _tracked_phase(tracker, "market_analysis")
+            assert (phase["input_tokens"], phase["output_tokens"]) == (100, 50)

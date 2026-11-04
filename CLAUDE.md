@@ -217,7 +217,7 @@ Removed fields (breaking for package users): `FundamentalRating.overall` (D-09) 
     "execution_metrics": {          # from ExecutionTracker
         "run_at": str,              # ISO 8601
         "pipeline_elapsed_sec": float,
-        "phases": [{"name", "elapsed_sec", "input_tokens", "output_tokens", "cached_tokens"}],
+        "phases": [{"name", "elapsed_sec", "input_tokens", "output_tokens", "cached_tokens"}],  # tokens = growth of that phase's LLM counters (draft and final share one LLM, so final does not repeat the draft)
         "totals": {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"},
         "by_model": {model_id: {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"}}
     },
