@@ -15,7 +15,9 @@ class PhaseMetrics:
     output_tokens: int = 0
     cached_tokens: int = 0           # cache READS (cache_read_input_tokens)
     cache_creation_tokens: int = 0   # cache WRITES (cache_creation_input_tokens)
-    cache_creation_snapshot: int = 0  # snapshot of LLM cumulative writes at phase start
+    # The phase LLM's lifetime counters at start_phase (advanced at each finish_phase);
+    # None when no readable LLM was passed.
+    usage_snapshot: Optional[Dict[str, int]] = None
     model_token_map: Dict[str, Dict[str, int]] = field(default_factory=dict)
     attempts: int = 0                # schema attempts run_phase needed (0 = not recorded)
 
@@ -90,17 +92,23 @@ def _union_sec(intervals: List[tuple]) -> float:
 class ExecutionTracker:
     """Tracks per-phase wall-clock timing and LLM token usage for a single pipeline run.
 
-    Token counts are read directly from CrewOutput.token_usage (a UsageMetrics object)
-    after each akickoff() call — no LiteLLM callbacks required.
+    Per-phase token counts are the GROWTH of the phase LLM's lifetime counters between
+    start_phase and finish_phase (gap review CR-01). crewai's CrewOutput.token_usage is
+    that lifetime total and is never reset, and draft_strategy and final_strategy share
+    one LLM, so reading it directly would repeat the draft's tokens under the final
+    phase. ``token_usage`` is only the fallback when no LLM with a readable counter dict
+    is passed. Retried attempts inside one start/finish window are counted. Concurrent
+    phases must use separate LLM instances (technical and fundamental each have their
+    own agent). No LiteLLM callbacks are required.
 
     Usage:
         tracker = ExecutionTracker()
         tracker.set_sector(sector)
         tracker.start()
         try:
-            tracker.start_phase("market_analysis")
+            tracker.start_phase("market_analysis", llm=llm)
             result = await crew.akickoff()
-            tracker.finish_phase("market_analysis", result.token_usage, model_id)
+            tracker.finish_phase("market_analysis", result.token_usage, model_id, llm=llm)
             ...
         finally:
             tracker.finish()
@@ -198,27 +206,38 @@ class ExecutionTracker:
     # ── Phase hooks ────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _llm_cache_creation(llm: Any) -> int:
-        """Read cumulative cache_creation_tokens counter from an LLM instance.
+    def _llm_usage(llm: Any) -> Optional[Dict[str, int]]:
+        """Read the lifetime counters of an LLM instance, or None when unreadable.
 
-        AnthropicCachingCompletion stores it in `_token_usage["cache_creation_tokens"]`.
-        Returns 0 for vanilla LLMs (Ollama, non-caching Anthropic) which lack the field.
+        crewai's BaseLLM keeps ``_token_usage`` as a dict; AnthropicCachingCompletion adds
+        ``cache_creation_tokens``. A vanilla or Ollama LLM has no such key and reads 0.
+        None (no LLM, or a ``_token_usage`` that is not a dict) tells finish_phase to
+        fall back to CrewOutput.token_usage.
         """
         if llm is None:
-            return 0
+            return None
         usage = getattr(llm, "_token_usage", None)
         if not isinstance(usage, dict):
-            return 0
-        return usage.get("cache_creation_tokens", 0) or 0
+            return None
+        return {
+            key: int(usage.get(key, 0) or 0)
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "cached_prompt_tokens",
+                "cache_creation_tokens",
+            )
+        }
 
     def start_phase(self, name: str, llm: Any = None) -> None:
-        """Start timing a phase. Pass the agent's LLM to snapshot its cumulative
-        cache_creation counter so finish_phase can compute the per-phase delta.
+        """Start timing a phase. Pass the agent's LLM to snapshot its lifetime counters
+        so finish_phase can compute this phase's growth (the tokens of every attempt
+        made between start_phase and finish_phase).
         """
         self._phases[name] = PhaseMetrics(
             name=name,
             start_time=time.perf_counter(),
-            cache_creation_snapshot=self._llm_cache_creation(llm),
+            usage_snapshot=self._llm_usage(llm),
         )
 
     def finish_phase(
@@ -232,11 +251,14 @@ class ExecutionTracker:
 
         Args:
             name: Phase name matching one of _PHASE_ORDER.
-            token_usage: CrewOutput.token_usage (UsageMetrics) from akickoff().
+            token_usage: CrewOutput.token_usage (UsageMetrics) from akickoff(). It is
+                the LLM's lifetime total, so it is used only when ``llm`` has no
+                readable counter dict.
             model_id: Model identifier string (e.g. "anthropic/claude-sonnet-4-6").
-            llm: Same LLM instance passed to start_phase; used to read the
-                cumulative cache_creation_tokens counter and derive the delta
-                for this phase. Optional — falls back to 0 if absent.
+            llm: Same LLM instance passed to start_phase. Input, output, cache-read and
+                cache-write tokens are the growth of its counters since the snapshot;
+                the snapshot then advances, so a second finish_phase for the same phase
+                adds only newer growth.
         """
         pm = self._phases.get(name)
         if pm is None:
@@ -244,28 +266,29 @@ class ExecutionTracker:
             self._phases[name] = pm
         pm.end_time = time.perf_counter()
 
-        # Cache-write delta — computed from per-LLM cumulative counter because
-        # CrewOutput.token_usage does not surface cache_creation_input_tokens.
-        cache_write_tok = max(
-            0, self._llm_cache_creation(llm) - pm.cache_creation_snapshot
-        )
-        pm.cache_creation_tokens += cache_write_tok
-
-        if token_usage is None:
-            if cache_write_tok:
-                self._add_to_buckets(pm, model_id, 0, 0, 0, cache_write_tok)
-            return
-
-        input_tok = getattr(token_usage, "prompt_tokens", 0) or 0
-        output_tok = getattr(token_usage, "completion_tokens", 0) or 0
-        # On Anthropic models this is sourced from `cache_read_input_tokens` —
-        # i.e. tokens served from Anthropic's prompt cache. See
-        # crewai/llms/providers/anthropic/completion.py::_extract_anthropic_token_usage.
-        cached_tok = getattr(token_usage, "cached_prompt_tokens", 0) or 0
+        now = self._llm_usage(llm)
+        if now is not None:
+            before = pm.usage_snapshot or {key: 0 for key in now}
+            input_tok = max(0, now["prompt_tokens"] - before.get("prompt_tokens", 0))
+            output_tok = max(0, now["completion_tokens"] - before.get("completion_tokens", 0))
+            cached_tok = max(0, now["cached_prompt_tokens"] - before.get("cached_prompt_tokens", 0))
+            cache_write_tok = max(0, now["cache_creation_tokens"] - before.get("cache_creation_tokens", 0))
+            pm.usage_snapshot = now
+        else:
+            if token_usage is None:
+                return
+            input_tok = getattr(token_usage, "prompt_tokens", 0) or 0
+            output_tok = getattr(token_usage, "completion_tokens", 0) or 0
+            # On Anthropic models this is sourced from `cache_read_input_tokens` —
+            # i.e. tokens served from Anthropic's prompt cache. See
+            # crewai/llms/providers/anthropic/completion.py::_extract_anthropic_token_usage.
+            cached_tok = getattr(token_usage, "cached_prompt_tokens", 0) or 0
+            cache_write_tok = 0
 
         pm.input_tokens += input_tok
         pm.output_tokens += output_tok
         pm.cached_tokens += cached_tok
+        pm.cache_creation_tokens += cache_write_tok
 
         self._add_to_buckets(pm, model_id, input_tok, output_tok, cached_tok, cache_write_tok)
 

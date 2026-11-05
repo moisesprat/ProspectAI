@@ -33,7 +33,9 @@ pytest tests/test_tools_fundamental.py -v
 pytest tests/test_execution_tracker.py -v
 pytest tests/test_flow_phases.py -v      # per-phase unit tests (mocked LLM)
 
-# Supported sectors (driven by RedditSentimentTool.SECTOR_TICKERS)
+# Supported sectors: RedditSentimentTool.SECTOR_TICKERS plus the web-app names Financials and
+# Consumer Discretionary (utils.market_records.SUPPORTED_SECTORS; accepted, not remapped).
+# run_analysis raises ValueError for any other sector.
 # Technology, Semiconductors, Healthcare, Finance, Energy, Consumer, Industrials, Real Estate, Utilities
 ```
 
@@ -129,7 +131,7 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 | `schemas/agent_outputs.py` | Pydantic contracts: the narrative-only models the LLM answers, and the published output models the Flow assembles |
 | `utils/phase_runner.py` | `run_phase` — bounded schema retry with field-path feedback; `MAX_SCHEMA_RETRIES = 2`; `PhaseSchemaError` (names phase, attempts, field paths) |
 | `utils/flow_tools.py` | `call_tool` — runs a Flow-owned tool off the event loop, times it and emits one synthetic SSE step |
-| `utils/market_records.py` | Three fixed Serper queries, the bounded merged corpus and its stored `corpus_record`, grounded picks, measured `mention_count`/`relevance_score`, `serper_sentiment_by_ticker` (the one seam for a future sentiment classifier), `merge_market` |
+| `utils/market_records.py` | Supported sectors (`SUPPORTED_SECTORS`, `is_supported_sector`), three fixed Serper queries, the bounded merged corpus and its stored `corpus_record`, grounded picks, measured `mention_count`/`relevance_score`, `serper_sentiment_by_ticker` (the one seam for a future sentiment classifier), `merge_market` |
 | `utils/ticker_matching.py` | Shared whole-symbol matcher (Reddit tool and Serper counter), ambiguous-symbol stoplist, ticker format check |
 | `utils/technical_records.py` | Builds each ticker's technical record and `failed_tickers` from the tool output; `trend_strength` from ADX |
 | `utils/fundamental_records.py` | Builds each ticker's fundamental record, labels and `data_status`; the failed-fetch record |
@@ -217,7 +219,7 @@ Removed fields (breaking for package users): `FundamentalRating.overall` (D-09) 
     "execution_metrics": {          # from ExecutionTracker
         "run_at": str,              # ISO 8601
         "pipeline_elapsed_sec": float,
-        "phases": [{"name", "elapsed_sec", "input_tokens", "output_tokens", "cached_tokens"}],
+        "phases": [{"name", "elapsed_sec", "input_tokens", "output_tokens", "cached_tokens"}],  # tokens = growth of that phase's LLM counters (draft and final share one LLM, so final does not repeat the draft)
         "totals": {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"},
         "by_model": {model_id: {"input_tokens", "output_tokens", "cached_tokens", "total_tokens"}}
     },

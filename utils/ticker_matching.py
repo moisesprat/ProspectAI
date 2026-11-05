@@ -18,6 +18,7 @@ Matching rules (``symbol_pattern``):
   ``NASDAQ: ON`` or ``(NYSE: F)``. Every one-letter symbol and the ``AMBIGUOUS_SYMBOLS``
   stoplist are ambiguous. That is what stops "A strong quarter", "IT spending", "ALL
   eyes", "U.S." and "F-150" from counting as mentions of A, IT, ALL, U and F (WR-02).
+  "AI spending" and "the CEO said" no longer count as mentions of AI and CEO either.
   The Reddit tool leaves the guard off: its posts are short, and its stoplist rule is
   not part of that change.
 
@@ -41,11 +42,18 @@ EXPLICIT_EXCHANGES: Tuple[str, ...] = (
 # Symbols of two or more letters that are also ordinary words or abbreviations. Symbols
 # that real prose writes in capitals for the company (GS, KO, MU, GE, BA, CAT) stay out:
 # tests/test_ticker_matching.py pins them as unambiguous.
+# The last group are upper-case abbreviations and all-caps headline words that Serper
+# snippets repeat (gap review WR-02: "AI" counted 3 in one snippet and could set the
+# largest count). COST is also in the Consumer universe, so on the Serper path a Costco
+# pick now needs the cashtag or an exchange form such as "NASDAQ: COST". The Reddit tool
+# leaves the guard off, so its counts do not change.
 AMBIGUOUS_SYMBOLS: FrozenSet[str] = frozenset({
     "IT", "ON", "ALL", "NOW", "NET", "APP", "ARE", "SO", "ET", "ES", "ED", "LOW", "WELL",
     "PR", "AR", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF", "IN", "IS", "ME", "NO",
     "OF", "OR", "UP", "US", "WE", "ANY", "CAN", "FOR", "NEW", "ONE", "OUT", "RUN", "SEE",
     "TWO",
+    "AI", "EV", "CEO", "ETF", "USA", "EPS", "IPO", "GDP", "SEC", "FED", "HAS", "KEY", "TOP",
+    "HOT", "BIG", "PEAK", "FAST", "COST",
 })
 
 _EXCHANGE_ALTERNATION = "|".join(sorted(EXPLICIT_EXCHANGES, key=len, reverse=True))

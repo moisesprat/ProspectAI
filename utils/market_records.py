@@ -65,6 +65,13 @@ Grounding (change 02-23, review CR-01). A pick is published only if it is well f
     unavailable  the ticker is in the sector universe when that is non-empty; with no
                  universe only the format check applies
 
+Sector-benchmark and broad-market ETFs (``utils.candidate_universe_filter``) are dropped
+here too, after the source rule and with the reason ``excluded_etf``: before the retry
+decision, so an ETF-only answer spends the retry budget instead of leaving the phase with
+an empty candidate list, and before relevance is scaled, so an ETF can never set the
+largest count (gap review WR-01). The Flow's later ``filter_candidates`` call stays as a
+backstop.
+
 A pick that fails is dropped with a warning that carries the reason and the ticker cut to
 20 characters shown with its repr, never corpus text. When none is left the phase answer is
 a validation failure that spends the bounded retry budget; the retry feedback is fixed text
@@ -79,10 +86,11 @@ import logging
 import math
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
+from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
 from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
@@ -104,6 +112,25 @@ MAX_SAMPLE_POSTS = 3
 SAMPLE_POST_CHARS = 200
 
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
+
+
+# ── Supported sectors ──────────────────────────────────────────────────────────
+
+# Names the web app (prospectai-web ui/data.js SECTORS) and the backend (SECTOR_ETF) use for two
+# package sectors. They are accepted as supported but NOT remapped, so a run for them behaves
+# exactly as before (no Reddit config, empty universe, Serper path); remapping is a separate
+# decision (gap review WR-03).
+SECTOR_ALIASES: Dict[str, str] = {
+    "Financials": "Finance",
+    "Consumer Discretionary": "Consumer",
+}
+
+SUPPORTED_SECTORS: FrozenSet[str] = frozenset(RedditSentimentTool.SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
+
+
+def is_supported_sector(sector: Any) -> bool:
+    """True only for a str that is exactly a supported sector name (no case folding, no stripping)."""
+    return isinstance(sector, str) and sector in SUPPORTED_SECTORS
 
 
 def serper_queries(sector: str, today: str) -> List[str]:
@@ -238,18 +265,27 @@ def build_market_corpus(
     serper:      ``snippets`` (title plus snippet text, link host only) merged from one result or a
                  list of results, plus the ``queries`` that were run and the ``failed_queries`` count
     unavailable: ``universe``, the sector's static ticker list (empty when unknown)
+
+    Every corpus also carries ``sector`` (as given). ``_picks`` uses it for the ETF exclusion;
+    it is not shown to the model (``market_narrative_context`` builds its body from explicit
+    keys) and is not stored (``corpus_record`` builds its record from explicit keys).
     """
     if not reddit_fallback_required(reddit_result):
-        return {"source": "reddit", "candidates": _reddit_candidates(reddit_result)}
+        return {"source": "reddit", "sector": sector, "candidates": _reddit_candidates(reddit_result)}
     snippets = _serper_snippets(serper_results)
     if snippets:
         return {
             "source": "serper",
+            "sector": sector,
             "snippets": snippets,
             "queries": list(queries or []),
             "failed_queries": failed_queries,
         }
-    return {"source": "unavailable", "universe": list(RedditSentimentTool.SECTOR_TICKERS.get(sector, []))}
+    return {
+        "source": "unavailable",
+        "sector": sector,
+        "universe": list(RedditSentimentTool.SECTOR_TICKERS.get(sector, [])),
+    }
 
 
 def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,7 +295,8 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
     reddit:      source, candidates (ticker, the three numbers, sample posts), truncated
     unavailable: source, universe, truncated
 
-    The record never holds a full URL (hosts only, URLs already scrubbed from the text). Its size
+    The record never holds a full URL: results carry the link host only with URLs scrubbed from
+    the text, and every stored query is scrubbed too (a caller-supplied sector can be a URL). Its size
     is measured as the backend writes it (``json.dumps`` with its defaults, the largest of the
     usual encodings); over ``MAX_RECORD_BYTES`` it drops trailing entries until it fits and sets
     ``truncated``, so the earliest results are the ones kept.
@@ -269,7 +306,7 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
         key = "results"
         record: Dict[str, Any] = {
             "source": source,
-            "queries": [str(q)[:200] for q in corpus.get("queries", [])],
+            "queries": [_scrub(str(q))[:200] for q in corpus.get("queries", [])],
             "failed_queries": int(corpus.get("failed_queries", 0)),
             key: [{"text": s["text"], "host": s["host"]} for s in corpus["snippets"]],
             "truncated": False,
@@ -363,13 +400,19 @@ def serper_sentiment_by_ticker(corpus: Dict[str, Any], tickers: Iterable[str]) -
 # ── Picks ──────────────────────────────────────────────────────────────────────
 
 _SOURCE_HINTS = {
-    "reddit": "choose tickers from the listed candidates only; a ticker is 1 to 5 capital letters",
+    "reddit": (
+        "choose tickers from the listed candidates only; a ticker is 1 to 5 capital letters"
+        "; sector and broad-market ETFs are not eligible"
+    ),
     "serper": (
         "choose only tickers whose symbol itself appears in the search results; "
-        "a ticker is 1 to 5 capital letters"
+        "a ticker is 1 to 5 capital letters; sector and broad-market ETFs are not eligible"
     ),
-    "universe": "choose tickers from the listed universe only; a ticker is 1 to 5 capital letters",
-    "open": "choose well-formed tickers: 1 to 5 capital letters",
+    "universe": (
+        "choose tickers from the listed universe only; a ticker is 1 to 5 capital letters"
+        "; sector and broad-market ETFs are not eligible"
+    ),
+    "open": "choose well-formed tickers: 1 to 5 capital letters; sector and broad-market ETFs are not eligible",
 }
 
 
@@ -379,10 +422,12 @@ def _picks(
     """(kept picks as (TICKER, rationale), dropped picks as (ticker, reason)), in the LLM's order, de-duplicated.
 
     Every pick is checked in this order: the format check (all sources), then the source
-    rule. Reasons are a closed set: invalid_format, not_in_reddit_candidates,
-    not_in_search_results, not_in_sector_universe.
+    rule, then the ETF exclusion (so an ungrounded ETF keeps its source reason). Reasons are
+    a closed set: invalid_format, not_in_reddit_candidates, not_in_search_results,
+    not_in_sector_universe, excluded_etf.
     """
     source = corpus["source"]
+    excluded = excluded_tickers_for_sector(corpus.get("sector", ""))
     items = narrative.candidates if narrative is not None else []
     tickers = [_ticker(item.ticker) for item in items]
     listed = {c["ticker"] for c in corpus.get("candidates", [])} if source == "reddit" else set()
@@ -406,6 +451,8 @@ def _picks(
             dropped[ticker] = "not_in_search_results"
         elif source == "unavailable" and universe and ticker not in universe:
             dropped[ticker] = "not_in_sector_universe"
+        elif ticker in excluded:
+            dropped[ticker] = "excluded_etf"
         else:
             kept[ticker] = item.rationale
     return list(kept.items()), list(dropped.items())

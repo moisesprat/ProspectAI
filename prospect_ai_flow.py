@@ -32,8 +32,10 @@ from utils.fundamental_records import (
 from utils.market_records import (
     REDDIT_TOOL_NAME,
     SERPER_TOOL_NAME,
+    SUPPORTED_SECTORS,
     build_market_corpus,
     corpus_record,
+    is_supported_sector,
     market_narrative_context,
     merge_market,
     reddit_fallback_required,
@@ -340,9 +342,10 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
 
         Owns the tracker lifecycle: start_phase once before the first attempt,
-        finish_phase once after the accepted attempt (tokens of failed attempts are
-        not added, a known metrics gap). The tool-call guard runs per attempt, so a
-        retry cannot pass on the tool calls of an earlier attempt.
+        finish_phase once after the accepted attempt; the token figures are the delta
+        of the phase LLM's counters from start_phase, so the tokens of failed attempts
+        are included (the phase's full cost). The tool-call guard runs per attempt, so
+        a retry cannot pass on the tool calls of an earlier attempt.
 
         ``start_tracker=False`` is for a phase that already started its tracker
         phase because the Flow ran tools before the first attempt (CORR-10).
@@ -652,7 +655,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
         only if it is well formed and grounded in the corpus (CR-01). A tool that raises is
         logged by exception class and treated as no data, never as invented data. The corpus the
-        model saw is stored on the tracker (market_corpus) before the LLM runs.
+        model saw is stored on the tracker (market_corpus) before the LLM runs. Serper is queried
+        only for a supported sector (backstop for callers that kick the Flow off directly;
+        run_analysis already refuses an unsupported sector, gap review WR-03).
         """
         self._check_error()
         self._emit_start(0)
@@ -676,7 +681,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         serper_results = []
         queries: List[str] = []
         failed_queries = 0
-        if reddit_fallback_required(reddit):
+        if reddit_fallback_required(reddit) and not is_supported_sector(sector):
+            logger.warning("%s: unsupported sector; skipping the Serper fallback", phase)
+        elif reddit_fallback_required(reddit):
             queries = serper_queries(sector, today)
             for number, query in enumerate(queries, 1):
                 try:
@@ -1147,6 +1154,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             raise ValueError(
                 f"Invalid risk_profile {risk_profile!r}. Valid values: {sorted(_VALID_PROFILES)}"
             )
+        if not is_supported_sector(sector):
+            # Fixed text: the caller's value can be a URL and this message reaches the SSE error.
+            raise ValueError(f"Invalid sector. Valid values: {sorted(SUPPORTED_SECTORS)}")
 
         tracker = ExecutionTracker()
         tracker.set_sector(sector)

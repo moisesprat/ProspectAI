@@ -312,6 +312,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — More accurate run figures and stricter stock picks
+- The token and cost figures shown for a run no longer count the draft step a second time under the final step, so the per-step, per-model and total figures now match what each step really used.
+- A sector fund or a market-wide fund picked as a stock is now set aside before the picks are checked, so it can no longer leave a run without stocks or lower the other picks' relevance.
+- Common capitalised words and abbreviations such as AI, CEO and EV in web search results no longer count as stock mentions unless they are written as a ticker, for example $AI or NYSE: AI.
+- An analysis for a sector the app does not support is now refused straight away instead of starting paid web searches, and the stored record of a run's web searches never keeps a web address.
+
 ### v1.12.1 — Runs skip prompt caching
 - Analyses no longer use prompt caching. Every step of a run sends a different prompt, so a cached prompt was never reused and only added cost; each run now costs a little less, and reports are unchanged.
 
