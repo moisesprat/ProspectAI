@@ -1,34 +1,76 @@
 """
-Module-level yfinance data cache, scoped to one run_analysis() call.
+Per-run yfinance data cache, scoped to one run_analysis() call.
 
 TechnicalAnalysisTool and FundamentalDataTool share this cache so that
 repeated lookups for the same ticker within a single pipeline run hit the
-network only once.  Call clear() at the start of each run_analysis() to
-discard stale data from the previous run.
+network only once.
+
+The cache belongs to one run, not to the process (CORR-08). The backend runs
+several analyses in one process, each in its own plain thread, so module-level
+dictionaries would let one run's clear() wipe another run's data mid-flight.
+Instead the cache lives in a ContextVar:
+
+- A plain thread starts with an empty context. run_analysis() calls clear()
+  first, which installs a fresh cache in that thread's own context.
+- asyncio.run() and asyncio.to_thread() copy the current context, so every
+  Flow phase and every tool call of that run reads and fills the same cache.
+- clear() only replaces the object in the current context. It never mutates
+  a cache another run holds.
+- run_in_executor() and executor worker threads do not copy the context and
+  keep theirs between tasks. Outside a run (CLI, direct tool use) each getter
+  call therefore gets a throwaway uncached object that is never stored in the
+  context, so nothing leaks from one task to the next task on the same worker.
+  Only clear() installs a cache.
+- The cache ends with the run's context, so memory no longer grows across runs.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from contextvars import ContextVar
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
 
-# (ticker_upper, period, interval) → DataFrame
-_history_cache: Dict[Tuple[str, str, str], pd.DataFrame] = {}
-# ticker_upper → dict  (from yf.Ticker.info)
-_info_cache: Dict[str, Dict[str, Any]] = {}
-# ticker_upper → DataFrame  (from yf.Ticker.financials)
-_financials_cache: Dict[str, Any] = {}
-# ticker_upper → DataFrame  (from yf.Ticker.cashflow)
-_cashflow_cache: Dict[str, Any] = {}
+# prospectai-backend reads this through getattr() to decide whether concurrent
+# runs in one process are safe (CORR-08). An older engine without it is run one
+# analysis at a time.
+RUN_SCOPED = True
+
+
+class _RunCache:
+    """The four per-run dictionaries. One instance belongs to one run."""
+
+    __slots__ = ("history", "info", "financials", "cashflow")
+
+    def __init__(self) -> None:
+        # (ticker_upper, period, interval) → DataFrame
+        self.history: Dict[Tuple[str, str, str], pd.DataFrame] = {}
+        # ticker_upper → dict  (from yf.Ticker.info)
+        self.info: Dict[str, Dict[str, Any]] = {}
+        # ticker_upper → DataFrame  (from yf.Ticker.financials)
+        self.financials: Dict[str, Any] = {}
+        # ticker_upper → DataFrame  (from yf.Ticker.cashflow)
+        self.cashflow: Dict[str, Any] = {}
+
+
+_run_cache: ContextVar[Optional[_RunCache]] = ContextVar("yfinance_run_cache", default=None)
 
 
 def clear() -> None:
-    """Discard all cached data. Call once at the start of each run_analysis()."""
-    _history_cache.clear()
-    _info_cache.clear()
-    _financials_cache.clear()
-    _cashflow_cache.clear()
+    """Install a fresh cache for the current run. Call once at the start of each run_analysis()."""
+    _run_cache.set(_RunCache())
+
+
+def _cache() -> _RunCache:
+    """Return the current run's cache, or a throwaway one when no run installed it.
+
+    The throwaway is never stored with ContextVar.set(): a worker thread keeps
+    its context between tasks, so a stored cache would be shared by later tasks.
+    """
+    cache = _run_cache.get()
+    if cache is None:
+        return _RunCache()
+    return cache
 
 
 def _yf_symbol(ticker: str) -> str:
@@ -45,31 +87,35 @@ def _yf_symbol(ticker: str) -> str:
 
 def get_history(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
     """Return OHLCV history DataFrame, fetching from yfinance on first access."""
+    cache = _cache()
     key = (ticker.upper(), period, interval)
-    if key not in _history_cache:
-        _history_cache[key] = yf.Ticker(_yf_symbol(ticker)).history(period=period, interval=interval)
-    return _history_cache[key]
+    if key not in cache.history:
+        cache.history[key] = yf.Ticker(_yf_symbol(ticker)).history(period=period, interval=interval)
+    return cache.history[key]
 
 
 def get_info(ticker: str) -> Dict[str, Any]:
     """Return the ticker info dict, fetching from yfinance on first access."""
+    cache = _cache()
     key = ticker.upper()
-    if key not in _info_cache:
-        _info_cache[key] = yf.Ticker(_yf_symbol(ticker)).info
-    return _info_cache[key]
+    if key not in cache.info:
+        cache.info[key] = yf.Ticker(_yf_symbol(ticker)).info
+    return cache.info[key]
 
 
 def get_financials(ticker: str) -> Any:
     """Return the income-statement DataFrame, fetching from yfinance on first access."""
+    cache = _cache()
     key = ticker.upper()
-    if key not in _financials_cache:
-        _financials_cache[key] = yf.Ticker(_yf_symbol(ticker)).financials
-    return _financials_cache[key]
+    if key not in cache.financials:
+        cache.financials[key] = yf.Ticker(_yf_symbol(ticker)).financials
+    return cache.financials[key]
 
 
 def get_cashflow(ticker: str) -> Any:
     """Return the cash-flow DataFrame, fetching from yfinance on first access."""
+    cache = _cache()
     key = ticker.upper()
-    if key not in _cashflow_cache:
-        _cashflow_cache[key] = yf.Ticker(_yf_symbol(ticker)).cashflow
-    return _cashflow_cache[key]
+    if key not in cache.cashflow:
+        cache.cashflow[key] = yf.Ticker(_yf_symbol(ticker)).cashflow
+    return cache.cashflow[key]
