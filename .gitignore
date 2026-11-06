@@ -298,3 +298,6 @@ ultraplan_prospect-ai_20042026.md
 .agent/
 .claude/
 .cursor/
+
+# Local secrets, never committed (SEC-05)
+.webui_secret_key
