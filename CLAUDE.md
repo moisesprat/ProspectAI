@@ -148,7 +148,7 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 | `utils/patient_serper_tool.py` | `PatientSerperDevTool` — wraps `crewai_tools.SerperDevTool` with retry classification: 4xx fails fast (response body logged), only 429/5xx retry (max 2, backoff) |
 | `utils/recommendation_validator.py` | Post-pipeline validation: stop/TP invariants, R/R checks, allocation sanity |
 | `utils/execution_tracker.py` | Per-phase wall-clock timing + LLM token tracking |
-| `utils/yfinance_cache.py` | In-memory cache (scoped per `run_analysis()` call) to avoid duplicate yfinance calls |
+| `utils/yfinance_cache.py` | Per-run in-memory cache held in a `ContextVar` and installed by `run_analysis()`'s `clear()`, so concurrent runs in one process never share or clear each other's data (CORR-08); outside a run each call fetches uncached. `RUN_SCOPED = True` is the marker `prospectai-backend` reads before it lets runs share a process |
 | `utils/scoring_constants.py` | Shared scoring weight tables used by `FundamentalGraderTool` and `CompositeScoreTool`; single source of truth for grade-to-point mappings |
 | `utils/technical_interpretation_tool.py` | Deterministic numeric layer for `TechnicalAnalysisTool`: computes `momentum_score` (0-10), `entry_zone`, and `risk_level` from raw indicator values; never produces BUY/SELL signals (that is the LLM's job) |
 

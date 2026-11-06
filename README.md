@@ -312,6 +312,10 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Analyses that run at the same time stay separate
+- When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.
+- Within a single analysis nothing changes: each stock's data is still fetched once and reused across the steps.
+
 ### v1.12.2 — More accurate run figures and stricter stock picks
 - The token and cost figures shown for a run no longer count the draft step a second time under the final step, so the per-step, per-model and total figures now match what each step really used.
 - A sector fund or a market-wide fund picked as a stock is now set aside before the picks are checked, so it can no longer leave a run without stocks or lower the other picks' relevance.
