@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.12.2**
+**Current release: v1.12.3**
 
 ### ⚠️ Important Disclaimer
 
@@ -312,7 +312,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Analyses that run at the same time stay separate
+### v1.12.3 — Analyses that run at the same time stay separate
 - When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.
 - Within a single analysis nothing changes: each stock's data is still fetched once and reused across the steps.
 
@@ -333,12 +333,6 @@ twine upload dist/*
 - The market research step now runs three web searches instead of one, and a stock is kept only if its ticker symbol actually appears in the search results, so a report can no longer feature a stock the research never mentioned.
 - Each analysis now keeps a short record of the search results its stock picks came from, so a recommendation can be traced back to its sources.
 - Ordinary words and one-letter tickers are no longer counted as stock mentions, and tickers with a dot, such as BRK.B, are now recognised.
-
-### v1.11.0 — More reliable, grounded analyses
-- Every number and grade in a report is now computed from live data. The AI model only writes the commentary and chooses each stock's action.
-- Stocks whose fundamentals can't be graded are marked unavailable and can only be Monitor or Avoid.
-- A slow Reddit lookup no longer stalls a run.
-- The technical score and overall fundamental grade fields were removed from reports.
 
 ## Roadmap
 
