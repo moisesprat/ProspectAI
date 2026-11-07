@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.12.1**
+**Current release: v1.12.2**
 
 ### ⚠️ Important Disclaimer
 
@@ -312,7 +312,11 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — More accurate run figures and stricter stock picks
+### Unreleased — Analyses that run at the same time stay separate
+- When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.
+- Within a single analysis nothing changes: each stock's data is still fetched once and reused across the steps.
+
+### v1.12.2 — More accurate run figures and stricter stock picks
 - The token and cost figures shown for a run no longer count the draft step a second time under the final step, so the per-step, per-model and total figures now match what each step really used.
 - A sector fund or a market-wide fund picked as a stock is now set aside before the picks are checked, so it can no longer leave a run without stocks or lower the other picks' relevance.
 - Common capitalised words and abbreviations such as AI, CEO and EV in web search results no longer count as stock mentions unless they are written as a ticker, for example $AI or NYSE: AI.
@@ -335,9 +339,6 @@ twine upload dist/*
 - Stocks whose fundamentals can't be graded are marked unavailable and can only be Monitor or Avoid.
 - A slow Reddit lookup no longer stalls a run.
 - The technical score and overall fundamental grade fields were removed from reports.
-
-### v1.10.1 — Reliable live data on Claude Haiku 5.5
-- Fixed an issue where the market, technical and fundamental analysis steps could skip fetching live data and answer from the model alone. They now always fetch their data first.
 
 ## Roadmap
 

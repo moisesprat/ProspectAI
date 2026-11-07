@@ -6,6 +6,8 @@
 #   0. Gates: both repos on `main` == origin/main, clean trees, both offline
 #      suites green in fresh venvs built from their locks, and
 #      pin == pyproject == PyPI == lock (prospectai-backend/scripts/check_pin.py)
+#      The preflight also requires the backend and web SSE contract fixtures
+#      to be identical (a missing or different web copy fails, never skips)
 #   1. Bumps the version in pyproject.toml (the only version source)
 #   2. Updates the README.md version badge and releases the hand-written
 #      "### Unreleased — <title>" notes as the new version (preflight refuses
@@ -296,7 +298,7 @@ run_offline_suites() {
   (cd "$REPO_ROOT" && CREWAI_TRACING_ENABLED=false "$TMP_VENVS/pa/bin/python" -m pytest --disable-socket --allow-unix-socket -q) \
     || die "REFUSING: ProspectAI offline suite failed (D-23)"
   log "prospectai-backend offline suite"
-  (cd "$BACKEND_ROOT" && CREWAI_TRACING_ENABLED=false "$TMP_VENVS/be/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) \
+  (cd "$BACKEND_ROOT" && SSE_FIXTURE_REQUIRE_WEB=1 CREWAI_TRACING_ENABLED=false "$TMP_VENVS/be/bin/python" -m pytest --disable-socket --allow-unix-socket -q tests) \
     || die "REFUSING: prospectai-backend offline suite failed (D-23)"
 }
 
