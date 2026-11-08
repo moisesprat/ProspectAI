@@ -409,6 +409,21 @@ def test_market_prompt_states_the_grounding_rule():
         assert forbidden not in description
 
 
+def test_market_prompt_says_sentiment_is_looked_up_after_the_picks():
+    """Change news-sentiment (phase 3.1, D-08): the pipeline scores picks after the model chooses."""
+    description = render_task("market_analysis")["description"]
+    assert "after you choose" in description
+    assert "do not say whether sentiment was measured" in " ".join(description.split())
+    assert "sentiment was not measured" not in description
+
+
+def test_market_example_never_says_sentiment_was_not_measured():
+    example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
+    texts = [entry["rationale"] for entry in example["candidates"]] + [example["summary"]]
+    for text in texts:
+        assert "not measured" not in text.lower()
+
+
 def test_market_example_has_no_number_or_flag_fields():
     example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
     assert set(example) == {"candidates", "summary"}
