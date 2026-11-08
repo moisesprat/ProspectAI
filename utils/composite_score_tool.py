@@ -10,8 +10,8 @@ Formula (sentiment and fundamentals both available):
   fundamental_component = quality_score + growth_score  [max 30 pts, min 6]
   composite_score = sum, rounded to 1 decimal
 
-When average_sentiment is null (sentiment_available=false upstream -- both
-Reddit and the Serper fallback failed), sentiment_component is dropped and
+When average_sentiment is null (sentiment_available=false upstream -- measured
+sentiment is missing for a published candidate), sentiment_component is dropped and
 technical_component + fundamental_component are renormalized so the maximum
 attainable score is still 100 (scaled by 100/70), instead of leaving the
 composite silently capped at 70. This never happens implicitly: it only
@@ -54,7 +54,7 @@ class CompositeScoreTool(BaseTool):
             "ticker":            <str>,
             "average_sentiment": <float|null>, from Market Analyst (−1.0 to 1.0),
                                  null when sentiment_available=false upstream
-                                 (both Reddit and the Serper fallback failed) —
+                                 (measured sentiment missing for a candidate) —
                                  never pass 0.0 to mean "unavailable".
             "momentum_score":    <float>,   from TechnicalInterpretationTool (0-10)
             "quality":           <str>,     from FundamentalGraderTool, exactly one of:

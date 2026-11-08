@@ -4,7 +4,7 @@ When a phase's tools move from the LLM into the Flow (CORR-10), two things the
 crewai agent loop used to provide must be rebuilt here.
 
 Off the event loop (STALL-02). The tools do blocking network I/O (yfinance,
-Serper, Reddit). Called directly from an ``async`` Flow method they would stall
+Serper). Called directly from an ``async`` Flow method they would stall
 the loop that also streams SSE heartbeats and runs the parallel technical phase.
 ``call_tool`` therefore runs ``tool._run`` through ``asyncio.to_thread``. It is
 given the same instrumented tool instance the TaskFactory holds, so

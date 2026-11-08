@@ -3,9 +3,9 @@ Candidate Universe Filter — deterministic exclusion of sector-benchmark ETFs
 and broad-market ETFs from the Market Analyst's candidate list.
 
 Applied once, after MarketAnalysisOutput is parsed, regardless of whether the
-candidates came from RedditSentimentTool.SECTOR_TICKERS (already ETF-free) or
-the Serper/LLM fallback path (free-text extraction from search snippets,
-which has no such curation and can surface a sector's own benchmark ETF --
+candidates came from the search corpus or utils.sector_universe.SECTOR_TICKERS (already
+ETF-free). The search corpus (free-text extraction from Serper snippets)
+has no such curation and can surface a sector's own benchmark ETF --
 e.g. XLE for Energy -- as if it were an investable single-stock candidate).
 Applying the filter after parsing, rather than duplicating it in each source
 path, guarantees it cannot be bypassed by whichever source is active.
@@ -14,7 +14,7 @@ path, guarantees it cannot be bypassed by whichever source is active.
 from typing import FrozenSet, List, Tuple
 
 # Standard SPDR/iShares sector-benchmark ETF per ProspectAI sector, matching
-# the sectors in RedditSentimentTool.SECTOR_TICKERS.
+# the sectors in utils.sector_universe.SECTOR_TICKERS.
 SECTOR_BENCHMARK_ETF = {
     "Technology": "XLK",
     "Semiconductors": "SOXX",

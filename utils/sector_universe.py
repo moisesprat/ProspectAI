@@ -9,8 +9,8 @@ matches) and are ETF-free. Consumers:
 - the CLI ``--sector`` choices in ``main.py``
 - the ETF filter in ``utils.candidate_universe_filter``
 
-Moved verbatim from the former Reddit sentiment tool in phase 3.1 so that the
-universe outlives that tool (decision D-05). Do not reorder or edit entries
+Kept as a standalone module in phase 3.1 so that the universe does not depend on
+any one sentiment source (decision D-05). Do not reorder or edit entries
 without updating the parity tests in ``tests/test_sector_universe.py``.
 """
 
