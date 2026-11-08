@@ -6,7 +6,6 @@ import pytest
 
 from tests.test_llm_role_audit import (  # noqa: F401
     MARKET_PHASE,
-    REDDIT_FALLBACK,
     SERPER_OK,
     SERPER_TOOL,
     flow,
@@ -74,7 +73,7 @@ def test_run_analysis_accepts_web_app_and_package_names(flow, sector):
 
 def test_market_phase_skips_serper_for_unsupported_sector(flow):
     flow.state.sector = "Garbage"
-    tools = market_tools(reddit=REDDIT_FALLBACK, serper=SERPER_OK)
+    tools = market_tools(serper=SERPER_OK)
     wire_tools(flow, tools, phase=MARKET_PHASE)
     flow._tracker = ExecutionTracker()
     flow._tracker.start()
@@ -90,7 +89,7 @@ def test_market_phase_skips_serper_for_unsupported_sector(flow):
 
 def test_corpus_record_scrubs_urls_from_queries():
     corpus = build_market_corpus(
-        REDDIT_FALLBACK, SERPER_OK, "Technology",
+        SERPER_OK, "Technology",
         queries=["Technology https://evil.example/x?t=SECRET stocks", "see www.evil.example/y now"],
     )
     record = corpus_record(corpus)

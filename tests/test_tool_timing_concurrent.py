@@ -101,8 +101,6 @@ class TestConcurrentPhaseAttribution:
 class TestTaskFactoryWiring:
     def test_every_phase_tool_marked_with_its_phase_and_idempotent(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
         from prospect_ai_crew import TaskFactory
 
         tracker = ExecutionTracker()
@@ -113,7 +111,7 @@ class TestTaskFactoryWiring:
                 seen += 1
                 assert tool._prospectai_timed_phase == phase
                 assert instrument_tool(tool, phase, lambda: tracker) is tool
-        assert seen == 8        # reddit, serper, indicators, fetch, grade, composite, allocator (draft), allocator (final)
+        assert seen == 7        # serper, indicators, fetch, grade, composite, allocator (draft), allocator (final)
         # The market phase is Flow-owned (plan 02-16): its tools are called by the Flow.
         assert factory._phase_config["market_analysis"]["agent_tools"] == []
         assert factory.search_tool in factory._phase_config["market_analysis"]["flow_tools"].values()
@@ -128,8 +126,6 @@ class TestTaskFactoryWiring:
 
     def test_zero_arg_factory_records_nothing_and_still_builds(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
         from prospect_ai_crew import TaskFactory
 
         factory = TaskFactory()

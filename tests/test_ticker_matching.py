@@ -149,11 +149,11 @@ def test_common_word_pick_cannot_set_the_relevance_scale(caplog):
     from datetime import datetime, timezone
 
     from schemas.agent_outputs import MarketNarrativeOutput
-    from tests.test_llm_role_audit import REDDIT_FALLBACK, _organic, mkt_entry, mkt_payload
+    from tests.test_llm_role_audit import _organic, mkt_entry, mkt_payload
     from utils.market_records import build_market_corpus, merge_market
 
     serper = _organic("AI spending drives AI chips; the AI boom lifts NVDA", "AI AI AI everywhere")
-    corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Semiconductors")
+    corpus = build_market_corpus(serper, "Semiconductors")
     narrative = MarketNarrativeOutput(**mkt_payload(mkt_entry("AI"), mkt_entry("NVDA")))
 
     with caplog.at_level("WARNING"):

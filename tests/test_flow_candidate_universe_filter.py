@@ -11,8 +11,6 @@ from prospect_ai_flow import ProspectAIFlow
 ANTHROPIC_ENV = {
     "ANTHROPIC_API_KEY": "test-key",
     "MODEL": "claude-haiku-4-5-20251001",
-    "REDDIT_CLIENT_ID": "test-id",
-    "REDDIT_CLIENT_SECRET": "test-secret",
 }
 
 
@@ -38,11 +36,11 @@ def _narrative_result(*tickers):
 @pytest.mark.asyncio
 async def test_sector_benchmark_etf_is_excluded_from_serper_fallback_candidates(flow):
     from tests.test_llm_role_audit import (
-        REDDIT_FALLBACK, _organic, market_tools, wire_tools,
+        _organic, market_tools, wire_tools,
     )
 
     serper = _organic("XLE tracks the sector, XOM leads it", "XOM and XLE both rallied", "XOM earnings")
-    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase="market_analysis")
+    wire_tools(flow, market_tools(serper=serper), phase="market_analysis")
     flow._factory.build_task.return_value = MagicMock()
     with patch.object(flow, "_make_crew") as mc:
         mc.return_value.akickoff = AsyncMock(return_value=_narrative_result("XLE", "XOM"))
@@ -56,9 +54,9 @@ async def test_sector_benchmark_etf_is_excluded_from_serper_fallback_candidates(
 # ─── Gap review WR-01: ETFs are dropped inside the pick check ───
 
 def _wire_energy_market(flow, serper):
-    from tests.test_llm_role_audit import REDDIT_FALLBACK, market_tools, wire_tools
+    from tests.test_llm_role_audit import market_tools, wire_tools
 
-    wire_tools(flow, market_tools(reddit=REDDIT_FALLBACK, serper=serper), phase="market_analysis")
+    wire_tools(flow, market_tools(serper=serper), phase="market_analysis")
     flow._factory.build_task.return_value = MagicMock()
 
 
@@ -97,13 +95,13 @@ async def test_etf_pick_does_not_set_the_relevance_scale(flow):
 def test_etf_only_answer_fails_validation_with_fixed_text(caplog):
     from schemas.agent_outputs import MarketNarrativeOutput
     from tests.test_llm_role_audit import (
-        REDDIT_FALLBACK, _organic, mkt_entry, mkt_payload,
+        _organic, mkt_entry, mkt_payload,
     )
     from utils.market_records import build_market_corpus, require_market_picks
     from utils.phase_runner import PhaseOutputError
 
     serper = _organic("XLE tracks the sector, SPY too", "XLE and SPY rallied", "XOM earnings beat")
-    corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Energy")
+    corpus = build_market_corpus(serper, "Energy")
     narrative = MarketNarrativeOutput(**mkt_payload(mkt_entry("XLE"), mkt_entry("SPY")))
 
     with caplog.at_level("WARNING"):
