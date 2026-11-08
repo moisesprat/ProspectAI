@@ -31,10 +31,35 @@ Rules (the project rule: the LLM never produces a number that reaches the report
 Provider: Marketaux, free tier, one request per ticker (03.1-DECISIONS.md, 03.1-SENTIMENT-SPIKE.md
 "Adapter contract"). The adapter is two pure functions, ``build_params`` and ``parse``, so the
 network is the only thing a test has to fake.
+
+Failure containment (D-07, plan 03.1-09). The free tier's 100 requests a day are shared with
+public traffic, so refusals are expected, and nothing here may ever fail or stall a run; the only
+effect of a failure is a null score.
+
+- One wall budget per call, ``TIME_BUDGET_SECONDS``, measured on ``time.monotonic``. Each request's
+  timeout is ``min(MAX_REQUEST_TIMEOUT_SECONDS, budget left)``; with less than
+  ``MIN_REQUEST_SECONDS`` left the lookup stops with reason ``budget``. The module never sleeps
+  (no retry, no backoff): a free tier is not worth a stall.
+- Answer classes. Quota (HTTP 402), rate limit (429) and access denial (401, 403) stop the lookup
+  for the rest of the call: ``status`` "stopped", ``stopped_reason`` quota, rate_limited or
+  access_denied, every remaining ticker null, no further request. A 5xx, another HTTP status, a
+  timeout, any ``requests`` error or an unusable body nulls that ticker and counts one consecutive
+  failure; ``MAX_CONSECUTIVE_FAILURES`` in a row stop the lookup with reason ``failures``; a good
+  answer resets the count.
+- Caching. An error answer is never cached, so the next run or day retries; a no-data answer is.
+- Cache operations run on a small module-level thread pool, each waiting at most
+  ``min(CACHE_OP_TIMEOUT_SECONDS, budget left)``. A timeout or exception is a miss (read) or a
+  skipped write, logged by class, and counted in ``cache_errors`` so a slow or broken store shows
+  in the run metrics. A hung store call may keep its worker thread; the run does not wait for it.
+- Hygiene. Request errors embed the request address, hence the token, so every warning has the
+  fixed shape "news sentiment <fixed reason> (<status code or exception class name>)". Nothing
+  formats an exception, a request address, a response body or the token.
 """
+import concurrent.futures
 import logging
 import math
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -55,12 +80,39 @@ LOOKBACK_DAYS = 7                 # DECISION window_days: 7
 MIN_ARTICLES = 1                  # DECISION min_articles: 1
 ARTICLE_COUNT = "found"           # DECISION article_count: found (meta.found, not the capped scored count)
 BATCH = "per-ticker"              # DECISION batch: per-ticker
-TIME_BUDGET_SECONDS = 8           # DECISION budget_seconds: 8 (enforced by plan 03.1-09)
+TIME_BUDGET_SECONDS = 8           # DECISION budget_seconds: 8 (wall budget of one lookup call)
 
 # Marketaux free tier: 3 articles per response (spike, "meta.limit echoed 3").
 MARKETAUX_URL = "https://api.marketaux.com/v1/news/all"
 FREE_TIER_ARTICLE_LIMIT = 3
-REQUEST_TIMEOUT_SECONDS = 4.0
+
+# Budget and breaker (D-07, research Pattern 4).
+MAX_REQUEST_TIMEOUT_SECONDS = 4.0  # one request never waits longer, nor longer than the budget left
+MIN_REQUEST_SECONDS = 0.2          # less budget than this left: stop with reason "budget"
+MAX_CONSECUTIVE_FAILURES = 2       # this many failures in a row: stop with reason "failures"
+
+# Modal Dict latency, measured from inside a Modal container on a named Dict
+# (modal.Dict.from_name, dict_kind "from_name", the same kind as production's
+# prospectai-news-sentiment, though not that Dict itself), probe of 2026-11-08, 5 operations each,
+# unit milliseconds. Evidence: 03.1-SENTIMENT-SPIKE.md "## Latency". Copied by hand: this package
+# never reads the workspace probe output, its suite runs from the repo alone.
+MODAL_DICT_PUT_MEDIAN_MS = 51.7
+MODAL_DICT_GET_MEDIAN_MS = 35.5
+
+# One cache read or write may wait at most this long: the slower median in ms, divided by 1000 for
+# seconds, times 20 for headroom, rounded up to 0.1 s, at least 1.0 s and at most 2.0 s. The 2.0 s
+# cap bounds ONE slow store call. It does not by itself fit the 8 s wall budget (5 lookups with a
+# read and a write each could take 20 s at the cap); that is held only because every store call
+# waits min(CACHE_OP_TIMEOUT_SECONDS, budget left) and the lookup stops with reason "budget" once
+# less than MIN_REQUEST_SECONDS remains.
+CACHE_OP_TIMEOUT_SECONDS = min(
+    2.0, max(1.0, math.ceil(20 * max(MODAL_DICT_PUT_MEDIAN_MS, MODAL_DICT_GET_MEDIAN_MS) / 1000 * 10) / 10),
+)
+
+# Provider answer classes that end the lookup for the rest of the call, by HTTP status.
+_STOP_REASON_BY_STATUS = {402: "quota", 429: "rate_limited", 401: "access_denied", 403: "access_denied"}
+
+_CACHE_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="news-sentiment-cache")
 
 Observation = Dict[str, Any]
 
@@ -196,7 +248,8 @@ class NewsSentimentTool(BaseTool):
         "Look up the news provider's own per-ticker sentiment score for stock tickers. "
         "Input: tickers (list of ticker symbols, each 1 to 5 capital letters with an optional "
         "share-class letter). Output: a JSON object {provider, status, stopped_reason, scores, "
-        "articles, requests, cache_hits}; status is ok or no_key; scores maps each ticker to a "
+        "articles, requests, cache_hits, cache_errors}; status is ok, no_key or stopped (a refusal "
+        "or a spent budget; stopped_reason says which); scores maps each ticker to a "
         "float in [-1, 1] or null (null means unknown, never neutral); articles maps each "
         "ticker to the provider's article count in the lookback window or null. Called only by "
         "the pipeline after the picks are chosen; the result is never shown to an LLM before "
@@ -211,39 +264,77 @@ class NewsSentimentTool(BaseTool):
         self._cache = cache
         self._clock = clock
 
-    # Store access: a store that fails degrades to a miss / a skipped write, never to a failed run.
-    def _cache_get(self, key: str) -> Optional[Observation]:
+    # Store access: a store that fails or stalls degrades to a miss / a skipped write, never to a
+    # failed run, and is counted so the run metrics show it.
+    def _cache_call(self, deadline: float, fn: Callable[[], Any]) -> "tuple[bool, Any]":
+        """Run a store call on the worker pool; (True, value), or (False, None) on timeout or error."""
+        wait = min(CACHE_OP_TIMEOUT_SECONDS, deadline - time.monotonic())
+        if wait <= 0:
+            return False, None
+        future = _CACHE_POOL.submit(fn)
+        try:
+            return True, future.result(timeout=wait)
+        except concurrent.futures.TimeoutError:
+            future.cancel()  # not started yet: it never runs; started: the worker is left to finish
+            logger.warning("%s: news sentiment cache timeout (%s)", "market_analysis", "TimeoutError")
+        except Exception as exc:
+            logger.warning("%s: news sentiment cache error (%s)", "market_analysis", type(exc).__name__)
+        return False, None
+
+    def _cache_get(self, key: str, deadline: float, result: Dict[str, Any]) -> Optional[Observation]:
         if self._cache is None:
             return None
-        try:
-            return _valid_observation(self._cache.get(key))
-        except Exception as exc:
-            logger.warning("%s: cache read failed (%s)", TOOL_NAME, type(exc).__name__)
+        store = self._cache
+        ok, value = self._cache_call(deadline, lambda: store.get(key))
+        if not ok:
+            result["cache_errors"] += 1
             return None
+        return _valid_observation(value)
 
-    def _cache_put(self, key: str, observation: Observation) -> None:
+    def _cache_put(self, key: str, observation: Observation, deadline: float, result: Dict[str, Any]) -> None:
         if self._cache is None:
             return
-        try:
-            self._cache[key] = {"scores": list(observation["scores"]), "articles": observation["articles"]}
-        except Exception as exc:
-            logger.warning("%s: cache write failed (%s)", TOOL_NAME, type(exc).__name__)
+        store = self._cache
+        value = {"scores": list(observation["scores"]), "articles": observation["articles"]}
 
-    def _fetch(self, group: List[str], token: str, window_start: datetime) -> Dict[str, Optional[Observation]]:
-        """One provider request for ``group``; any failure is "no observation" for every symbol in it."""
+        def write() -> None:
+            store[key] = value
+
+        ok, _ = self._cache_call(deadline, write)
+        if not ok:
+            result["cache_errors"] += 1
+
+    def _fetch(
+        self, group: List[str], token: str, window_start: datetime, timeout: float,
+    ) -> "tuple[str, Dict[str, Optional[Observation]]]":
+        """One provider request for ``group``: (outcome, observations).
+
+        outcome is "ok", "failure", or a stop reason (quota, rate_limited, access_denied). Only an
+        "ok" outcome carries observations; every failure is "no observation" for each symbol.
+        """
+        nothing: Dict[str, Optional[Observation]] = {s: None for s in group}
         try:
             url, params = build_params(group, window_start, token)
-            response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+            response = requests.get(url, params=params, timeout=timeout)
             status = response.status_code
+            if status in _STOP_REASON_BY_STATUS:
+                reason = _STOP_REASON_BY_STATUS[status]
+                logger.warning("%s: news sentiment %s (HTTP %s)", "market_analysis", reason, status)
+                return reason, nothing
             if status != 200:
-                logger.warning("%s: provider answered HTTP %s", TOOL_NAME, status)
-                return {s: None for s in group}
-            return parse(status, response.json(), group)
-        except Exception as exc:  # the message embeds the request URL, hence the token: class name only
-            logger.warning("%s: request failed (%s)", TOOL_NAME, type(exc).__name__)
-            return {s: None for s in group}
+                logger.warning("%s: news sentiment provider error (HTTP %s)", "market_analysis", status)
+                return "failure", nothing
+            observations = parse(status, response.json(), group)
+            if all(o is None for o in observations.values()):
+                logger.warning("%s: news sentiment unusable answer (HTTP %s)", "market_analysis", status)
+                return "failure", nothing
+            return "ok", observations
+        except Exception as exc:  # a request error embeds the address, hence the token: class name only
+            logger.warning("%s: news sentiment request failed (%s)", "market_analysis", type(exc).__name__)
+            return "failure", nothing
 
     def _run(self, tickers: list) -> dict:
+        deadline = time.monotonic() + TIME_BUDGET_SECONDS
         symbols: List[str] = []
         for raw in tickers if isinstance(tickers, (list, tuple)) else []:
             symbol = raw.strip().upper() if isinstance(raw, str) else ""
@@ -258,6 +349,7 @@ class NewsSentimentTool(BaseTool):
             "articles": {s: None for s in symbols},
             "requests": 0,
             "cache_hits": 0,
+            "cache_errors": 0,
         }
         token = (os.getenv(API_KEY_ENV) or "").strip()
         if not token:
@@ -271,7 +363,7 @@ class NewsSentimentTool(BaseTool):
         observations: Dict[str, Optional[Observation]] = {}
         misses: List[str] = []
         for symbol in symbols:
-            cached = self._cache_get(cache_key(PROVIDER, symbol, utc_date))
+            cached = self._cache_get(cache_key(PROVIDER, symbol, utc_date), deadline, result)
             if cached is not None:
                 observations[symbol] = cached
                 result["cache_hits"] += 1
@@ -279,12 +371,37 @@ class NewsSentimentTool(BaseTool):
                 misses.append(symbol)
 
         groups = [[s] for s in misses] if BATCH == "per-ticker" else ([misses] if misses else [])
+        stop: Optional[str] = None
+        consecutive_failures = 0
         for group in groups:
+            left = deadline - time.monotonic()
+            if left < MIN_REQUEST_SECONDS:
+                stop = "budget"
+                logger.warning("%s: news sentiment budget spent (%s)", "market_analysis", "budget")
+                break
             result["requests"] += 1
-            for symbol, observation in self._fetch(group, token, window_start).items():
-                observations[symbol] = observation
-                if observation is not None:
-                    self._cache_put(cache_key(PROVIDER, symbol, utc_date), observation)
+            outcome, fetched = self._fetch(group, token, window_start, min(MAX_REQUEST_TIMEOUT_SECONDS, left))
+            if outcome == "ok":
+                consecutive_failures = 0
+                for symbol, observation in fetched.items():
+                    observations[symbol] = observation
+                    if observation is not None:
+                        self._cache_put(cache_key(PROVIDER, symbol, utc_date), observation, deadline, result)
+            elif outcome == "failure":
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    stop = "failures"
+                    logger.warning(
+                        "%s: news sentiment too many failures (%s)", "market_analysis", consecutive_failures,
+                    )
+                    break
+            else:  # quota, rate_limited, access_denied: no further request in this call
+                stop = outcome
+                break
+
+        if stop is not None:
+            result["status"] = "stopped"
+            result["stopped_reason"] = stop
 
         for symbol in symbols:
             observation = observations.get(symbol)

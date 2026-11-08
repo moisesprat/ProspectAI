@@ -37,9 +37,11 @@ from tests.test_llm_role_audit import (
     wire_tools,
 )
 from utils.execution_tracker import ExecutionTracker
+from utils.news_sentiment import API_KEY_ENV as NEWS_KEY_ENV, TOOL_NAME as NEWS_TOOL, NewsSentimentTool
 from utils.patient_serper_tool import PatientSerperDevTool
 
 SERPER_MODULE = "utils.patient_serper_tool"
+NEWS_MODULE = "utils.news_sentiment"
 
 
 # ─── Fakes ─────────────────────────────────────────────────────────────────────
@@ -98,6 +100,7 @@ def _critic():
 @pytest.fixture
 def flow(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    monkeypatch.delenv(NEWS_KEY_ENV, raising=False)  # the news lookup is off unless a test sets a key
     with patch.dict("os.environ", ANTHROPIC_ENV), patch("prospect_ai_flow.TaskFactory") as MockFactory:
         MockFactory.return_value = MagicMock()
         f = ProspectAIFlow()
@@ -107,6 +110,7 @@ def flow(monkeypatch):
         tools = {
             **stub_tools(), **tech_tools(), **draft_tools(),
             SERPER_TOOL: PatientSerperDevTool(),
+            NEWS_TOOL: NewsSentimentTool(),
         }
         wire_tools(f, tools, phase="market_analysis")
         yield f
@@ -148,6 +152,41 @@ def test_no_sleep_on_loop_full_run(flow):
     # ... and none of them on the event-loop thread.
     on_loop = [(module, seconds) for ident, module, seconds in sleeps if ident in loop_threads]
     assert on_loop == []
+
+
+def test_news_sentiment_refusal_in_a_full_run_never_sleeps(flow, monkeypatch):
+    """The news lookup answers a rate limit: the run completes with null sentiment, the lookup
+    stops after one request, and it never sleeps (plan 03.1-09, D-07)."""
+    monkeypatch.setenv(NEWS_KEY_ENV, "tok-SLEEP-GUARD-1")
+    sleeps, loop_threads = [], set()
+    results = {
+        0: narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))),
+        1: narrative_result(tech_payload(tech_narrative_entry("AAA"))),
+        2: narrative_result(narrative_payload(narrative_entry("AAA"))),
+        3: narrative_result(draft_payload(draft_entry("AAA"))),
+        4: _json_result(_critic()),
+        5: narrative_result(draft_payload(draft_entry("AAA"))),
+    }
+    refusal = MagicMock()
+    refusal.status_code = 429
+    refusal.json.return_value = {"error": {"code": "rate_limit_reached"}}
+    serper_posts = [_serper_response(200, SERPER_BODY)] * 3
+    with patch.object(flow, "_make_crew", side_effect=_crew_factory(results, loop_threads)), \
+         patch.object(flow, "_slim_draft", return_value=""), \
+         patch.object(flow, "_critic_reference_table", return_value=""), \
+         patch.object(flow, "_gated_slim_critique", return_value=""), \
+         patch.object(time, "sleep", _sleep_recorder(sleeps)), \
+         patch("requests.post", side_effect=serper_posts), \
+         patch(f"{NEWS_MODULE}.requests.get", return_value=refusal) as news_get:
+        flow.kickoff(inputs={"sector": "Technology", "today": "2026-04-29", "risk_profile": "conservative"})
+
+    assert flow.state.final_output is not None
+    market = flow.state.market_output
+    assert market.sentiment_available is False
+    assert [c.average_sentiment for c in market.candidate_stocks] == [None, None]
+    assert news_get.call_count == 1  # the refusal stops the lookup: no request for the second pick
+    assert [ident for ident, module, _ in sleeps if module == NEWS_MODULE] == []
+    assert [ident for ident, _, _ in sleeps if ident in loop_threads] == []
 
 
 def test_detector_catches_a_sleep_on_the_loop_thread():

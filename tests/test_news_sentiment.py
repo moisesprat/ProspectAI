@@ -1,6 +1,8 @@
 """Tests for the news-sentiment tool and its Flow wiring (phase 3.1 D-06, D-08, D-09)."""
+import concurrent.futures
 import json
 import math
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -29,6 +31,7 @@ from tests.test_llm_role_audit import (
     tech_tools,
     wire_tools,
 )
+from tests.fake_clock import FakeClock
 from tests.test_no_blocking_sleep import _critic, _crew_factory, _json_result
 from utils.execution_tracker import ExecutionTracker
 
@@ -209,7 +212,7 @@ def test_no_key_makes_no_request_and_scores_nothing(monkeypatch):
     assert result == {
         "provider": "marketaux", "status": "no_key", "stopped_reason": None,
         "scores": {"AAA": None, "BBB": None}, "articles": {"AAA": None, "BBB": None},
-        "requests": 0, "cache_hits": 0,
+        "requests": 0, "cache_hits": 0, "cache_errors": 0,
     }
     assert provider.calls == [] and store.data == {}
 
@@ -395,13 +398,251 @@ def test_tool_is_a_crewai_tool_with_the_documented_contract():
     assert "tickers" in t.description and "null" in t.description
 
 
+# ─── Failure containment (D-07, plan 03.1-09) ──────────────────────────────────
+
+SECRET = "tok-SECRET-123"
+SECRET_URL = f"https://api.marketaux.com/v1/news/all?api_token={SECRET}&symbols=AAA"
+EMPTY_ANSWER = {"data": [], "meta": {"found": 0}}
+
+
+def answer(symbol, score=0.2):
+    return FakeResponse(200, provider_body(symbol, [score], found=1))
+
+
+@pytest.mark.parametrize("status, reason", [
+    (402, "quota"), (429, "rate_limited"), (401, "access_denied"), (403, "access_denied"),
+])
+def test_a_refusal_mid_run_stops_the_lookup_and_nulls_the_rest(key, monkeypatch, caplog, status, reason):
+    provider = install(monkeypatch, FakeProvider({
+        "AAA": answer("AAA", 0.4),
+        "BBB": FakeResponse(status, {"error": {"code": "usage_limit_reached"}}),
+        "CCC": answer("CCC", 0.1),
+    }))
+    store = MiniStore()
+    with caplog.at_level("WARNING"):
+        result = tool(store)._run(tickers=["AAA", "BBB", "CCC"])
+    assert [c[1]["symbols"] for c in provider.calls] == ["AAA", "BBB"]
+    assert (result["status"], result["stopped_reason"], result["requests"]) == ("stopped", reason, 2)
+    assert result["scores"] == {"AAA": 0.4, "BBB": None, "CCC": None}
+    assert sorted(store.data) == ["news-sentiment:marketaux:AAA:2026-11-08"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and str(status) in warnings[0]
+
+
+def test_a_cached_pick_is_still_scored_after_the_provider_refuses(key, monkeypatch):
+    store = MiniStore()
+    store.data["news-sentiment:marketaux:CCC:2026-11-08"] = {"scores": [0.5], "articles": 4}
+    provider = install(monkeypatch, FakeProvider({"AAA": FakeResponse(429, None)}))
+    result = tool(store)._run(tickers=["AAA", "BBB", "CCC"])
+    assert result["scores"] == {"AAA": None, "BBB": None, "CCC": 0.5}
+    assert (result["stopped_reason"], len(provider.calls), result["cache_hits"]) == ("rate_limited", 1, 1)
+
+
+def test_two_consecutive_timeouts_stop_with_reason_failures(key, monkeypatch):
+    provider = install(monkeypatch, FakeProvider({
+        "AAA": requests.Timeout("slow"), "BBB": requests.Timeout("slow"), "CCC": answer("CCC"),
+    }))
+    store = MiniStore()
+    result = tool(store)._run(tickers=["AAA", "BBB", "CCC"])
+    assert (result["status"], result["stopped_reason"], result["requests"]) == ("stopped", "failures", 2)
+    assert [c[1]["symbols"] for c in provider.calls] == ["AAA", "BBB"]
+    assert result["scores"] == {"AAA": None, "BBB": None, "CCC": None} and store.data == {}
+
+
+def test_a_server_error_followed_by_a_success_keeps_going(key, monkeypatch):
+    install(monkeypatch, FakeProvider({
+        "AAA": FakeResponse(503, None), "BBB": answer("BBB", 0.6), "CCC": FakeResponse(500, None),
+        "DDD": answer("DDD", -0.2),
+    }))
+    result = tool(MiniStore())._run(tickers=["AAA", "BBB", "CCC", "DDD"])
+    assert (result["status"], result["stopped_reason"], result["requests"]) == ("ok", None, 4)
+    assert result["scores"] == {"AAA": None, "BBB": 0.6, "CCC": None, "DDD": -0.2}
+
+
+def test_the_wall_budget_caps_every_request_and_stops_the_lookup(key, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ns, "time", clock)
+    monkeypatch.setattr(ns.requests, "get", clock.get_side_effect(
+        lambda i, u: FakeResponse(200, EMPTY_ANSWER), latency=3.0,
+    ))
+    result = tool(MiniStore())._run(tickers=["AAA", "BBB", "CCC", "DDD", "EEE"])
+    assert ns.TIME_BUDGET_SECONDS == 8
+    assert clock.timeouts == [4.0, 4.0, 2.0]  # the third request only gets what is left
+    assert clock.now <= ns.TIME_BUDGET_SECONDS
+    assert (result["status"], result["stopped_reason"], result["requests"]) == ("stopped", "budget", 3)
+    assert clock.sleeps == []
+
+
+def test_the_module_never_sleeps(key, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ns, "time", clock)
+    monkeypatch.setattr(ns.requests, "get", clock.get_side_effect(FakeResponse(503, None), latency=0.1))
+    tool()._run(tickers=["AAA", "BBB", "CCC"])
+    assert clock.sleeps == [] and not any(kind == "sleep" for kind, _ in clock.events)
+
+
+class HungStore:
+    """A store whose calls block until the test releases them."""
+
+    def __init__(self):
+        self.release = threading.Event()
+
+    def get(self, key):
+        self.release.wait(10)
+
+    def __setitem__(self, key, value):
+        self.release.wait(10)
+
+
+@pytest.fixture
+def hung_store():
+    store = HungStore()
+    yield store
+    store.release.set()
+
+
+def test_a_stalled_store_is_a_miss_and_is_counted(key, monkeypatch, caplog, hung_store):
+    monkeypatch.setattr(ns, "CACHE_OP_TIMEOUT_SECONDS", 0.05)
+    install(monkeypatch, FakeProvider({"AAA": answer("AAA", 0.5)}))
+    with caplog.at_level("WARNING"):
+        result = tool(hung_store)._run(tickers=["AAA"])
+    assert result["scores"] == {"AAA": 0.5} and result["cache_hits"] == 0
+    assert result["cache_errors"] == 2  # one timed-out read, one timed-out write
+    assert "TimeoutError" in caplog.text
+
+
+def test_a_raising_store_is_a_miss_and_is_counted(key, monkeypatch):
+    class BrokenStore:
+        def get(self, key):
+            raise OSError(f"down {SECRET}")
+
+        def __setitem__(self, key, value):
+            raise OSError(f"down {SECRET}")
+
+    install(monkeypatch, FakeProvider({"AAA": answer("AAA", 0.5), "BBB": answer("BBB", 0.1)}))
+    result = tool(BrokenStore())._run(tickers=["AAA", "BBB"])
+    assert result["scores"] == {"AAA": 0.5, "BBB": 0.1}
+    assert result["cache_errors"] == 4
+
+
+def test_a_healthy_store_has_no_cache_errors(key, monkeypatch):
+    install(monkeypatch, FakeProvider({"AAA": answer("AAA", 0.5)}))
+    assert tool(MiniStore())._run(tickers=["AAA"])["cache_errors"] == 0
+
+
+def test_cache_op_timeout_is_derived_from_the_measured_modal_dict_latency():
+    slower_ms = max(ns.MODAL_DICT_PUT_MEDIAN_MS, ns.MODAL_DICT_GET_MEDIAN_MS)
+    expected = min(2.0, max(1.0, math.ceil(20 * slower_ms / 1000 * 10) / 10))
+    assert ns.CACHE_OP_TIMEOUT_SECONDS == expected
+    assert 1.0 <= ns.CACHE_OP_TIMEOUT_SECONDS <= 2.0
+    assert ns.MODAL_DICT_PUT_MEDIAN_MS > 0 and ns.MODAL_DICT_GET_MEDIAN_MS > 0
+
+
+class _StalledFuture:
+    """A store call that never answers: waiting for it costs the full wait on the fake clock."""
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def result(self, timeout=None):
+        self.clock.now += timeout
+        raise concurrent.futures.TimeoutError()
+
+    def cancel(self):
+        return True
+
+
+class _StalledPool:
+    def __init__(self, clock):
+        self.clock = clock
+
+    def submit(self, fn, *args, **kwargs):
+        return _StalledFuture(self.clock)
+
+
+def test_five_picks_with_a_store_that_never_answers_still_finish_within_the_budget(key, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(ns, "time", clock)
+    monkeypatch.setattr(ns, "_CACHE_POOL", _StalledPool(clock))
+    monkeypatch.setattr(ns.requests, "get", clock.get_side_effect(
+        lambda i, u: FakeResponse(200, EMPTY_ANSWER), latency=0.0,
+    ))
+    result = tool(MiniStore())._run(tickers=["AAA", "BBB", "CCC", "DDD", "EEE"])
+    assert clock.now <= ns.TIME_BUDGET_SECONDS + 1e-9
+    assert result["cache_errors"] >= 5 and result["status"] in {"ok", "stopped"}
+    if result["status"] == "stopped":
+        assert result["stopped_reason"] == "budget"
+
+
+@pytest.mark.parametrize("failure", [
+    requests.ConnectionError(f"HTTPSConnectionPool(host='api.marketaux.com'): {SECRET_URL}"),
+    requests.Timeout(f"Read timed out. {SECRET_URL}"),
+    RuntimeError(f"boom {SECRET_URL}"),
+    FakeResponse(200, ValueError(f"bad json {SECRET_URL}")),
+    FakeResponse(402, {"error": {"message": SECRET_URL}}),
+    FakeResponse(429, {"error": {"message": SECRET_URL}}),
+    FakeResponse(500, SECRET_URL),
+])
+def test_no_failure_leaks_the_token_or_an_address(monkeypatch, caplog, failure):
+    monkeypatch.setenv(ns.API_KEY_ENV, SECRET)
+    install(monkeypatch, FakeProvider({"AAA": failure, "BBB": failure}))
+
+    class LeakyStore(MiniStore):
+        def get(self, key):
+            raise OSError(f"store down {SECRET_URL}")
+
+    cache = MiniStore()
+    with caplog.at_level("DEBUG"):
+        result = tool(LeakyStore())._run(tickers=["AAA", "BBB"])
+        tool(cache)._run(tickers=["AAA", "BBB"])
+    for text in (caplog.text, json.dumps(result), json.dumps(cache.data)):
+        assert SECRET not in text and "http" not in text
+    assert "api_token" not in caplog.text
+
+
+def test_a_leaky_exception_through_the_flow_leaves_the_token_out_of_steps_and_metrics(monkeypatch, caplog):
+    monkeypatch.setenv(ns.API_KEY_ENV, SECRET)
+    install(monkeypatch, FakeProvider(
+        {"AAA": requests.ConnectionError(SECRET_URL), "BBB": requests.ConnectionError(SECRET_URL)},
+    ))
+    steps, store = [], {}
+    with caplog.at_level("DEBUG"):
+        flow, _ = run_six_phases(store, None, step_callback=lambda index, step: steps.append(step))
+    assert flow.state.final_output is not None
+    news_steps = [s for s in steps if s.tool == ns.TOOL_NAME]
+    assert len(news_steps) == 1
+    metrics = json.dumps(flow._tracker.to_dict(), default=str)
+    published = flow.state.final_output.model_dump_json()
+    for text in (news_steps[0].tool_input, news_steps[0].log, caplog.text, metrics, published, json.dumps(store)):
+        assert SECRET not in text and "api_token" not in text
+    assert "http" not in news_steps[0].tool_input and "http" not in json.dumps(store)
+
+
+def test_full_run_with_a_refused_quota_completes_with_null_sentiment(key, monkeypatch):
+    provider = install(monkeypatch, FakeProvider({
+        "AAA": FakeResponse(402, {"error": {"code": "usage_limit_reached"}}),
+        "BBB": answer("BBB"),
+    }))
+    store = {}
+    flow, tools = run_six_phases(store, None)
+
+    assert flow.state.final_output is not None
+    market = flow.state.market_output
+    assert market.sentiment_available is False
+    assert [c.average_sentiment for c in market.candidate_stocks] == [None, None]
+    sent = json.loads(tools[COMPOSITE_TOOL].calls[0]["stocks_json"])
+    assert [s["average_sentiment"] for s in sent] == [None]
+    assert [c[1]["symbols"] for c in provider.calls] == ["AAA"]  # no request after the refusal
+    assert store == {}
+
+
 # ─── End to end through the six-phase Flow ─────────────────────────────────────
 
-def run_six_phases(store, provider_table):
+def run_six_phases(store, provider_table, step_callback=None):
     """A full offline kickoff for Technology with the real news tool; returns (flow, tools)."""
     with patch.dict("os.environ", ANTHROPIC_ENV), patch("prospect_ai_flow.TaskFactory") as mock_factory:
         mock_factory.return_value = type(mock_factory.return_value)()
-        flow = ProspectAIFlow(sentiment_cache=store)
+        flow = ProspectAIFlow(step_callback=step_callback, sentiment_cache=store)
         flow._tracker = ExecutionTracker()
         flow._tracker.start()
         flow._factory.build_task.return_value = make_task()
