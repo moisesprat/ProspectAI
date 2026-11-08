@@ -1,7 +1,7 @@
 """News sentiment for the grounded market picks (phase 3.1, D-04, D-06, D-08, D-09, D-10).
 
-Reddit never produced a sentiment number (9 of 9 baseline runs), so ``sentiment_available`` has
-been false in every production run since Phase 2 decision A. This module fills the one seam
+The old forum source never produced a sentiment number (9 of 9 baseline runs), so
+``sentiment_available`` has been false in every production run since Phase 2 decision A. This module fills the one seam
 that decision left, ``utils.market_records.serper_sentiment_by_ticker``, with the locked news
 provider's own per-ticker score.
 
