@@ -18,8 +18,6 @@ from schemas.agent_outputs import (
 ANTHROPIC_ENV = {
     "ANTHROPIC_API_KEY": "test-key",
     "MODEL": "claude-haiku-4-5-20251001",
-    "REDDIT_CLIENT_ID": "test-id",
-    "REDDIT_CLIENT_SECRET": "test-secret",
 }
 
 
@@ -417,7 +415,7 @@ class TestToolCallCount:
     def test_counts_per_phase_and_zero_when_none(self):
         tracker = ExecutionTracker()
         tracker.record_tool_call("market_analysis", "Search", 0.0, 1.0, True)
-        tracker.record_tool_call("market_analysis", "Reddit", 0.0, 1.0, False, "TimeoutError")
+        tracker.record_tool_call("market_analysis", "NewsSentiment", 0.0, 1.0, False, "TimeoutError")
         tracker.record_tool_call("technical_analysis", "TA", 0.0, 1.0, True)
         assert tracker.tool_call_count("market_analysis") == 2
         assert tracker.tool_call_count("technical_analysis") == 1
@@ -427,12 +425,12 @@ class TestToolCallCount:
 class TestToolCallGuard:
     def test_tool_phase_without_tool_calls_fails(self, flow):
         flow._tracker = ExecutionTracker()
-        task = _task_with_tools("Reddit Sentiment", "Search")
+        task = _task_with_tools("News Sentiment", "Search")
         with pytest.raises(MissingToolCallError) as info:
             flow._require_tool_calls("market_analysis", task)
         msg = str(info.value)
         assert "market_analysis" in msg
-        assert "Reddit Sentiment" in msg and "Search" in msg
+        assert "News Sentiment" in msg and "Search" in msg
         assert isinstance(info.value, RuntimeError)
 
     def test_tool_phase_with_tool_calls_passes(self, flow):
@@ -477,8 +475,6 @@ class TestToolCallGuard:
     def test_no_phase_gives_its_agent_tools(self, monkeypatch):
         """Every phase is Flow-owned or tool-less: the LLM never calls a tool, so it cannot skip one."""
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-        monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
         from prospect_ai_crew import TaskFactory
 
         factory = TaskFactory()

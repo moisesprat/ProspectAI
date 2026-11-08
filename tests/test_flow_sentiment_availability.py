@@ -13,8 +13,6 @@ from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput
 ANTHROPIC_ENV = {
     "ANTHROPIC_API_KEY": "test-key",
     "MODEL": "claude-haiku-4-5-20251001",
-    "REDDIT_CLIENT_ID": "test-id",
-    "REDDIT_CLIENT_SECRET": "test-secret",
 }
 
 

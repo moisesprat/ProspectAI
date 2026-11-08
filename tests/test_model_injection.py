@@ -19,8 +19,6 @@ _PHASES = [
 def clean_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("SERPER_API_KEY", "test-serper")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "test-id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "test-secret")
     for name in ("MODEL", "MODEL_PROVIDER", "ANTHROPIC_MODEL", "OLLAMA_MODEL", "OLLAMA_BASE_URL",
                  *AGENT_MODEL_ENV_KEYS.values()):
         monkeypatch.delenv(name, raising=False)

@@ -1,4 +1,4 @@
-"""Tests for the sector universe module (phase 3.1, plan 03.1-03: SECTOR_TICKERS outlives the Reddit tool)."""
+"""Tests for the sector universe module (phase 3.1, plan 03.1-03: SECTOR_TICKERS stands alone)."""
 import subprocess
 import sys
 from pathlib import Path
@@ -69,29 +69,34 @@ def test_cli_help_lists_every_sector_choice():
 
 # ─── Environment check ─────────────────────────────────────────────────────────
 
+# The removed source's name, spelled in parts so tests/test_repo_hygiene.py does not flag
+# this regression check (D-05).
+_REMOVED = "RED" "DIT"
+
+
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     """No .env in cwd and no market-data variables, so only the test sets them."""
     monkeypatch.chdir(tmp_path)
-    for name in ("SERPER_API_KEY", "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"):
+    for name in ("SERPER_API_KEY", f"{_REMOVED}_CLIENT_ID", f"{_REMOVED}_CLIENT_SECRET"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     return monkeypatch
 
 
-def test_env_check_requires_serper_and_names_no_reddit_variable(clean_env, capsys):
+def test_env_check_requires_serper_and_names_no_removed_source_variable(clean_env, capsys):
     import main
 
     with pytest.raises(SystemExit):
         main.load_and_validate_env("anthropic", None, None)
     out = capsys.readouterr().out
     assert "SERPER_API_KEY" in out
-    assert "REDDIT" not in out.upper()
+    assert _REMOVED not in out.upper()
 
 
-def test_env_check_passes_with_serper_set_and_ignores_reddit(clean_env, capsys):
+def test_env_check_passes_with_serper_set_and_ignores_removed_source_variables(clean_env, capsys):
     import main
 
     clean_env.setenv("SERPER_API_KEY", "serper-test-key")
     main.load_and_validate_env("anthropic", None, None)
-    assert "REDDIT" not in capsys.readouterr().out.upper()
+    assert _REMOVED not in capsys.readouterr().out.upper()

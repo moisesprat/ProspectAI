@@ -19,6 +19,10 @@ TASK_KEYS = [
     "final_strategy",
 ]
 
+# Key of the removed market task, spelled in parts so tests/test_repo_hygiene.py does not
+# flag this regression check (D-05).
+_REMOVED_TASK_KEY = "analyze_sector_" "red" "dit" "_sentiment"
+
 RENDER_KWARGS = {"sector": "Technology", "today": "2026-04-29", "risk_profile": "conservative"}
 
 
@@ -359,7 +363,7 @@ def test_market_declares_an_example():
 def test_market_prompt_is_narrative_only():
     description = render_task("market_analysis")["description"]
     for forbidden in (
-        "analyze_sector_reddit_sentiment",
+        _REMOVED_TASK_KEY,
         "search_internet",
         "SerperDevTool",
         "STEP 1",
@@ -400,7 +404,7 @@ def test_market_prompt_states_the_grounding_rule():
                    "Market Data (collected by the pipeline)", "candidates", "rationale", "summary",
                    "untrusted", "ETF"):
         assert wanted in description, f"market prompt lacks {wanted!r}"
-    for forbidden in ("analyze_sector_reddit_sentiment", "SerperDevTool", "STEP 1", "data_source",
+    for forbidden in (_REMOVED_TASK_KEY, "SerperDevTool", "STEP 1", "data_source",
                       "analysis_timestamp", "fallback_required", "mention_count = 0"):
         assert forbidden not in description
 

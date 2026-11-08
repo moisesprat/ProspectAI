@@ -91,8 +91,8 @@ def test_market_analysis_output_valid():
         ],
         summary=(
             "The Technology sector shows strong bullish momentum driven by AI adoption. "
-            "Apple leads mentions with positive sentiment across major subreddits including "
-            "r/investing and r/stocks, supported by robust earnings expectations."
+            "Apple leads mentions with positive sentiment across major news and web coverage, "
+            "supported by robust earnings expectations."
         ),
         analysis_timestamp=ts,
     )
@@ -115,8 +115,8 @@ def test_market_analysis_output_timestamp_optional():
         ],
         summary=(
             "The Technology sector shows strong bullish momentum driven by AI adoption. "
-            "Apple leads mentions with positive sentiment across major subreddits including "
-            "r/investing and r/stocks, supported by robust earnings expectations."
+            "Apple leads mentions with positive sentiment across major news and web coverage, "
+            "supported by robust earnings expectations."
         ),
     )
     assert output.analysis_timestamp is None
