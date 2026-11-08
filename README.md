@@ -21,7 +21,7 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 - **Multi-Agent System**: Five specialized AI agents across a six-task pipeline for rigorous investment analysis
 - **Anthropic Claude**: Powered by Claude models (Haiku 5.5 for the market, technical and fundamental steps, Sonnet 5.5 for the draft, critic and final steps; other Sonnet and Opus models supported)
 - **Ollama Support**: Run fully locally with Ollama models
-- **Real Reddit Integration**: Live Reddit sentiment analysis using public JSON endpoints — no credentials required
+- **Serper Web Search Discovery**: Candidate stocks come from three fixed Serper web searches per run
 - **Sector Analysis**: Analyze 5 major sectors (Technology, Healthcare, Finance, Energy, Consumer)
 - **Command-Line Interface**: Easy-to-use CLI with flexible configuration
 - **Environment-Based Config**: Secure `.env`-based configuration with startup validation
@@ -41,7 +41,7 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 
 | Task | Agent | Tools | Input context |
 |---|---|---|---|
-| 1. Market Analysis | MarketAnalyst | `RedditSentimentTool`, `SerperDevTool` | — |
+| 1. Market Analysis | MarketAnalyst | `PatientSerperDevTool` | — |
 | 2. Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool`, `TechnicalInterpretationTool` | Task 1 |
 | 3. Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool`, `FundamentalGraderTool` | Tasks 1–2 |
 | 4. Draft Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–3 |
@@ -52,8 +52,8 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 
 #### Market Analyst Agent (Task 1)
 - **Purpose**: Entry point — identifies candidate stocks from live market signals
-- **Function**: Analyzes Reddit discussions to surface trending stocks, incorporating macro/geopolitical context at execution time
-- **Data Sources**: Reddit API (PRAW) with Serper web search as fallback
+- **Function**: The Flow searches the web and the model picks trending stocks from the results, incorporating macro/geopolitical context at execution time
+- **Data Sources**: Serper web search (three fixed queries)
 - **Output**: Top 5 candidate stocks with sentiment scores and relevance metrics
 
 #### Technical Analyst Agent (Task 2)
@@ -120,8 +120,8 @@ ANTHROPIC_API_KEY=your_key_here
 # AGENT_FUNDAMENTAL_ANALYST_MODEL=
 # AGENT_INVESTOR_STRATEGIC_MODEL=
 
-# Market data — Reddit and/or Serper (at least one source required by the app)
-# SERPER_API_KEY=your_key_here
+# Market data — Serper web search (required)
+SERPER_API_KEY=your_key_here
 
 # When MODEL_PROVIDER=ollama
 # OLLAMA_BASE_URL=http://localhost:11434
@@ -199,10 +199,7 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 
 | Variable | Required | Description |
 |---|---|---|
-| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | One source\* | Reddit API (preferred for sentiment) |
-| `SERPER_API_KEY` | One source\* | Web search fallback when Reddit is unavailable |
-
-\*The app requires **at least one** of: Reddit credentials **or** Serper.
+| `SERPER_API_KEY` | Yes | Serper web search, the only discovery source for the market phase |
 
 ### Anthropic Claude Models
 
@@ -264,7 +261,6 @@ ProspectAI/
 ├── schemas/
 │   └── agent_outputs.py                # Pydantic output schemas for all 5 agents
 ├── utils/
-│   ├── reddit_sentiment_tool.py        # Reddit PRAW sentiment tool
 │   ├── technical_analysis_tool.py      # 13+ indicator calculator
 │   ├── technical_interpretation_tool.py
 │   ├── fundamental_data_tool.py        # yfinance financial data fetcher
@@ -285,7 +281,6 @@ ProspectAI/
 
 ```bash
 python tests/test_skeleton.py
-python tests/test_reddit_output.py Technology
 python tests/test_technical_analyst.py
 python tests/test_market_analyst_llm.py
 ```
@@ -308,7 +303,7 @@ twine upload dist/*
 | `ANTHROPIC_API_KEY` invalid | Verify key at [console.anthropic.com](https://console.anthropic.com) |
 | Ollama connection refused | Run `ollama serve` and verify `OLLAMA_BASE_URL` |
 | Ollama model not found | Run `ollama pull <model-name>` |
-| No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
+| No stocks found from search | Check `SERPER_API_KEY` and the Serper quota |
 
 ## Release Notes
 

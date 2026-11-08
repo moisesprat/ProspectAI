@@ -12,7 +12,7 @@ All agent behavior is defined in `config/agents.yaml`. You can change roles, goa
 agents:
   market_analyst:
     name: "Market Analyst Agent"
-    role: "Reddit Sentiment Analyst and Stock Screener"
+    role: "Market Screener and Writer"
     goal: "Identify the top 5 most-discussed stocks..."
     backstory: |
       You are a specialist in retail investor sentiment analysis...

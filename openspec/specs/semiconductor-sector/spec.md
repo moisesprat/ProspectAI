@@ -2,20 +2,20 @@
 
 ## Purpose
 
-Define the Semiconductors sector as a first-class analysis target in ProspectAI, including its ticker universe, Reddit sentiment configuration, CLI accessibility, web UI representation, and analytics tracking. This capability separates semiconductor names from the Technology sector to enable focused chip-industry analysis.
+Define the Semiconductors sector as a first-class analysis target in ProspectAI, including its ticker universe, CLI accessibility, web UI representation, and analytics tracking. This capability separates semiconductor names from the Technology sector to enable focused chip-industry analysis.
 
 ## Requirements
 
 ### Requirement: Semiconductors sector ticker universe
-The system SHALL define a `Semiconductors` sector in `RedditSentimentTool.SECTOR_TICKERS` containing the following tickers: `NVDA`, `AMD`, `INTC`, `QCOM`, `AVGO`, `MU`, `MRVL`, `ALAB`, `ASML`, `TSM`, `KLAC`, `LRCX`, `AMAT`, `ARM`, `SMCI`. No ticker in this list SHALL appear in any other sector's ticker list.
+The system SHALL define a `Semiconductors` sector in `utils.sector_universe.SECTOR_TICKERS` containing the following tickers: `NVDA`, `AMD`, `INTC`, `QCOM`, `AVGO`, `MU`, `MRVL`, `ALAB`, `ASML`, `TSM`, `KLAC`, `LRCX`, `AMAT`, `ARM`, `SMCI`. No ticker in this list SHALL appear in any other sector's ticker list.
 
 #### Scenario: Semiconductors sector returns correct tickers
-- **WHEN** `RedditSentimentTool._run("Semiconductors")` is called
-- **THEN** the returned candidate pool includes only tickers from the Semiconductors universe and no Technology-sector tickers
+- **WHEN** `SECTOR_TICKERS["Semiconductors"]` is read
+- **THEN** it holds only tickers from the Semiconductors universe and no Technology-sector tickers
 
 #### Scenario: Technology sector excludes semiconductor tickers
-- **WHEN** `RedditSentimentTool._run("Technology")` is called
-- **THEN** none of `NVDA`, `AMD`, `INTC`, `QCOM`, `AVGO`, `MU`, `MRVL`, `ALAB`, `SMCI`, `ARM` appear in the candidate pool
+- **WHEN** `SECTOR_TICKERS["Technology"]` is read
+- **THEN** none of `NVDA`, `AMD`, `INTC`, `QCOM`, `AVGO`, `MU`, `MRVL`, `ALAB`, `SMCI`, `ARM` appear in it
 
 #### Scenario: No ticker duplication across sectors
 - **WHEN** all sector ticker lists are compared pairwise
@@ -25,22 +25,8 @@ The system SHALL define a `Semiconductors` sector in `RedditSentimentTool.SECTOR
 The Technology sector ticker list SHALL include IT services companies `EPAM`, `INFY`, `CTSH`, `ACN`, `WIT`, `IBM`, `GLOB`, `DXC` in addition to its existing software/internet/cloud names.
 
 #### Scenario: IT services tickers are reachable via Technology sector
-- **WHEN** `RedditSentimentTool._run("Technology")` is called
-- **THEN** `EPAM`, `INFY`, `CTSH`, `ACN`, `WIT`, `IBM`, `GLOB`, `DXC` are in the monitored ticker universe for that run
-
-### Requirement: Semiconductors sector subreddit and keyword config
-The system SHALL define a `Semiconductors` entry in `RedditSentimentTool.SECTOR_CONFIG` with subreddits `["investing", "stocks", "wallstreetbets", "hardware", "chipdesign", "Stocks_picks", "StockInvest"]` and keywords covering chip-domain terminology.
-
-#### Scenario: Correct subreddits used for Semiconductors sentiment scrape
-- **WHEN** the Reddit sentiment tool runs for the `Semiconductors` sector
-- **THEN** it queries `r/hardware`, `r/chipdesign`, `r/Stocks_picks`, and `r/StockInvest` in addition to the three general investing subreddits
-
-### Requirement: Technology sector expanded subreddits
-The `Technology` entry in `RedditSentimentTool.SECTOR_CONFIG` SHALL include `Stocks_picks` and `StockInvest` in its subreddit list.
-
-#### Scenario: Technology sentiment scrape covers new subreddits
-- **WHEN** the Reddit sentiment tool runs for the `Technology` sector
-- **THEN** it queries `r/Stocks_picks` and `r/StockInvest` alongside the existing Technology subreddits
+- **WHEN** `SECTOR_TICKERS["Technology"]` is read
+- **THEN** `EPAM`, `INFY`, `CTSH`, `ACN`, `WIT`, `IBM`, `GLOB`, `DXC` are in it
 
 ### Requirement: Semiconductors sector accessible via CLI
 The CLI `--sector` argument SHALL accept `Semiconductors` as a valid value and reject unknown sector names with a clear error.
