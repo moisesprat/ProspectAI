@@ -23,7 +23,7 @@ from utils.market_records import (
     corpus_record,
     is_supported_sector,
 )
-from utils.reddit_sentiment_tool import RedditSentimentTool
+from utils.sector_universe import SECTOR_TICKERS
 
 # The nine sector names the web app offers (prospectai-web ui/data.js SECTORS).
 WEB_APP_SECTORS = (
@@ -35,7 +35,7 @@ WEB_APP_SECTORS = (
 # ─── Supported sectors ─────────────────────────────────────────────────────────
 
 def test_supported_sectors_are_the_package_sectors_plus_the_web_app_names():
-    assert SUPPORTED_SECTORS == set(RedditSentimentTool.SECTOR_TICKERS) | {"Financials", "Consumer Discretionary"}
+    assert SUPPORTED_SECTORS == set(SECTOR_TICKERS) | {"Financials", "Consumer Discretionary"}
     assert set(WEB_APP_SECTORS) <= SUPPORTED_SECTORS
 
 

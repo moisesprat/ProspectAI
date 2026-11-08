@@ -10,7 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
-from utils.reddit_sentiment_tool import RedditSentimentTool
+from utils.sector_universe import SECTOR_TICKERS
 
 
 def _global_model_configured(provider: str = "anthropic") -> bool:
@@ -44,11 +44,9 @@ def load_and_validate_env(provider: str, model, ollama_base_url):
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         missing.append("ANTHROPIC_API_KEY")
 
-    # Market data — at least one source required
-    has_reddit = os.getenv("REDDIT_CLIENT_ID") and os.getenv("REDDIT_CLIENT_SECRET")
-    has_serper = os.getenv("SERPER_API_KEY")
-    if not has_reddit and not has_serper:
-        missing.append("REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET  (or SERPER_API_KEY)")
+    # Market data: Serper is the only discovery source
+    if not os.getenv("SERPER_API_KEY"):
+        missing.append("SERPER_API_KEY")
 
     # Provider-specific required vars
     if provider == "ollama":
@@ -149,7 +147,7 @@ Examples:
         "--sector",
         type=str,
         default="Technology",
-        choices=list(RedditSentimentTool.SECTOR_TICKERS.keys()),
+        choices=list(SECTOR_TICKERS.keys()),
         help="Sector to analyze (default: Technology)"
     )
 

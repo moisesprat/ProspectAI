@@ -85,7 +85,7 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
-from utils.reddit_sentiment_tool import RedditSentimentTool
+from utils.sector_universe import SECTOR_TICKERS
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ SECTOR_ALIASES: Dict[str, str] = {
     "Consumer Discretionary": "Consumer",
 }
 
-SUPPORTED_SECTORS: FrozenSet[str] = frozenset(RedditSentimentTool.SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
+SUPPORTED_SECTORS: FrozenSet[str] = frozenset(SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
 
 
 def is_supported_sector(sector: Any) -> bool:
@@ -234,7 +234,7 @@ def build_market_corpus(
     return {
         "source": "unavailable",
         "sector": sector,
-        "universe": list(RedditSentimentTool.SECTOR_TICKERS.get(sector, [])),
+        "universe": list(SECTOR_TICKERS.get(sector, [])),
     }
 
 
