@@ -7,7 +7,7 @@ This package defines the typed Pydantic data contracts between the four agents i
 ### `MarketAnalysisOutput` (Task 1 — Market Analyst)
 
 Captures the top candidate stocks identified from web search results. Each `CandidateStock` includes mention count, average sentiment score (−1.0 to 1.0), a relevance score (0.0 to 1.0), and a rationale. `mention_count`, `average_sentiment` and `relevance_score` are optional: null means no source measured them (never 0 and never 0.5).
-- The Flow runs the Serper searches and measures every number, `sentiment_available` and the timestamp (`utils/market_records.py`); the LLM writes only `MarketNarrativeOutput` (up to 5 `{ticker, rationale}` picks from the supplied corpus, and the summary). Serper-path sentiment is null (plan 02-16, operator decision A).
+- The Flow runs the Serper searches and measures every number, `sentiment_available` and the timestamp (`utils/market_records.py`); the LLM writes only `MarketNarrativeOutput` (up to 5 `{ticker, rationale}` picks from the supplied corpus, and the summary). `average_sentiment` is the news provider's mapped per-ticker score, looked up by the Flow after the LLM chose its picks (`utils/news_sentiment.py`), or null when no key is set, too few articles exist or the lookup stopped; `sentiment_available` is true only when every candidate has a score (all or none).
 
 ### `TechnicalAnalysisOutput` (Task 2 — Technical Analyst)
 
