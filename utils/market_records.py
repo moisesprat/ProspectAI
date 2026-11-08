@@ -24,15 +24,19 @@ paths, chosen by what the search returned (``source`` of the corpus):
                  picks from the sector's static universe when one is known. Absence of
                  data is null, never 0 and never 0.5.
 
-Serper-path sentiment (operator decision A, plan 02-16 task 1). A tone score typed by
-the LLM from search snippets is a number the LLM produced, which the project rule
-forbids (CLAUDE.md, ROADMAP SC7). So on the Serper path ``average_sentiment`` is null
-and ``sentiment_available`` is false; the composite score then renormalises over the
-technical and fundamental components (an existing, tested path). The decision lives in
-one small function, ``serper_sentiment_by_ticker`` (below), so a later classifier can fill
-it in without touching the rest of the market phase. Today it returns None for every
-ticker. ``sentiment_available`` is true only when every published candidate has a
-measured sentiment.
+Serper-path sentiment (phase 3.1, D-04, D-08, D-09, D-10). A tone score typed by the LLM from
+search snippets is a number the LLM produced, which the project rule forbids (CLAUDE.md,
+ROADMAP SC7); operator decision A (plan 02-16) therefore left ``average_sentiment`` null on
+this path, and ``sentiment_available`` was false in every run. Decision A is superseded by the
+news provider's own per-ticker score (``utils.news_sentiment``): after the LLM has chosen, the
+Flow looks the grounded picks up through a Flow-owned tool and stores the mapped scores in
+``corpus["news_sentiment"]``. The one function that reads them is ``serper_sentiment_by_ticker``
+(below); a pick with no usable score keeps ``average_sentiment`` null, never 0.0, and
+``sentiment_available`` is true only when every published candidate has a measured sentiment
+(all or none, so the composite never mixes scored and unscored picks). SEED-261030-nun (a
+snippet classifier) stays deferred. When the lookup is skipped or fails every score is null and
+the composite renormalises over the technical and fundamental components (an existing, tested
+path).
 
 Search text is untrusted (prompt injection): the corpus the LLM reads is capped (a few
 snippets, bounded length, link host only), and the LLM has no tool and no number field.
@@ -317,12 +321,15 @@ def symbol_mention_counts(tickers: Iterable[str], snippets: Iterable[str]) -> Di
 def serper_sentiment_by_ticker(corpus: Dict[str, Any], tickers: Iterable[str]) -> Dict[str, Optional[float]]:
     """Per-ticker sentiment in [-1, 1] for the Serper path, or None when unmeasured.
 
-    Operator decision A (plan 02-16): no sentiment is measured on the Serper path, so
-    every ticker maps to None. This is the single plug-in point for a future classifier
-    (SEED-261030-nun): return a score for the tickers it can classify and None for the
-    rest. Do not return 0.0 for "unknown". The LLM must not be the source of the score.
+    Reads ``corpus["news_sentiment"]``, the ``{TICKER: score or None}`` map the Flow stored after
+    the news lookup (``utils.news_sentiment``, phase 3.1 D-04, D-08). A ticker absent from the
+    map, a non-finite or out-of-range value, a non-number and a map that is not a dict are all
+    None. Do not return 0.0 for "unknown". The LLM is never the source of the score.
     """
-    return {_ticker(t): None for t in tickers if _ticker(t)}
+    stored = corpus.get("news_sentiment")
+    if not isinstance(stored, dict):
+        stored = {}
+    return {_ticker(t): _ranged(stored.get(_ticker(t)), -1.0, 1.0) for t in tickers if _ticker(t)}
 
 
 # ── Picks ──────────────────────────────────────────────────────────────────────
@@ -376,6 +383,11 @@ def _picks(
         else:
             kept[ticker] = item.rationale
     return list(kept.items()), list(dropped.items())
+
+
+def grounded_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> List[str]:
+    """The tickers ``merge_market`` would publish, in the LLM's order (the kept picks of ``_picks``)."""
+    return [ticker for ticker, _ in _picks(narrative, corpus)[0]]
 
 
 def _log_dropped(dropped: List[Tuple[str, str]]) -> None:

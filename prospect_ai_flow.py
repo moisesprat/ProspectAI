@@ -34,12 +34,14 @@ from utils.market_records import (
     SUPPORTED_SECTORS,
     build_market_corpus,
     corpus_record,
+    grounded_picks,
     is_supported_sector,
     market_narrative_context,
     merge_market,
     require_market_picks,
     serper_queries,
 )
+from utils.news_sentiment import TOOL_NAME as NEWS_SENTIMENT_TOOL
 from utils.phase_runner import extract_model, run_phase
 from utils.technical_records import (
     build_technical_records,
@@ -178,7 +180,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         provider: Optional[str] = None,
         ollama_base_url: Optional[str] = None,
         config: Optional[Config] = None,
+        sentiment_cache: Any = None,
     ):
+        """``sentiment_cache``: the caller's store for news-sentiment lookups, keyed per symbol and UTC
+        day (the backend injects a dict-like store). The Flow only reads ``get(key)`` and assigns
+        ``store[key] = value``; None means no caching."""
         if config is not None and any(v is not None for v in (model, provider, ollama_base_url)):
             raise ValueError("Pass either config= or model/provider/ollama_base_url, not both")
         super().__init__()
@@ -192,7 +198,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             config if config is not None
             else Config(model=model, provider=provider, ollama_base_url=ollama_base_url)
         )
-        self._factory = TaskFactory(config=self.pipeline_config, tracker_getter=lambda: self._tracker)
+        self._factory = TaskFactory(
+            config=self.pipeline_config, tracker_getter=lambda: self._tracker, sentiment_cache=sentiment_cache,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -640,6 +648,29 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     # Flow methods
     # ─────────────────────────────────────────────────────────────────────────
+    async def _news_sentiment(self, phase: str, tickers: List[str]) -> Dict[str, Any]:
+        """The provider's sentiment per grounded pick, ``{TICKER: score or None}`` (phase 3.1, D-04, D-08).
+
+        Called after the LLM chose, so the model never sees a score before choosing. The tool runs
+        off the event loop and is visible as one agent_step; its only keyword is ``tickers``, so the
+        public tool_input never carries a key. A missing tool, a raising tool or an odd result is
+        no scores (every pick null), logged by exception class, and never stops the phase.
+        """
+        if not tickers:
+            return {}
+        try:
+            result = await call_tool(
+                self._factory.flow_tool(phase, NEWS_SENTIMENT_TOOL),
+                phase_index=0, step_callback=self._step_callback,
+                thought=f"Reading news sentiment for {len(tickers)} picks",
+                tickers=tickers,
+            )
+        except Exception as exc:
+            logger.warning("%s: news sentiment lookup failed (%s)", phase, type(exc).__name__)
+            return {}
+        scores = result.get("scores") if isinstance(result, dict) else None
+        return scores if isinstance(scores, dict) else {}
+
     @start()
     async def market_analysis(self):
         """Flow-owned phase (CORR-10, D-14, D-04): the Flow runs three fixed Serper queries, one
@@ -656,6 +687,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         is stored on the tracker (market_corpus) before the LLM runs. Serper is queried only for a
         supported sector (backstop for callers that kick the Flow off directly; run_analysis
         already refuses an unsupported sector, gap review WR-03).
+
+        Sentiment (phase 3.1, D-04, D-08): after the LLM chose and only on the Serper source, the
+        Flow looks the grounded picks up through the news-sentiment tool (``_news_sentiment``) and
+        stores the provider's scores on the corpus for ``merge_market``. The LLM never sees them
+        before choosing and never writes one; a pick without a usable score is null.
         """
         self._check_error()
         self._emit_start(0)
@@ -698,6 +734,8 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             validate=lambda n: require_market_picks(n, corpus),
             start_tracker=False,
         )
+        if corpus["source"] == "serper":
+            corpus["news_sentiment"] = await self._news_sentiment(phase, grounded_picks(narrative, corpus))
         self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
         kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, sector)
         if dropped:

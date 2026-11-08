@@ -773,6 +773,7 @@ class TestMergeTechnical:
 
 MARKET_PHASE = "market_analysis"
 SERPER_TOOL = "Search the internet with Serper"
+NEWS_TOOL = "lookup_news_sentiment"
 
 QUERIES_TECH = [
     "Technology sector stocks investors discussing 2026-04-29",
@@ -916,20 +917,22 @@ def test_both_sources_down(flow, serper, caplog):
         assert "ConnectionError" in caplog.text and "net down" not in caplog.text
 
 
-def test_market_phase_is_three_serper_searches_and_nothing_else(flow):
-    """D-04, D-05: the only tool the Flow asks the factory for in the market phase is the Serper search."""
+def test_market_phase_is_three_serper_searches_then_one_news_lookup(flow):
+    """D-04, D-05: the Flow asks the factory for the Serper search three times, then for the news tool once."""
     steps = []
     flow._step_callback = lambda idx, step: steps.append((step.tool, step.log))
     tools = market_tools()
+    tools[NEWS_TOOL] = StubTool(NEWS_TOOL, {"scores": {"AAA": 0.25}})
     wire_tools(flow, tools, phase=MARKET_PHASE)
     run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
     requested = [call.args for call in flow._factory.flow_tool.call_args_list]
-    assert requested == [(MARKET_PHASE, SERPER_TOOL)] * 3
-    assert [tool for tool, _ in steps] == [SERPER_TOOL] * 3
+    assert requested == [(MARKET_PHASE, SERPER_TOOL)] * 3 + [(MARKET_PHASE, NEWS_TOOL)]
+    assert [tool for tool, _ in steps] == [SERPER_TOOL] * 3 + [NEWS_TOOL]
     assert [log for _, log in steps] == [
         f"Searching the web for Technology sector stocks ({n} of 3)" for n in (1, 2, 3)
-    ]
+    ] + ["Reading news sentiment for 1 picks"]
     assert len(tools[SERPER_TOOL].calls) == 3
+    assert tools[NEWS_TOOL].calls == [{"tickers": ["AAA"]}]
 
 
 def test_unsupported_sector_makes_no_tool_call_and_is_unavailable(flow, caplog):
@@ -1342,7 +1345,7 @@ def test_market_agent_has_no_tools(monkeypatch):
     assert list(task.tools or []) == []
     assert task.output_pydantic is MarketNarrativeOutput
     assert factory._phase_config[MARKET_PHASE]["agent_tools"] == []
-    assert set(factory._phase_config[MARKET_PHASE]["flow_tools"]) == {SERPER_TOOL}
+    assert set(factory._phase_config[MARKET_PHASE]["flow_tools"]) == {SERPER_TOOL, NEWS_TOOL}
     assert factory.flow_tool(MARKET_PHASE, SERPER_TOOL).name == SERPER_TOOL
 
 
