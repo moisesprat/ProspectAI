@@ -1349,16 +1349,88 @@ def test_market_agent_has_no_tools(monkeypatch):
     assert factory.flow_tool(MARKET_PHASE, SERPER_TOOL).name == SERPER_TOOL
 
 
-# ─── Serper-path sentiment seam (operator decision A, plug-in for SEED-261030-nun) ──
+# ─── Serper-path sentiment seam (phase 3.1 D-04, D-08, D-10; was decision A) ──
 
 class TestSerperSentimentSeam:
-    def test_returns_none_for_every_ticker_today(self):
+    def test_returns_none_without_a_lookup(self):
         from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
 
         corpus = build_market_corpus(SERPER_OK, "Technology")
-        assert corpus["source"] == "serper"
+        assert corpus["source"] == "serper" and "news_sentiment" not in corpus
         assert serper_sentiment_by_ticker(corpus, ["AAA", "BBB"]) == {"AAA": None, "BBB": None}
         assert serper_sentiment_by_ticker(corpus, []) == {}
+
+    def test_returns_the_stored_score_per_ticker(self):
+        from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
+
+        corpus = build_market_corpus(SERPER_OK, "Technology")
+        corpus["news_sentiment"] = {"AAA": 0.4, "BBB": None, "CCC": -1.0, "DDD": 0.0}
+        assert serper_sentiment_by_ticker(corpus, ["aaa", "BBB", "CCC", "DDD", "EEE"]) == {
+            "AAA": 0.4, "BBB": None, "CCC": -1.0, "DDD": 0.0, "EEE": None,
+        }
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 2.0, -1.01, "0.4", True, None, [0.4]])
+    def test_unusable_stored_value_is_none(self, bad):
+        from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
+
+        corpus = build_market_corpus(SERPER_OK, "Technology")
+        corpus["news_sentiment"] = {"AAA": bad}
+        assert serper_sentiment_by_ticker(corpus, ["AAA"]) == {"AAA": None}
+
+    @pytest.mark.parametrize("bad", [None, [], "AAA", 0.4, [("AAA", 0.4)]])
+    def test_non_dict_news_sentiment_gives_none_for_every_ticker(self, bad):
+        from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
+
+        corpus = build_market_corpus(SERPER_OK, "Technology")
+        corpus["news_sentiment"] = bad
+        assert serper_sentiment_by_ticker(corpus, ["AAA", "BBB"]) == {"AAA": None, "BBB": None}
+
+    def test_merge_publishes_stored_scores_when_every_pick_is_scored(self):
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+        from datetime import datetime, timezone
+
+        corpus = mr.build_market_corpus(SERPER_OK, "Technology")
+        corpus["news_sentiment"] = {"AAA": 0.4, "BBB": 0.0}
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB")))
+        out = mr.merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+        assert [c.average_sentiment for c in out.candidate_stocks] == [0.4, 0.0]
+        assert out.sentiment_available is True
+
+    def test_merge_with_one_unscored_pick_is_unavailable_but_keeps_the_score(self):
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+        from datetime import datetime, timezone
+
+        corpus = mr.build_market_corpus(SERPER_OK, "Technology")
+        corpus["news_sentiment"] = {"AAA": 0.4, "BBB": None}
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB")))
+        out = mr.merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+        assert {c.ticker: c.average_sentiment for c in out.candidate_stocks} == {"AAA": 0.4, "BBB": None}
+        assert out.sentiment_available is False
+
+    def test_merge_ignores_scores_on_the_unavailable_source(self):
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+        from datetime import datetime, timezone
+
+        corpus = mr.build_market_corpus({"organic": []}, "Technology")
+        corpus["news_sentiment"] = {"AAPL": 0.4}
+        narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAPL")))
+        out = mr.merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+        assert out.candidate_stocks[0].average_sentiment is None
+        assert out.sentiment_available is False
+
+    def test_grounded_picks_are_the_kept_tickers_in_order(self):
+        import utils.market_records as mr
+        from schemas.agent_outputs import MarketNarrativeOutput
+
+        corpus = mr.build_market_corpus(SERPER_OK, "Technology")
+        narrative = MarketNarrativeOutput.model_validate(
+            mkt_payload(mkt_entry("BBB"), mkt_entry("ZZZ"), mkt_entry("AAA"), mkt_entry("BBB"))
+        )
+        assert mr.grounded_picks(narrative, corpus) == ["BBB", "AAA"]
+        assert mr.grounded_picks(None, corpus) == []
 
     def test_never_returns_zero_for_unmeasured(self):
         from utils.market_records import build_market_corpus, serper_sentiment_by_ticker
@@ -1399,6 +1471,115 @@ class TestSerperSentimentSeam:
         source = inspect.getsource(mr.serper_sentiment_by_ticker)
         for forbidden in ("requests", "http", "anthropic", "api_key", "socket"):
             assert forbidden not in source
+
+
+class TestNewsLookupInTheMarketPhase:
+    """The Flow looks the grounded picks up after the LLM chose, on the serper source only (D-04, D-08, D-10)."""
+
+    @staticmethod
+    def news_stub(output):
+        maker = RaisingTool if isinstance(output, Exception) else StubTool
+        return maker(NEWS_TOOL, output)
+
+    def test_called_once_after_the_llm_with_the_grounded_tickers_only(self, flow):
+        order = []
+
+        class OrderedNews(StubTool):
+            def _run(self, **kwargs):
+                order.append("news")
+                return super()._run(**kwargs)
+
+        tools = market_tools()
+        tools[NEWS_TOOL] = OrderedNews(NEWS_TOOL, {"scores": {"AAA": 0.4, "BBB": 0.1}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+
+        async def llm(*args, **kwargs):
+            order.append("llm")
+            return narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("ZZZ"), mkt_entry("BBB")))
+
+        with patch.object(flow, "_make_crew") as mc:
+            mc.return_value.akickoff = llm
+            asyncio.run(flow.market_analysis())
+
+        assert order == ["llm", "news"]
+        assert tools[NEWS_TOOL].calls == [{"tickers": ["AAA", "BBB"]}]
+        stocks = _by_ticker(flow.state.market_output)
+        assert list(stocks) == ["AAA", "BBB"]
+        assert (stocks["AAA"].average_sentiment, stocks["BBB"].average_sentiment) == (0.4, 0.1)
+        assert flow.state.market_output.sentiment_available is True
+
+    def test_the_llm_never_sees_a_score_before_choosing(self, flow):
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub({"scores": {"AAA": 0.987654}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+        for call in flow._factory.build_task.call_args_list:
+            assert "0.987654" not in str(call) and "news_sentiment" not in str(call)
+
+    def test_partial_scores_keep_the_scored_pick_and_flag_unavailable(self, flow):
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub({"scores": {"AAA": 0.4, "BBB": None}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+        out = flow.state.market_output
+        assert {c.ticker: c.average_sentiment for c in out.candidate_stocks} == {"AAA": 0.4, "BBB": None}
+        assert out.sentiment_available is False
+
+    def test_a_hostile_llm_score_is_still_overwritten(self, flow):
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub({"scores": {"AAA": 0.25}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA", average_sentiment=0.99, sentiment_available=True))))
+        assert flow.state.market_output.candidate_stocks[0].average_sentiment == 0.25
+
+    def test_not_called_on_the_unavailable_source(self, flow):
+        tools = market_tools(serper={"organic": []})
+        tools[NEWS_TOOL] = self.news_stub({"scores": {"AAPL": 0.4}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"))))
+        assert tools[NEWS_TOOL].calls == []
+        assert (MARKET_PHASE, NEWS_TOOL) not in [c.args for c in flow._factory.flow_tool.call_args_list]
+        out = flow.state.market_output
+        assert out.candidate_stocks[0].average_sentiment is None and out.sentiment_available is False
+
+    def test_a_raising_tool_leaves_every_sentiment_null_with_one_warning(self, flow, caplog):
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub(RuntimeError("boom api_token=SECRET"))
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        with caplog.at_level("WARNING"):
+            run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))))
+        out = flow.state.market_output
+        assert [c.average_sentiment for c in out.candidate_stocks] == [None, None]
+        assert out.sentiment_available is False
+        warnings = [r.getMessage() for r in caplog.records if "news sentiment lookup failed" in r.getMessage()]
+        assert len(warnings) == 1 and "RuntimeError" in warnings[0]
+        assert "SECRET" not in caplog.text and "boom" not in caplog.text
+
+    def test_an_unwired_tool_name_leaves_every_sentiment_null_with_one_warning(self, flow, caplog):
+        wire_tools(flow, market_tools(), phase=MARKET_PHASE)
+        with caplog.at_level("WARNING"):
+            run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+        assert flow.state.market_output.candidate_stocks[0].average_sentiment is None
+        warnings = [r.getMessage() for r in caplog.records if "news sentiment lookup failed" in r.getMessage()]
+        assert len(warnings) == 1 and "KeyError" in warnings[0]
+
+    @pytest.mark.parametrize("result", ["not a dict", None, {"scores": "x"}, {"scores": ["AAA"]}, {}])
+    def test_an_odd_tool_result_is_no_scores(self, flow, result):
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub(result)
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+        assert flow.state.market_output.candidate_stocks[0].average_sentiment is None
+
+    def test_the_tool_input_carries_only_tickers(self, flow):
+        steps = []
+        flow._step_callback = lambda idx, step: steps.append(step)
+        tools = market_tools()
+        tools[NEWS_TOOL] = self.news_stub({"scores": {"AAA": 0.4}})
+        wire_tools(flow, tools, phase=MARKET_PHASE)
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+        news_steps = [s for s in steps if s.tool == NEWS_TOOL]
+        assert len(news_steps) == 1 and json.loads(news_steps[0].tool_input) == {"tickers": ["AAA"]}
 
 
 # ─── market records (plan 02-16) ───────────────────────────────────────────────

@@ -115,6 +115,10 @@ class TestTaskFactoryWiring:
         # The market phase is Flow-owned (plan 02-16): its tools are called by the Flow.
         assert factory._phase_config["market_analysis"]["agent_tools"] == []
         assert factory.search_tool in factory._phase_config["market_analysis"]["flow_tools"].values()
+        # ... and they are exactly the Serper search and the news-sentiment lookup (phase 3.1).
+        assert set(factory._phase_config["market_analysis"]["flow_tools"]) == {
+            "Search the internet with Serper", "lookup_news_sentiment",
+        }
 
     def test_wrapping_twice_records_one_call_per_invocation(self):
         tracker = ExecutionTracker()

@@ -76,3 +76,53 @@ def test_critic_task_description_no_longer_checks_deterministically_enforced_ite
     for removed_item in ("WAIT_ENTRY_ZERO_ALLOC", "CONCENTRATION_BREACH", "BUCKET_SUM_ERROR",
                           "COMPOSITE_SCORE_MISMATCH", "INVALID_ACTION", "ALLOCATION_MISMATCH"):
         assert removed_item not in critique_section
+
+
+# ─── Corpus-backed scores (phase 3.1 D-04, D-10, decision 02-17) ───────────────
+
+def _published_market(news_sentiment):
+    """The market output the Flow publishes for picks AAA and BBB when the news lookup returned these scores."""
+    from datetime import datetime, timezone
+
+    from schemas.agent_outputs import MarketNarrativeOutput
+    from tests.test_llm_role_audit import SERPER_OK, mkt_entry, mkt_payload
+    from utils.market_records import build_market_corpus, merge_market
+
+    corpus = build_market_corpus(SERPER_OK, "Technology")
+    corpus["news_sentiment"] = news_sentiment
+    narrative = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB")))
+    return merge_market("Technology", corpus, narrative, datetime.now(timezone.utc))
+
+
+def test_composite_gets_every_news_score_when_all_picks_are_scored(flow):
+    from tests.test_llm_role_audit import prime_draft
+    from utils.strategy_assembly import composite_inputs
+
+    prime_draft(flow)
+    market = _published_market({"AAA": 0.3, "BBB": -0.5})
+    assert market.sentiment_available is True
+    sent = composite_inputs(market, flow.state.technical_output, flow.state.fundamental_output)
+    assert {s["ticker"]: s["average_sentiment"] for s in sent} == {"AAA": 0.3, "BBB": -0.5}
+
+
+def test_composite_gets_null_for_every_ticker_when_one_pick_is_unscored(flow):
+    from tests.test_llm_role_audit import prime_draft
+    from utils.strategy_assembly import composite_inputs
+
+    prime_draft(flow)
+    market = _published_market({"AAA": 0.3, "BBB": None})
+    assert market.sentiment_available is False
+    assert {c.ticker: c.average_sentiment for c in market.candidate_stocks} == {"AAA": 0.3, "BBB": None}
+    sent = composite_inputs(market, flow.state.technical_output, flow.state.fundamental_output)
+    assert [s["average_sentiment"] for s in sent] == [None, None]
+
+
+def test_a_real_neutral_news_score_is_a_score_not_missing(flow):
+    from tests.test_llm_role_audit import prime_draft
+    from utils.strategy_assembly import composite_inputs
+
+    prime_draft(flow)
+    market = _published_market({"AAA": 0.0, "BBB": 0.0})
+    assert market.sentiment_available is True
+    sent = composite_inputs(market, flow.state.technical_output, flow.state.fundamental_output)
+    assert [s["average_sentiment"] for s in sent] == [0.0, 0.0]
