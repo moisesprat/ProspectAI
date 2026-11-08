@@ -41,7 +41,7 @@ from utils.market_records import (
     require_market_picks,
     serper_queries,
 )
-from utils.news_sentiment import TOOL_NAME as NEWS_SENTIMENT_TOOL
+from utils.news_sentiment import PROVIDER as NEWS_SENTIMENT_PROVIDER, TOOL_NAME as NEWS_SENTIMENT_TOOL
 from utils.phase_runner import extract_model, run_phase
 from utils.technical_records import (
     build_technical_records,
@@ -654,9 +654,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         Called after the LLM chose, so the model never sees a score before choosing. The tool runs
         off the event loop and is visible as one agent_step; its only keyword is ``tickers``, so the
         public tool_input never carries a key. A missing tool, a raising tool or an odd result is
-        no scores (every pick null), logged by exception class, and never stops the phase.
+        no scores (every pick null), logged by exception class, and never stops the phase. What
+        happened is stored on the tracker as ``sentiment_lookup`` (plan 03.1-09), so a null score
+        always has a recorded reason.
         """
         if not tickers:
+            self._record_sentiment_lookup(None, "no_picks", status="skipped")
             return {}
         try:
             result = await call_tool(
@@ -667,9 +670,28 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             )
         except Exception as exc:
             logger.warning("%s: news sentiment lookup failed (%s)", phase, type(exc).__name__)
+            self._record_sentiment_lookup(None, "tool_error")
             return {}
+        self._record_sentiment_lookup(result, "tool_error")
         scores = result.get("scores") if isinstance(result, dict) else None
         return scores if isinstance(scores, dict) else {}
+
+    def _record_sentiment_lookup(self, result: Any, fallback_reason: str, status: str = "error") -> None:
+        """Store the lookup record on the tracker: the tool's result, or a fixed record when the call failed.
+
+        Only known keys are copied, so nothing the tool might add (or an odd result) reaches the
+        public metrics; a result that is not a dict is recorded as the fixed error record.
+        """
+        tracker = self._tracker
+        if not tracker:
+            return
+        record: Dict[str, Any] = {
+            "provider": NEWS_SENTIMENT_PROVIDER, "status": status, "stopped_reason": fallback_reason,
+            "scores": {}, "articles": {}, "requests": 0, "cache_hits": 0, "cache_errors": 0,
+        }
+        if isinstance(result, dict):
+            record.update({k: result[k] for k in record if k in result})
+        tracker.set_sentiment_lookup(record)
 
     @start()
     async def market_analysis(self):

@@ -468,3 +468,39 @@ class TestPhaseTokenDeltas:
 
             phase = _tracked_phase(tracker, "market_analysis")
             assert (phase["input_tokens"], phase["output_tokens"]) == (100, 50)
+
+
+class TestSentimentLookup:
+    """The additive sentiment_lookup field of metrics v2 (plan 03.1-09)."""
+
+    RECORD = {
+        "provider": "marketaux", "status": "stopped", "stopped_reason": "quota",
+        "scores": {"AAA": 0.3, "BBB": None}, "articles": {"AAA": 4, "BBB": None},
+        "requests": 2, "cache_hits": 0, "cache_errors": 0,
+    }
+
+    def test_absent_until_set(self):
+        assert "sentiment_lookup" not in _tracker_with_pipeline().to_dict()
+
+    def test_present_once_set_and_version_unchanged(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_sentiment_lookup(self.RECORD)
+        d = tracker.to_dict()
+        assert d["sentiment_lookup"] == self.RECORD
+        assert d["metrics_version"] == 2
+
+    def test_stored_and_returned_as_copies(self):
+        record = {**self.RECORD, "scores": {"AAA": 0.3}}
+        tracker = _tracker_with_pipeline()
+        tracker.set_sentiment_lookup(record)
+        record["scores"]["AAA"] = 0.9
+        first = tracker.to_dict()
+        assert first["sentiment_lookup"]["scores"] == {"AAA": 0.3}
+        first["sentiment_lookup"]["scores"]["AAA"] = -1.0
+        assert tracker.to_dict()["sentiment_lookup"]["scores"] == {"AAA": 0.3}
+
+    def test_none_clears_it(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_sentiment_lookup(self.RECORD)
+        tracker.set_sentiment_lookup(None)
+        assert "sentiment_lookup" not in tracker.to_dict()

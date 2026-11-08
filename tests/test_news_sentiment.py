@@ -719,3 +719,68 @@ def test_full_run_reuses_the_store_without_a_second_request(key, monkeypatch):
     flow, _ = run_six_phases(store, PROVIDER_TABLE)
     assert len(provider.calls) == 2
     assert flow.state.market_output.sentiment_available is True
+
+
+# ─── The run's sentiment_lookup record (plan 03.1-09, Task 2) ──────────────────
+
+LOOKUP_KEYS = {"provider", "status", "stopped_reason", "scores", "articles", "requests", "cache_hits", "cache_errors"}
+
+
+def test_a_scored_run_records_the_lookup(key, monkeypatch):
+    install(monkeypatch, FakeProvider(PROVIDER_TABLE))
+    flow, _ = run_six_phases({}, PROVIDER_TABLE)
+    record = flow._tracker.to_dict()["sentiment_lookup"]
+    assert set(record) == LOOKUP_KEYS
+    assert (record["provider"], record["status"], record["stopped_reason"]) == ("marketaux", "ok", None)
+    assert record["scores"] == {"AAA": 0.3, "BBB": -0.5} and record["articles"] == {"AAA": 12, "BBB": 3}
+    assert (record["requests"], record["cache_hits"], record["cache_errors"]) == (2, 0, 0)
+    assert flow._tracker.to_dict()["metrics_version"] == 2
+
+
+def test_a_stopped_run_records_why(key, monkeypatch):
+    install(monkeypatch, FakeProvider({"AAA": FakeResponse(429, {"error": {"code": "rate_limit_reached"}})}))
+    flow, _ = run_six_phases({}, None)
+    record = flow._tracker.to_dict()["sentiment_lookup"]
+    assert (record["status"], record["stopped_reason"], record["requests"]) == ("stopped", "rate_limited", 1)
+    assert record["scores"] == {"AAA": None, "BBB": None}
+
+
+def test_an_unkeyed_run_records_no_key(monkeypatch):
+    monkeypatch.delenv(ns.API_KEY_ENV, raising=False)
+    install(monkeypatch, FakeProvider(PROVIDER_TABLE))
+    flow, _ = run_six_phases({}, None)
+    record = flow._tracker.to_dict()["sentiment_lookup"]
+    assert (record["status"], record["requests"]) == ("no_key", 0)
+
+
+def test_a_raising_tool_records_the_fixed_error_record(key, monkeypatch):
+    def boom(self, tickers):
+        raise RuntimeError(f"tool exploded {SECRET_URL}")
+
+    monkeypatch.setattr(ns.NewsSentimentTool, "_run", boom)
+    flow, _ = run_six_phases({}, None)
+    assert flow.state.final_output is not None
+    record = flow._tracker.to_dict()["sentiment_lookup"]
+    assert record == {
+        "provider": "marketaux", "status": "error", "stopped_reason": "tool_error",
+        "scores": {}, "articles": {}, "requests": 0, "cache_hits": 0, "cache_errors": 0,
+    }
+
+
+def test_the_lookup_record_holds_no_token_and_no_address(monkeypatch):
+    monkeypatch.setenv(ns.API_KEY_ENV, SECRET)
+    install(monkeypatch, FakeProvider({"AAA": requests.ConnectionError(SECRET_URL), "BBB": FakeResponse(402, SECRET_URL)}))
+    flow, _ = run_six_phases({}, None)
+    text = json.dumps(flow._tracker.to_dict()["sentiment_lookup"])
+    assert SECRET not in text and "http" not in text and "api_token" not in text
+
+
+def test_no_grounded_picks_records_a_skipped_lookup():
+    import asyncio
+
+    with patch.dict("os.environ", ANTHROPIC_ENV), patch("prospect_ai_flow.TaskFactory"):
+        flow = ProspectAIFlow()
+        flow._tracker = ExecutionTracker()
+        assert asyncio.run(flow._news_sentiment("market_analysis", [])) == {}
+    record = flow._tracker.to_dict()["sentiment_lookup"]
+    assert (record["status"], record["stopped_reason"], record["requests"]) == ("skipped", "no_picks", 0)
