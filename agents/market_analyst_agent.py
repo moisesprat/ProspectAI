@@ -2,7 +2,7 @@ from .base_agent import BaseAgent
 from crewai import Agent
 
 class MarketAnalystAgent(BaseAgent):
-    """Agent responsible for identifying trending stocks from Reddit discussions"""
+    """Agent responsible for picking trending stocks from the web search results the Flow collects"""
     
     def __init__(self, config_path: str = None):
         super().__init__(
@@ -11,7 +11,7 @@ class MarketAnalystAgent(BaseAgent):
         )
         
     def create_agent(self) -> Agent:
-        """Create the Market Analyst Agent with Reddit analysis tools"""
+        """Create the Market Analyst Agent (no tools; the Flow supplies the search results)"""
         return Agent(
             role=self.role,
             goal=self.goal,
