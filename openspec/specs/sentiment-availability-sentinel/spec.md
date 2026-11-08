@@ -1,7 +1,7 @@
 # sentiment-availability-sentinel Specification
 
 ## Purpose
-Ensures that when sentiment data (Reddit and Serper fallback) is unavailable for a sector,
+Ensures that when sentiment data is unavailable for a sector,
 the pipeline treats it as explicitly missing rather than fabricating a neutral score —
 propagating `sentiment_available=False` through Market Analysis, Composite Scoring, Critic
 review, and the final report.
@@ -9,19 +9,19 @@ review, and the final report.
 ## Requirements
 
 ### Requirement: Sentiment unavailability is explicit, never a fabricated neutral score
-`MarketAnalysisOutput` SHALL include `sentiment_available: bool` (default `True`). When
-both `RedditSentimentTool` and the Serper fallback fail to produce sentiment data for the
-sector, the Market Analyst SHALL set `sentiment_available=False` and SHALL set
-`average_sentiment=null` for the affected candidates, rather than `0.0`.
+`MarketAnalysisOutput` SHALL include `sentiment_available: bool` (default `True`). Sentiment SHALL
+be unavailable when the sentiment lookup returns no score for at least one published
+candidate (no provider score, too few articles, a provider error, or no search data). The
+Flow SHALL then set `sentiment_available=False` and `average_sentiment=null` for the
+affected candidates, rather than `0.0`.
 
-#### Scenario: Both sentiment sources fail
-- **WHEN** `RedditSentimentTool` sets `fallback_required=True` and the Serper fallback also
-  fails
+#### Scenario: The sentiment lookup returns no score
+- **WHEN** the sentiment lookup returns no score for a published candidate
 - **THEN** `MarketAnalysisOutput.sentiment_available` is `False` and `average_sentiment` is
-  `null` for every candidate, not `0.0`
+  `null` for that candidate, not `0.0`
 
-#### Scenario: At least one sentiment source succeeds
-- **WHEN** `RedditSentimentTool` returns usable data
+#### Scenario: Every published candidate has a score
+- **WHEN** the sentiment lookup returns a score for every published candidate
 - **THEN** `sentiment_available=True` and `average_sentiment` holds the measured value
 
 ### Requirement: Composite scoring renormalizes when sentiment is unavailable

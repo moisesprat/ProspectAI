@@ -120,6 +120,12 @@ class ExecutionTracker:
     so a run without a market phase looks exactly as before, and it is part of the partial
     snapshot of a failed run. Like the rest of the metrics it is public (SSE, stored
     report), which is why the record holds link hosts only.
+
+    ``sentiment_lookup`` is a second additive field of v2 (plan 03.1-09): why a run's sentiment is
+    or is not present. It appears only after ``set_sentiment_lookup`` (the Flow stores it on the
+    Serper path), so a run without a lookup has no such key. It holds the provider name, fixed
+    status and reason strings, tickers, scores, article counts and request, cache-hit and
+    cache-error counts, never a token, a request address or exception text.
     """
 
     def __init__(self) -> None:
@@ -131,6 +137,7 @@ class ExecutionTracker:
         self._model_totals: Dict[str, Dict[str, int]] = {}
         self._tool_calls: List[ToolCallRecord] = []
         self._market_corpus: Optional[Dict[str, Any]] = None
+        self._sentiment_lookup: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -149,6 +156,11 @@ class ExecutionTracker:
         """Store the market corpus record (None clears it)."""
         with self._lock:
             self._market_corpus = copy.deepcopy(record) if record is not None else None
+
+    def set_sentiment_lookup(self, record: Optional[Dict[str, Any]]) -> None:
+        """Store the news-sentiment lookup record (None clears it)."""
+        with self._lock:
+            self._sentiment_lookup = copy.deepcopy(record) if record is not None else None
 
     # ── Tool calls ─────────────────────────────────────────────────────────────
 
@@ -354,6 +366,7 @@ class ExecutionTracker:
         with self._lock:
             records = list(self._tool_calls)
             market_corpus = copy.deepcopy(self._market_corpus)
+            sentiment_lookup = copy.deepcopy(self._sentiment_lookup)
         by_phase: Dict[str, List[ToolCallRecord]] = {}
         for rec in records:
             by_phase.setdefault(rec.phase, []).append(rec)
@@ -457,6 +470,8 @@ class ExecutionTracker:
         }
         if market_corpus is not None:
             metrics["market_corpus"] = market_corpus
+        if sentiment_lookup is not None:
+            metrics["sentiment_lookup"] = sentiment_lookup
         return metrics
 
     @staticmethod

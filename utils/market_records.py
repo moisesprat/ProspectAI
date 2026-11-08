@@ -1,49 +1,45 @@
 """Flow-built market corpus and the merge with the LLM's picks (CORR-10, D-13, D-14).
 
-The Market Analyst used to call Reddit, decide whether to fall back to Serper
-(on Haiku 5.5 it never did, so tickers came from model memory, REBASELINE item 9),
-copy Reddit's numbers, invent ``mention_count=0`` and ``relevance_score=0.5`` on
-fallback, type a sentiment score from snippet tone, and write the timestamp and a
-``data_source`` field the schema does not have. Now the Flow calls both tools itself
-(utils/flow_tools.py), this module turns their output into one *corpus*, and the LLM
-only chooses up to five tickers from that corpus and writes a rationale for each plus a
-summary (``MarketNarrativeOutput``). ``merge_market`` joins the picks with numbers the
-Flow measured into the published ``MarketAnalysisOutput``. Nothing the LLM answers can
-reach a number, a flag or the timestamp.
+The Market Analyst used to choose its own tool calls, copy tool numbers, invent
+``mention_count=0`` and ``relevance_score=0.5``, type a sentiment score from snippet tone,
+and write the timestamp and a ``data_source`` field the schema does not have. Now the Flow
+calls the search tool itself (utils/flow_tools.py), this module turns its output into one
+*corpus*, and the LLM only chooses up to five tickers from that corpus and writes a
+rationale for each plus a summary (``MarketNarrativeOutput``). ``merge_market`` joins the
+picks with numbers the Flow measured into the published ``MarketAnalysisOutput``. Nothing
+the LLM answers can reach a number, a flag or the timestamp.
 
-Three paths, chosen by what the tools returned (``source`` of the corpus):
+Candidate discovery is Serper only (change sentiment-source-replacement, D-04, D-05). Two
+paths, chosen by what the search returned (``source`` of the corpus):
 
-    reddit       Reddit returned candidates and did not ask for fallback. The LLM may
-                 only pick listed tickers (a pick outside the list has no measured
-                 data: it is dropped with a warning, and if none remain the phase
-                 answer is a validation failure that spends the retry budget).
-                 mention_count, average_sentiment and relevance_score are Reddit's.
-    serper       Reddit asked for fallback and the three fixed Serper queries returned
-                 usable results (merged, de-duplicated and bounded, see below). mention_count is the number of times the ticker symbol
-                 appears in the result titles and snippets (the Reddit tool's own
-                 matching rule, see ``symbol_mention_counts``); relevance_score is that
-                 count divided by the largest count among the published picks, rounded
-                 to 2 decimals, null when the largest count is 0. Sentiment comes from
+    serper       The Flow ran the three fixed Serper queries and they returned usable
+                 results (merged, de-duplicated and bounded, see below). mention_count is
+                 the number of times the ticker symbol appears in the result titles and
+                 snippets (``symbol_mention_counts``); relevance_score is that count
+                 divided by the largest count among the published picks, rounded to 2
+                 decimals, null when the largest count is 0. Sentiment comes from
                  ``serper_sentiment_by_ticker`` (below).
-    unavailable  Neither source produced data. mention_count, relevance_score and
+    unavailable  Search produced no data. mention_count, relevance_score and
                  average_sentiment are null, sentiment_available is false, and the LLM
                  picks from the sector's static universe when one is known. Absence of
                  data is null, never 0 and never 0.5.
 
-Serper-path sentiment (operator decision A, plan 02-16 task 1). A tone score typed by
-the LLM from search snippets is a number the LLM produced, which the project rule
-forbids (CLAUDE.md, ROADMAP SC7). So on the Serper path ``average_sentiment`` is null
-and ``sentiment_available`` is false; the composite score then renormalises over the
-technical and fundamental components (an existing, tested path). The decision lives in
-one small function, ``serper_sentiment_by_ticker``, so a later classifier (planted seed
-SEED-261030-nun: TypeSafe "Jev", or a self-hosted finance sentiment model) can fill it
-in without touching the rest of the market phase. Today it returns None for every
-ticker. ``sentiment_available`` is true only when every published candidate has a
-measured sentiment.
+Serper-path sentiment (phase 3.1, D-04, D-08, D-09, D-10). A tone score typed by the LLM from
+search snippets is a number the LLM produced, which the project rule forbids (CLAUDE.md,
+ROADMAP SC7); operator decision A (plan 02-16) therefore left ``average_sentiment`` null on
+this path, and ``sentiment_available`` was false in every run. Decision A is superseded by the
+news provider's own per-ticker score (``utils.news_sentiment``): after the LLM has chosen, the
+Flow looks the grounded picks up through a Flow-owned tool and stores the mapped scores in
+``corpus["news_sentiment"]``. The one function that reads them is ``serper_sentiment_by_ticker``
+(below); a pick with no usable score keeps ``average_sentiment`` null, never 0.0, and
+``sentiment_available`` is true only when every published candidate has a measured sentiment
+(all or none, so the composite never mixes scored and unscored picks). SEED-261030-nun (a
+snippet classifier) stays deferred. When the lookup is skipped or fails every score is null and
+the composite renormalises over the technical and fundamental components (an existing, tested
+path).
 
-Text from Reddit and Serper is untrusted (prompt injection): the corpus the LLM reads
-is capped (a few posts or snippets, bounded length, link host only), and the LLM has no
-tool and no number field.
+Search text is untrusted (prompt injection): the corpus the LLM reads is capped (a few
+snippets, bounded length, link host only), and the LLM has no tool and no number field.
 
 Search and corpus bounds (change 02-23, G2/G3). The Flow runs three fixed Serper queries one
 after another (``serper_queries``; the model never picks a query). Their organic results are
@@ -57,7 +53,6 @@ from the text, and the corpus stops at ``MAX_SNIPPETS`` (20) results of at most
 Grounding (change 02-23, review CR-01). A pick is published only if it is well formed
 (``utils.ticker_matching.is_valid_ticker``) and traceable to the data the model saw:
 
-    reddit       the ticker is one of the listed candidates
     serper       the symbol appears in the result text by the same rule that produces
                  ``mention_count`` (``symbol_mention_counts``), so a pick always has a
                  count of at least 1, and a false positive (a common word) can neither be
@@ -72,11 +67,13 @@ an empty candidate list, and before relevance is scaled, so an ETF can never set
 largest count (gap review WR-01). The Flow's later ``filter_candidates`` call stays as a
 backstop.
 
-A pick that fails is dropped with a warning that carries the reason and the ticker cut to
-20 characters shown with its repr, never corpus text. When none is left the phase answer is
-a validation failure that spends the bounded retry budget; the retry feedback is fixed text
-per source. What this does not prove: a symbol present in the text is not shown to be a
-real listed company. That check stays Phase 4 (CORR-06).
+The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
+not_in_sector_universe, excluded_etf. A pick that fails is dropped with a warning that
+carries the reason and the ticker cut to 20 characters shown with its repr, never corpus
+text. When none is left the phase answer is a validation failure that spends the bounded
+retry budget; the retry feedback is fixed text per source. What this does not prove: a
+symbol present in the text is not shown to be a real listed company. That check stays
+Phase 4 (CORR-06).
 
 ``require_market_picks`` is the ``validate=`` callback for
 ``utils.phase_runner.run_phase``.
@@ -92,15 +89,14 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
-from utils.reddit_sentiment_tool import RedditSentimentTool
+from utils.sector_universe import SECTOR_TICKERS
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
 
 PHASE = "market_analysis"
 
-# Tool names the Flow looks up in TaskFactory (the Serper name is the crewai tool's own).
-REDDIT_TOOL_NAME = "analyze_sector_reddit_sentiment"
+# Tool name the Flow looks up in TaskFactory (the Serper name is the crewai tool's own).
 SERPER_TOOL_NAME = "Search the internet with Serper"
 
 # Bounds on untrusted text that reaches the prompt.
@@ -108,8 +104,6 @@ MAX_SNIPPETS = 20
 SNIPPET_CHARS = 300
 MAX_CORPUS_TEXT_CHARS = 6000
 MAX_RECORD_BYTES = 8192
-MAX_SAMPLE_POSTS = 3
-SAMPLE_POST_CHARS = 200
 
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
@@ -118,14 +112,14 @@ _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
 # Names the web app (prospectai-web ui/data.js SECTORS) and the backend (SECTOR_ETF) use for two
 # package sectors. They are accepted as supported but NOT remapped, so a run for them behaves
-# exactly as before (no Reddit config, empty universe, Serper path); remapping is a separate
-# decision (gap review WR-03).
+# exactly as before (empty universe, Serper path); remapping is a separate decision (gap
+# review WR-03).
 SECTOR_ALIASES: Dict[str, str] = {
     "Financials": "Finance",
     "Consumer Discretionary": "Consumer",
 }
 
-SUPPORTED_SECTORS: FrozenSet[str] = frozenset(RedditSentimentTool.SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
+SUPPORTED_SECTORS: FrozenSet[str] = frozenset(SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
 
 
 def is_supported_sector(sector: Any) -> bool:
@@ -134,7 +128,7 @@ def is_supported_sector(sector: Any) -> bool:
 
 
 def serper_queries(sector: str, today: str) -> List[str]:
-    """The three fixed Serper queries of the fallback search, the original wording first."""
+    """The three fixed Serper queries of the market search, the original wording first."""
     return [
         f"{sector} sector stocks investors discussing {today}",
         f"{sector} sector stocks to watch analyst picks {today}",
@@ -161,47 +155,11 @@ def _ranged(value: Any, low: float, high: float) -> Optional[float]:
     return number if number is not None and low <= number <= high else None
 
 
-def _count(value: Any) -> Optional[int]:
-    number = _finite(value)
-    if number is None or number < 0 or number != int(number):
-        return None
-    return int(number)
-
-
 def _ticker(value: Any) -> str:
     return value.strip().upper() if isinstance(value, str) else ""
 
 
 # ── Corpus ─────────────────────────────────────────────────────────────────────
-
-def reddit_fallback_required(reddit_result: Any) -> bool:
-    """True when the Flow must ask Serper: Reddit flagged fallback or gave no usable candidate."""
-    if not isinstance(reddit_result, dict) or reddit_result.get("fallback_required"):
-        return True
-    return not _reddit_candidates(reddit_result)
-
-
-def _reddit_candidates(reddit_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-    raw = reddit_result.get("candidate_stocks")
-    if not isinstance(raw, list):
-        return []
-    out: Dict[str, Dict[str, Any]] = {}
-    for item in raw:
-        ticker = _ticker(item.get("ticker")) if isinstance(item, dict) else ""
-        if not ticker or ticker in out:
-            continue
-        posts = item.get("sample_posts")
-        out[ticker] = {
-            "ticker": ticker,
-            "mention_count": _count(item.get("mention_count")),
-            "average_sentiment": _ranged(item.get("average_sentiment"), -1.0, 1.0),
-            "relevance_score": _ranged(item.get("relevance_score"), 0.0, 1.0),
-            "sample_posts": [
-                _scrub(p)[:SAMPLE_POST_CHARS] for p in (posts if isinstance(posts, list) else []) if isinstance(p, str)
-            ][:MAX_SAMPLE_POSTS],
-        }
-    return list(out.values())
-
 
 def _serper_snippets(serper_result: Any) -> List[Dict[str, str]]:
     """The bounded merged corpus: one result dict, or a list of them (a non-dict entry is ignored).
@@ -253,15 +211,13 @@ def _serper_snippets(serper_result: Any) -> List[Dict[str, str]]:
 
 
 def build_market_corpus(
-    reddit_result: Any,
     serper_results: Any,
     sector: str,
     queries: Optional[List[str]] = None,
     failed_queries: int = 0,
 ) -> Dict[str, Any]:
-    """The data the LLM chooses from, with ``source`` in reddit / serper / unavailable.
+    """The data the LLM chooses from, with ``source`` in serper / unavailable.
 
-    reddit:      ``candidates`` (ticker, the three Reddit numbers, up to 3 sample post titles)
     serper:      ``snippets`` (title plus snippet text, link host only) merged from one result or a
                  list of results, plus the ``queries`` that were run and the ``failed_queries`` count
     unavailable: ``universe``, the sector's static ticker list (empty when unknown)
@@ -270,8 +226,6 @@ def build_market_corpus(
     it is not shown to the model (``market_narrative_context`` builds its body from explicit
     keys) and is not stored (``corpus_record`` builds its record from explicit keys).
     """
-    if not reddit_fallback_required(reddit_result):
-        return {"source": "reddit", "sector": sector, "candidates": _reddit_candidates(reddit_result)}
     snippets = _serper_snippets(serper_results)
     if snippets:
         return {
@@ -284,7 +238,7 @@ def build_market_corpus(
     return {
         "source": "unavailable",
         "sector": sector,
-        "universe": list(RedditSentimentTool.SECTOR_TICKERS.get(sector, [])),
+        "universe": list(SECTOR_TICKERS.get(sector, [])),
     }
 
 
@@ -292,7 +246,6 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
     """The JSON-safe record of what the model saw, stored in ``execution_metrics.market_corpus``.
 
     serper:      source, queries, failed_queries, results (text and host per entry), truncated
-    reddit:      source, candidates (ticker, the three numbers, sample posts), truncated
     unavailable: source, universe, truncated
 
     The record never holds a full URL: results carry the link host only with URLs scrubbed from
@@ -311,22 +264,6 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
             key: [{"text": s["text"], "host": s["host"]} for s in corpus["snippets"]],
             "truncated": False,
         }
-    elif source == "reddit":
-        key = "candidates"
-        record = {
-            "source": source,
-            key: [
-                {
-                    "ticker": c["ticker"],
-                    "mention_count": c["mention_count"],
-                    "average_sentiment": c["average_sentiment"],
-                    "relevance_score": c["relevance_score"],
-                    "sample_posts": list(c["sample_posts"]),
-                }
-                for c in corpus["candidates"]
-            ],
-            "truncated": False,
-        }
     else:
         key = "universe"
         record = {"source": source, key: list(corpus["universe"]), "truncated": False}
@@ -339,13 +276,8 @@ def corpus_record(corpus: Dict[str, Any]) -> Dict[str, Any]:
 def market_narrative_context(corpus: Dict[str, Any]) -> str:
     """JSON the LLM reads. The numbers may be cited in prose; they cannot be changed."""
     source = corpus["source"]
-    if source == "reddit":
+    if source == "serper":
         body: Dict[str, Any] = {
-            "candidates": corpus["candidates"],
-            "note": "Choose only tickers listed in candidates.",
-        }
-    elif source == "serper":
-        body = {
             "search_results": corpus["snippets"],
             "note": (
                 "Choose only tickers whose symbol itself appears in these search results. "
@@ -356,7 +288,7 @@ def market_narrative_context(corpus: Dict[str, Any]) -> str:
         body = {
             "universe": corpus["universe"],
             "note": (
-                "No Reddit or search data was available this run. "
+                "No search data was available this run. "
                 + (
                     "Choose tickers from universe only; others are discarded."
                     if corpus["universe"]
@@ -389,21 +321,20 @@ def symbol_mention_counts(tickers: Iterable[str], snippets: Iterable[str]) -> Di
 def serper_sentiment_by_ticker(corpus: Dict[str, Any], tickers: Iterable[str]) -> Dict[str, Optional[float]]:
     """Per-ticker sentiment in [-1, 1] for the Serper path, or None when unmeasured.
 
-    Operator decision A (plan 02-16): no sentiment is measured on the Serper path, so
-    every ticker maps to None. This is the single plug-in point for a future classifier
-    (SEED-261030-nun): return a score for the tickers it can classify and None for the
-    rest. Do not return 0.0 for "unknown". The LLM must not be the source of the score.
+    Reads ``corpus["news_sentiment"]``, the ``{TICKER: score or None}`` map the Flow stored after
+    the news lookup (``utils.news_sentiment``, phase 3.1 D-04, D-08). A ticker absent from the
+    map, a non-finite or out-of-range value, a non-number and a map that is not a dict are all
+    None. Do not return 0.0 for "unknown". The LLM is never the source of the score.
     """
-    return {_ticker(t): None for t in tickers if _ticker(t)}
+    stored = corpus.get("news_sentiment")
+    if not isinstance(stored, dict):
+        stored = {}
+    return {_ticker(t): _ranged(stored.get(_ticker(t)), -1.0, 1.0) for t in tickers if _ticker(t)}
 
 
 # ── Picks ──────────────────────────────────────────────────────────────────────
 
 _SOURCE_HINTS = {
-    "reddit": (
-        "choose tickers from the listed candidates only; a ticker is 1 to 5 capital letters"
-        "; sector and broad-market ETFs are not eligible"
-    ),
     "serper": (
         "choose only tickers whose symbol itself appears in the search results; "
         "a ticker is 1 to 5 capital letters; sector and broad-market ETFs are not eligible"
@@ -423,14 +354,12 @@ def _picks(
 
     Every pick is checked in this order: the format check (all sources), then the source
     rule, then the ETF exclusion (so an ungrounded ETF keeps its source reason). Reasons are
-    a closed set: invalid_format, not_in_reddit_candidates, not_in_search_results,
-    not_in_sector_universe, excluded_etf.
+    a closed set: invalid_format, not_in_search_results, not_in_sector_universe, excluded_etf.
     """
     source = corpus["source"]
     excluded = excluded_tickers_for_sector(corpus.get("sector", ""))
     items = narrative.candidates if narrative is not None else []
     tickers = [_ticker(item.ticker) for item in items]
-    listed = {c["ticker"] for c in corpus.get("candidates", [])} if source == "reddit" else set()
     universe = set(corpus.get("universe", [])) if source == "unavailable" else set()
     counts: Dict[str, int] = {}
     if source == "serper":
@@ -445,8 +374,6 @@ def _picks(
             continue
         if not is_valid_ticker(ticker):
             dropped[ticker] = "invalid_format"
-        elif source == "reddit" and ticker not in listed:
-            dropped[ticker] = "not_in_reddit_candidates"
         elif source == "serper" and counts.get(ticker, 0) <= 0:
             dropped[ticker] = "not_in_search_results"
         elif source == "unavailable" and universe and ticker not in universe:
@@ -456,6 +383,11 @@ def _picks(
         else:
             kept[ticker] = item.rationale
     return list(kept.items()), list(dropped.items())
+
+
+def grounded_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> List[str]:
+    """The tickers ``merge_market`` would publish, in the LLM's order (the kept picks of ``_picks``)."""
+    return [ticker for ticker, _ in _picks(narrative, corpus)[0]]
 
 
 def _log_dropped(dropped: List[Tuple[str, str]]) -> None:
@@ -515,13 +447,7 @@ def merge_market(
     relevance: Dict[str, Optional[float]] = {t: None for t in tickers}
     sentiment: Dict[str, Optional[float]] = {t: None for t in tickers}
 
-    if source == "reddit":
-        measured = {c["ticker"]: c for c in corpus["candidates"]}
-        for t in tickers:
-            mentions[t] = measured[t]["mention_count"]
-            relevance[t] = measured[t]["relevance_score"]
-            sentiment[t] = measured[t]["average_sentiment"]
-    elif source == "serper":
+    if source == "serper":
         counts = symbol_mention_counts(tickers, [s["text"] for s in corpus["snippets"]])
         largest = max(counts.values(), default=0)
         scores = serper_sentiment_by_ticker(corpus, tickers)

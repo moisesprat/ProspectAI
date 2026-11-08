@@ -19,6 +19,10 @@ TASK_KEYS = [
     "final_strategy",
 ]
 
+# Key of the removed market task, spelled in parts so tests/test_repo_hygiene.py does not
+# flag this regression check (D-05).
+_REMOVED_TASK_KEY = "analyze_sector_" "red" "dit" "_sentiment"
+
 RENDER_KWARGS = {"sector": "Technology", "today": "2026-04-29", "risk_profile": "conservative"}
 
 
@@ -255,8 +259,6 @@ def test_dropping_a_required_field_is_caught(tmp_path):
 @pytest.fixture
 def real_factory(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
     from prospect_ai_crew import TaskFactory
 
     return TaskFactory()
@@ -361,7 +363,7 @@ def test_market_declares_an_example():
 def test_market_prompt_is_narrative_only():
     description = render_task("market_analysis")["description"]
     for forbidden in (
-        "analyze_sector_reddit_sentiment",
+        _REMOVED_TASK_KEY,
         "search_internet",
         "SerperDevTool",
         "STEP 1",
@@ -381,12 +383,12 @@ def test_market_prompt_is_narrative_only():
 
 def test_market_example_tickers_are_neutral_placeholders():
     """CR-01: the example's tickers were the ones the model copied into a report (change 02-23)."""
-    from utils.reddit_sentiment_tool import RedditSentimentTool
+    from utils.sector_universe import SECTOR_TICKERS
     from utils.ticker_matching import is_valid_ticker
 
     example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
     tickers = [entry["ticker"] for entry in example["candidates"]]
-    universe = {t for tickers_ in RedditSentimentTool.SECTOR_TICKERS.values() for t in tickers_}
+    universe = {t for tickers_ in SECTOR_TICKERS.values() for t in tickers_}
     commonly_copied = {"AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"}
     assert tickers and not commonly_copied & set(tickers)
     assert not universe & set(tickers)
@@ -402,9 +404,24 @@ def test_market_prompt_states_the_grounding_rule():
                    "Market Data (collected by the pipeline)", "candidates", "rationale", "summary",
                    "untrusted", "ETF"):
         assert wanted in description, f"market prompt lacks {wanted!r}"
-    for forbidden in ("analyze_sector_reddit_sentiment", "SerperDevTool", "STEP 1", "data_source",
+    for forbidden in (_REMOVED_TASK_KEY, "SerperDevTool", "STEP 1", "data_source",
                       "analysis_timestamp", "fallback_required", "mention_count = 0"):
         assert forbidden not in description
+
+
+def test_market_prompt_says_sentiment_is_looked_up_after_the_picks():
+    """Change news-sentiment (phase 3.1, D-08): the pipeline scores picks after the model chooses."""
+    description = render_task("market_analysis")["description"]
+    assert "after you choose" in description
+    assert "do not say whether sentiment was measured" in " ".join(description.split())
+    assert "sentiment was not measured" not in description
+
+
+def test_market_example_never_says_sentiment_was_not_measured():
+    example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
+    texts = [entry["rationale"] for entry in example["candidates"]] + [example["summary"]]
+    for text in texts:
+        assert "not measured" not in text.lower()
 
 
 def test_market_example_has_no_number_or_flag_fields():

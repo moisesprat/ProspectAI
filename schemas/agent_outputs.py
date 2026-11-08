@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class CandidateStock(BaseModel):
     ticker: str = Field(..., description="Stock ticker symbol, e.g. AAPL")
     # mention_count and relevance_score are measured by the Flow (utils/market_records.py,
-    # CORR-10). None means no source measured them (Reddit and Serper both unavailable):
+    # CORR-10). None means no source measured them (no search data):
     # absence of data is null, never 0 and never 0.5.
     mention_count: Optional[int] = Field(None, ge=0)
     # None means sentiment could not be measured (all sources failed) -- see
@@ -45,9 +45,9 @@ class MarketAnalysisOutput(BaseModel):
     candidate_stocks: List[CandidateStock] = Field(..., min_length=1, max_length=10)
     summary: str = Field(..., min_length=100)
     analysis_timestamp: Optional[datetime] = None
-    # False when both RedditSentimentTool and the Serper fallback failed to
-    # produce sentiment data for this sector -- candidates then carry
-    # average_sentiment=None rather than a fabricated neutral 0.0.
+    # False unless every candidate has measured sentiment (Serper news search);
+    # candidates then carry average_sentiment=None rather than a fabricated
+    # neutral 0.0.
     sentiment_available: bool = True
 
     @model_validator(mode="after")

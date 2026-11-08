@@ -30,18 +30,18 @@ from utils.fundamental_records import (
     require_narrative_coverage,
 )
 from utils.market_records import (
-    REDDIT_TOOL_NAME,
     SERPER_TOOL_NAME,
     SUPPORTED_SECTORS,
     build_market_corpus,
     corpus_record,
+    grounded_picks,
     is_supported_sector,
     market_narrative_context,
     merge_market,
-    reddit_fallback_required,
     require_market_picks,
     serper_queries,
 )
+from utils.news_sentiment import PROVIDER as NEWS_SENTIMENT_PROVIDER, TOOL_NAME as NEWS_SENTIMENT_TOOL
 from utils.phase_runner import extract_model, run_phase
 from utils.technical_records import (
     build_technical_records,
@@ -180,7 +180,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         provider: Optional[str] = None,
         ollama_base_url: Optional[str] = None,
         config: Optional[Config] = None,
+        sentiment_cache: Any = None,
     ):
+        """``sentiment_cache``: the caller's store for news-sentiment lookups, keyed per symbol and UTC
+        day (the backend injects a dict-like store). The Flow only reads ``get(key)`` and assigns
+        ``store[key] = value``; None means no caching."""
         if config is not None and any(v is not None for v in (model, provider, ollama_base_url)):
             raise ValueError("Pass either config= or model/provider/ollama_base_url, not both")
         super().__init__()
@@ -194,7 +198,9 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             config if config is not None
             else Config(model=model, provider=provider, ollama_base_url=ollama_base_url)
         )
-        self._factory = TaskFactory(config=self.pipeline_config, tracker_getter=lambda: self._tracker)
+        self._factory = TaskFactory(
+            config=self.pipeline_config, tracker_getter=lambda: self._tracker, sentiment_cache=sentiment_cache,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -642,22 +648,72 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     # Flow methods
     # ─────────────────────────────────────────────────────────────────────────
+    async def _news_sentiment(self, phase: str, tickers: List[str]) -> Dict[str, Any]:
+        """The provider's sentiment per grounded pick, ``{TICKER: score or None}`` (phase 3.1, D-04, D-08).
+
+        Called after the LLM chose, so the model never sees a score before choosing. The tool runs
+        off the event loop and is visible as one agent_step; its only keyword is ``tickers``, so the
+        public tool_input never carries a key. A missing tool, a raising tool or an odd result is
+        no scores (every pick null), logged by exception class, and never stops the phase. What
+        happened is stored on the tracker as ``sentiment_lookup`` (plan 03.1-09), so a null score
+        always has a recorded reason.
+        """
+        if not tickers:
+            self._record_sentiment_lookup(None, "no_picks", status="skipped")
+            return {}
+        try:
+            result = await call_tool(
+                self._factory.flow_tool(phase, NEWS_SENTIMENT_TOOL),
+                phase_index=0, step_callback=self._step_callback,
+                thought=f"Reading news sentiment for {len(tickers)} picks",
+                tickers=tickers,
+            )
+        except Exception as exc:
+            logger.warning("%s: news sentiment lookup failed (%s)", phase, type(exc).__name__)
+            self._record_sentiment_lookup(None, "tool_error")
+            return {}
+        self._record_sentiment_lookup(result, "tool_error")
+        scores = result.get("scores") if isinstance(result, dict) else None
+        return scores if isinstance(scores, dict) else {}
+
+    def _record_sentiment_lookup(self, result: Any, fallback_reason: str, status: str = "error") -> None:
+        """Store the lookup record on the tracker: the tool's result, or a fixed record when the call failed.
+
+        Only known keys are copied, so nothing the tool might add (or an odd result) reaches the
+        public metrics; a result that is not a dict is recorded as the fixed error record.
+        """
+        tracker = self._tracker
+        if not tracker:
+            return
+        record: Dict[str, Any] = {
+            "provider": NEWS_SENTIMENT_PROVIDER, "status": status, "stopped_reason": fallback_reason,
+            "scores": {}, "articles": {}, "requests": 0, "cache_hits": 0, "cache_errors": 0,
+        }
+        if isinstance(result, dict):
+            record.update({k: result[k] for k in record if k in result})
+        tracker.set_sentiment_lookup(record)
+
     @start()
     async def market_analysis(self):
-        """Flow-owned phase (CORR-10, D-14): the Flow calls Reddit and, when Reddit asks for
-        fallback, Serper three times (three fixed queries, one after another); the LLM only
-        chooses up to 5 tickers from that corpus and writes their rationales and the summary.
+        """Flow-owned phase (CORR-10, D-14, D-04): the Flow runs three fixed Serper queries, one
+        after another; the LLM only chooses up to 5 tickers from that corpus and writes their
+        rationales and the summary.
 
-        Every tool call runs off the event loop (call_tool, STALL-02), so the bounded sleeps never
-        block it. The Serper calls are sequential on purpose: a deterministic step and call order,
-        and each query keeps its own plan 02-08 retry budget, so the worst case is three budgets
-        of sleep, all on worker threads. Every number, the sentiment flag and the timestamp are
-        built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
-        only if it is well formed and grounded in the corpus (CR-01). A tool that raises is
-        logged by exception class and treated as no data, never as invented data. The corpus the
-        model saw is stored on the tracker (market_corpus) before the LLM runs. Serper is queried
-        only for a supported sector (backstop for callers that kick the Flow off directly;
-        run_analysis already refuses an unsupported sector, gap review WR-03).
+        Every tool call runs off the event loop (call_tool, STALL-02), so the bounded retry sleeps
+        never block it. The Serper calls are sequential on purpose: a deterministic step and call
+        order, and each query keeps its own plan 02-08 retry budget, so the worst case is three
+        budgets of sleep, all on worker threads. Every number, the sentiment flag and the timestamp
+        are built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
+        only if it is well formed and grounded in the corpus (CR-01). A tool that raises is logged
+        by exception class and treated as no data, never as invented data. The corpus the model saw
+        is stored on the tracker (market_corpus) before the LLM runs. Serper is queried only for a
+        supported sector (backstop for callers that kick the Flow off directly; run_analysis
+        already refuses an unsupported sector, gap review WR-03).
+
+        Sentiment (phase 3.1, D-04, D-08): after the LLM chose and only on the Serper source, the
+        Flow looks the grounded picks up through the news-sentiment tool (``_news_sentiment``) and
+        stores the provider's scores on the corpus for ``merge_market``. The LLM never sees them
+        before choosing and never writes one; a pick without a usable score is null.
         """
         self._check_error()
         self._emit_start(0)
@@ -667,23 +723,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         tracker = self._tracker
         if tracker:
             tracker.start_phase(phase, llm=self._phase_llm(phase))
-        try:
-            reddit = await call_tool(
-                self._factory.flow_tool(phase, REDDIT_TOOL_NAME),
-                phase_index=0, step_callback=self._step_callback,
-                thought=f"Reading Reddit discussion for {sector}",
-                sector=sector,
-            )
-        except Exception as exc:
-            logger.warning("%s: Reddit tool failed (%s); using the Serper fallback", phase, type(exc).__name__)
-            reddit = None
-
         serper_results = []
         queries: List[str] = []
         failed_queries = 0
-        if reddit_fallback_required(reddit) and not is_supported_sector(sector):
-            logger.warning("%s: unsupported sector; skipping the Serper fallback", phase)
-        elif reddit_fallback_required(reddit):
+        if not is_supported_sector(sector):
+            logger.warning("%s: unsupported sector; skipping the Serper search", phase)
+        else:
             queries = serper_queries(sector, today)
             for number, query in enumerate(queries, 1):
                 try:
@@ -700,7 +745,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                     )
 
         corpus = build_market_corpus(
-            reddit, serper_results or None, sector, queries=queries, failed_queries=failed_queries,
+            serper_results or None, sector, queries=queries, failed_queries=failed_queries,
         )
         if tracker:
             tracker.set_market_corpus(corpus_record(corpus))
@@ -711,6 +756,8 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             validate=lambda n: require_market_picks(n, corpus),
             start_tracker=False,
         )
+        if corpus["source"] == "serper":
+            corpus["news_sentiment"] = await self._news_sentiment(phase, grounded_picks(narrative, corpus))
         self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
         kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, sector)
         if dropped:

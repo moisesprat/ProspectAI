@@ -27,8 +27,6 @@ from utils.phase_runner import (
 ANTHROPIC_ENV = {
     "ANTHROPIC_API_KEY": "test-key",
     "MODEL": "claude-haiku-4-5-20251001",
-    "REDDIT_CLIENT_ID": "test-id",
-    "REDDIT_CLIENT_SECRET": "test-secret",
 }
 
 ALLOWED_TRENDS = ["Very Weak", "Weak", "Neutral", "Strong", "Very Strong"]
@@ -268,8 +266,6 @@ def test_extract_model_error_has_no_raw_text():
 @pytest.fixture
 def real_factory(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
     from prospect_ai_crew import TaskFactory
 
     return TaskFactory()
@@ -399,7 +395,7 @@ _PHASE_METHODS = [
 def _stub_result(schema):
     """Crew result whose pydantic payload is a spec'd stand-in for ``schema``."""
     if schema is MarketNarrativeOutput:
-        # A real model: the Flow-owned market phase checks the pick against the Reddit corpus.
+        # A real model: the Flow-owned market phase checks the pick against the search corpus.
         model = MarketNarrativeOutput.model_validate(mkt_payload(mkt_entry("AAA")))
     elif schema is FundamentalNarrativeOutput:
         # A real model: the Flow-owned fundamental phase checks narrative coverage.

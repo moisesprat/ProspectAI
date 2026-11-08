@@ -21,7 +21,8 @@ ProspectAI is a multi-agent investment analysis system built on the CrewAI frame
 - **Multi-Agent System**: Five specialized AI agents across a six-task pipeline for rigorous investment analysis
 - **Anthropic Claude**: Powered by Claude models (Haiku 5.5 for the market, technical and fundamental steps, Sonnet 5.5 for the draft, critic and final steps; other Sonnet and Opus models supported)
 - **Ollama Support**: Run fully locally with Ollama models
-- **Real Reddit Integration**: Live Reddit sentiment analysis using public JSON endpoints — no credentials required
+- **Serper Web Search Discovery**: Candidate stocks come from three fixed Serper web searches per run
+- **News Sentiment**: Each picked stock gets the Marketaux news sentiment score for the last 7 days (optional `NEWS_SENTIMENT_API_KEY`; null when absent or when too few articles exist)
 - **Sector Analysis**: Analyze 5 major sectors (Technology, Healthcare, Finance, Energy, Consumer)
 - **Command-Line Interface**: Easy-to-use CLI with flexible configuration
 - **Environment-Based Config**: Secure `.env`-based configuration with startup validation
@@ -41,7 +42,7 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 
 | Task | Agent | Tools | Input context |
 |---|---|---|---|
-| 1. Market Analysis | MarketAnalyst | `RedditSentimentTool`, `SerperDevTool` | — |
+| 1. Market Analysis | MarketAnalyst | `PatientSerperDevTool` | — |
 | 2. Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool`, `TechnicalInterpretationTool` | Task 1 |
 | 3. Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool`, `FundamentalGraderTool` | Tasks 1–2 |
 | 4. Draft Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–3 |
@@ -52,9 +53,10 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 
 #### Market Analyst Agent (Task 1)
 - **Purpose**: Entry point — identifies candidate stocks from live market signals
-- **Function**: Analyzes Reddit discussions to surface trending stocks, incorporating macro/geopolitical context at execution time
-- **Data Sources**: Reddit API (PRAW) with Serper web search as fallback
-- **Output**: Top 5 candidate stocks with sentiment scores and relevance metrics
+- **Function**: The Flow searches the web and the model picks trending stocks from the results, incorporating macro/geopolitical context at execution time
+- **Data Sources**: Serper web search (three fixed queries)
+- **Sentiment**: After the model chooses its picks, the pipeline looks up each pick's news sentiment from Marketaux (recent articles about the company, cached per symbol per UTC day). The model never writes a score. A stock with no articles in the window, or no lookup, has a null sentiment and the run continues
+- **Output**: Top 5 candidate stocks with sentiment scores (null when unavailable) and relevance metrics
 
 #### Technical Analyst Agent (Task 2)
 - **Purpose**: Quantitative technical analysis
@@ -120,8 +122,8 @@ ANTHROPIC_API_KEY=your_key_here
 # AGENT_FUNDAMENTAL_ANALYST_MODEL=
 # AGENT_INVESTOR_STRATEGIC_MODEL=
 
-# Market data — Reddit and/or Serper (at least one source required by the app)
-# SERPER_API_KEY=your_key_here
+# Market data — Serper web search (required)
+SERPER_API_KEY=your_key_here
 
 # When MODEL_PROVIDER=ollama
 # OLLAMA_BASE_URL=http://localhost:11434
@@ -199,10 +201,8 @@ prospectai --ollama --url http://192.168.1.100:11434 --sector Finance
 
 | Variable | Required | Description |
 |---|---|---|
-| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | One source\* | Reddit API (preferred for sentiment) |
-| `SERPER_API_KEY` | One source\* | Web search fallback when Reddit is unavailable |
-
-\*The app requires **at least one** of: Reddit credentials **or** Serper.
+| `SERPER_API_KEY` | Yes | Serper web search, the only discovery source for the market phase |
+| `NEWS_SENTIMENT_API_KEY` | Optional | Per-stock news sentiment (Marketaux); without it sentiment is null. The free tier allows 100 requests a day shared by everyone using the key: when a day's quota runs out, the report shows null sentiment and `execution_metrics.sentiment_lookup.stopped_reason` says why. A stock needs at least one article from the last 7 days to get a score |
 
 ### Anthropic Claude Models
 
@@ -264,7 +264,6 @@ ProspectAI/
 ├── schemas/
 │   └── agent_outputs.py                # Pydantic output schemas for all 5 agents
 ├── utils/
-│   ├── reddit_sentiment_tool.py        # Reddit PRAW sentiment tool
 │   ├── technical_analysis_tool.py      # 13+ indicator calculator
 │   ├── technical_interpretation_tool.py
 │   ├── fundamental_data_tool.py        # yfinance financial data fetcher
@@ -285,7 +284,6 @@ ProspectAI/
 
 ```bash
 python tests/test_skeleton.py
-python tests/test_reddit_output.py Technology
 python tests/test_technical_analyst.py
 python tests/test_market_analyst_llm.py
 ```
@@ -308,9 +306,15 @@ twine upload dist/*
 | `ANTHROPIC_API_KEY` invalid | Verify key at [console.anthropic.com](https://console.anthropic.com) |
 | Ollama connection refused | Run `ollama serve` and verify `OLLAMA_BASE_URL` |
 | Ollama model not found | Run `ollama pull <model-name>` |
-| No stocks found from Reddit | Reddit public API may be rate-limited; add `SERPER_API_KEY` as fallback |
+| No stocks found from search | Check `SERPER_API_KEY` and the Serper quota |
+| Sentiment is always empty (null, `sentiment_available` false) | Check that `NEWS_SENTIMENT_API_KEY` is set and valid, then read `execution_metrics.sentiment_lookup`: `status` `no_key` means no key, `stopped_reason` `quota` or `rate_limited` means the provider's daily free-tier quota ran out (it resets daily; results already looked up that UTC day are cached), `access_denied` means the key was refused, and `scores` below the number of picks means those stocks had no article in the last 7 days |
 
 ## Release Notes
+
+### Unreleased — News sentiment for each picked stock
+- Each stock the analysis picks now gets a news sentiment score from Marketaux, based on recent articles about the company, and the report shows it next to the stock.
+- A stock with too few recent articles, or a day when the news source is unavailable or out of free requests, shows no score instead of an invented one, and the analysis still finishes.
+- Stock picks come from web search alone, and the old forum source that had stopped returning data is gone, so runs no longer wait on it.
 
 ### v1.12.3 — Analyses that run at the same time stay separate
 - When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.

@@ -1,7 +1,6 @@
 """Tests for the shared ticker matcher and format check (change 02-23, review CR-01, WR-01, WR-02)."""
 import pytest
 
-from tests.test_tools_reddit import _post, _run_with_posts
 from utils.market_records import symbol_mention_counts
 from utils.ticker_matching import (
     AMBIGUOUS_SYMBOLS,
@@ -93,30 +92,27 @@ def test_symbol_is_matched_as_a_whole():
     assert pattern.search("(AAA) rises")
 
 
-# ─── Reddit tool (guard_ambiguous=False) on the same helper ────────────────────
+# ─── Guard-off branch (guard_ambiguous=False) of the shared matcher ────────────
 
-def _by_ticker(result):
-    return {c["ticker"]: c for c in result["candidate_stocks"]}
-
-
-def test_reddit_matches_dotted_ticker():
+def test_guard_off_matches_dotted_ticker():
     """WR-01: BRK.B was compiled with a doubled escape and could never match."""
-    result = _run_with_posts([_post("I like BRK.B"), _post("$BRK.B is a buy")], sector="Finance")
-    assert _by_ticker(result)["BRK.B"]["mention_count"] == 2
+    pattern = symbol_pattern("BRK.B", guard_ambiguous=False)
+    assert pattern.search("I like BRK.B")
+    assert pattern.search("$BRK.B is a buy")
+    assert len(pattern.findall("I like BRK.B")) + len(pattern.findall("$BRK.B is a buy")) == 2
 
 
-def test_reddit_ignores_ordinary_lower_case_words():
+def test_guard_off_ignores_ordinary_lower_case_words():
     """WR-01: 'now', 'net' and 'app' in running text are not tickers."""
-    result = _run_with_posts([_post("right now the net app is so cool")], sector="Technology")
-    assert result["candidate_stocks"] == []
-    assert result["fallback_required"] is True
+    text = "right now the net app is so cool"
+    for symbol in ("NOW", "NET", "APP"):
+        assert not symbol_pattern(symbol, guard_ambiguous=False).search(text)
 
 
-def test_reddit_cashtag_in_any_case_still_counts():
-    result = _run_with_posts([_post("$now and $NET")], sector="Technology")
-    by = _by_ticker(result)
-    assert by["NOW"]["mention_count"] == 1
-    assert by["NET"]["mention_count"] == 1
+def test_guard_off_cashtag_in_any_case_still_counts():
+    text = "$now and $NET"
+    assert symbol_pattern("NOW", guard_ambiguous=False).search(text)
+    assert symbol_pattern("NET", guard_ambiguous=False).search(text)
 
 
 # ─── Gap review WR-02: abbreviations and headline words ───
@@ -149,11 +145,11 @@ def test_common_word_pick_cannot_set_the_relevance_scale(caplog):
     from datetime import datetime, timezone
 
     from schemas.agent_outputs import MarketNarrativeOutput
-    from tests.test_llm_role_audit import REDDIT_FALLBACK, _organic, mkt_entry, mkt_payload
+    from tests.test_llm_role_audit import _organic, mkt_entry, mkt_payload
     from utils.market_records import build_market_corpus, merge_market
 
     serper = _organic("AI spending drives AI chips; the AI boom lifts NVDA", "AI AI AI everywhere")
-    corpus = build_market_corpus(REDDIT_FALLBACK, serper, "Semiconductors")
+    corpus = build_market_corpus(serper, "Semiconductors")
     narrative = MarketNarrativeOutput(**mkt_payload(mkt_entry("AI"), mkt_entry("NVDA")))
 
     with caplog.at_level("WARNING"):

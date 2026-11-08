@@ -1,7 +1,7 @@
 """The one place that decides what counts as a mention of a ticker and what a ticker looks like.
 
-Shared by the Reddit tool (its per-ticker post counter), the Serper counter in
-``utils.market_records`` (``symbol_mention_counts``) and the pick check in the same module.
+Shared by the Serper counter in ``utils.market_records`` (``symbol_mention_counts``), the
+pick check in the same module and the ticker format check.
 The same matcher that grounds a pick also counts it, so a symbol can never be published
 on a count the grounding check would not have accepted (review CR-01, WR-01, WR-02).
 
@@ -11,16 +11,16 @@ Matching rules (``symbol_pattern``):
 - A bare symbol matches only as written (upper case) and only as a whole word, so
   ``AAA`` does not match inside ``AAAB`` or ``BAAA``, and the word "nvda" is not a mention.
 - A share-class symbol such as ``BRK.B`` matches with a dot or a dash (``BRK.B``,
-  ``BRK-B``). Each literal part is escaped exactly once; the Reddit tool used to escape
-  the dot and then escape the result again, so a dotted ticker could never match (WR-01).
+  ``BRK-B``). Each literal part is escaped exactly once; an earlier matcher escaped
+  the dot and then escaped the result again, so a dotted ticker could never match (WR-01).
 - With ``guard_ambiguous`` on, a symbol that is also an ordinary word or abbreviation
   counts only in an explicit form: a cashtag, or an exchange-qualified form such as
   ``NASDAQ: ON`` or ``(NYSE: F)``. Every one-letter symbol and the ``AMBIGUOUS_SYMBOLS``
   stoplist are ambiguous. That is what stops "A strong quarter", "IT spending", "ALL
   eyes", "U.S." and "F-150" from counting as mentions of A, IT, ALL, U and F (WR-02).
   "AI spending" and "the CEO said" no longer count as mentions of AI and CEO either.
-  The Reddit tool leaves the guard off: its posts are short, and its stoplist rule is
-  not part of that change.
+  Callers that pass ``guard_ambiguous=False`` get the plain matching rules above; the
+  guard-off branch stays available to callers and is covered by tests.
 
 ``is_valid_ticker`` is the format gate every pick passes before it can reach tool
 arguments, an SSE ``tool_input``, an error field path or retry feedback: 1 to 5 upper-case
@@ -45,8 +45,7 @@ EXPLICIT_EXCHANGES: Tuple[str, ...] = (
 # The last group are upper-case abbreviations and all-caps headline words that Serper
 # snippets repeat (gap review WR-02: "AI" counted 3 in one snippet and could set the
 # largest count). COST is also in the Consumer universe, so on the Serper path a Costco
-# pick now needs the cashtag or an exchange form such as "NASDAQ: COST". The Reddit tool
-# leaves the guard off, so its counts do not change.
+# pick now needs the cashtag or an exchange form such as "NASDAQ: COST".
 AMBIGUOUS_SYMBOLS: FrozenSet[str] = frozenset({
     "IT", "ON", "ALL", "NOW", "NET", "APP", "ARE", "SO", "ET", "ES", "ED", "LOW", "WELL",
     "PR", "AR", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF", "IN", "IS", "ME", "NO",

@@ -10,13 +10,13 @@ from agents.critic_agent import CriticAgent
 from config.config import Config
 from config.task_config_loader import TaskConfigLoader
 
-from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
 from utils.fundamental_data_tool import FundamentalDataTool
 from utils.fundamental_grader_tool import FundamentalGraderTool
 from utils.composite_score_tool import CompositeScoreTool
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.patient_serper_tool import PatientSerperDevTool
+from utils.news_sentiment import NewsSentimentTool
 from utils.tool_timing import instrument_tool
 from schemas.agent_outputs import (
     MarketNarrativeOutput,
@@ -53,7 +53,11 @@ class TaskFactory:
         self,
         config: Optional[Config] = None,
         tracker_getter: Optional[Callable[[], Any]] = None,
+        *,
+        sentiment_cache: Any = None,
     ):
+        """``sentiment_cache`` is the caller's store for the news-sentiment lookups (utils.news_sentiment):
+        anything with ``get(key)`` and ``store[key] = value``; None means no caching."""
         self.config = config if config is not None else Config()
         # Late-bound: the ExecutionTracker is created in run_analysis(), after the factory.
         self._tracker_getter = tracker_getter or (lambda: None)
@@ -92,7 +96,9 @@ class TaskFactory:
             "market_analysis": {
                 "agent":       self.market_analyst.get_agent(),
                 "agent_tools": [],
-                "flow_tools":  self._timed_by_name("market_analysis", [RedditSentimentTool(), self.search_tool]),
+                "flow_tools":  self._timed_by_name(
+                    "market_analysis", [self.search_tool, NewsSentimentTool(cache=sentiment_cache)],
+                ),
             },
             "technical_analysis": {
                 "agent":       self.technical_analyst.get_agent(),
