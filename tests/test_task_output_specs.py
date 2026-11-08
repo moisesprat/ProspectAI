@@ -255,8 +255,6 @@ def test_dropping_a_required_field_is_caught(tmp_path):
 @pytest.fixture
 def real_factory(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "dummy-id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "dummy-secret")
     from prospect_ai_crew import TaskFactory
 
     return TaskFactory()
@@ -381,12 +379,12 @@ def test_market_prompt_is_narrative_only():
 
 def test_market_example_tickers_are_neutral_placeholders():
     """CR-01: the example's tickers were the ones the model copied into a report (change 02-23)."""
-    from utils.reddit_sentiment_tool import RedditSentimentTool
+    from utils.sector_universe import SECTOR_TICKERS
     from utils.ticker_matching import is_valid_ticker
 
     example = TaskConfigLoader().get_task_config("market_analysis")["output_example"]
     tickers = [entry["ticker"] for entry in example["candidates"]]
-    universe = {t for tickers_ in RedditSentimentTool.SECTOR_TICKERS.values() for t in tickers_}
+    universe = {t for tickers_ in SECTOR_TICKERS.values() for t in tickers_}
     commonly_copied = {"AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"}
     assert tickers and not commonly_copied & set(tickers)
     assert not universe & set(tickers)

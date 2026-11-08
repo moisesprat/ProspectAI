@@ -324,10 +324,6 @@ portkey-ai==2.3.4
     # via prospectai (pyproject.toml)
 posthog==5.4.0
     # via chromadb
-praw==7.8.2
-    # via prospectai (pyproject.toml)
-prawcore==2.4.0
-    # via praw
 propcache==0.5.4
     # via
     #   aiohttp
@@ -446,7 +442,6 @@ requests==2.32.5
     #   kubernetes
     #   opentelemetry-exporter-otlp-proto-http
     #   posthog
-    #   prawcore
     #   requests-oauthlib
     #   tiktoken
     #   yfinance
@@ -555,8 +550,6 @@ tzdata==2026.5
     # via
     #   pandas
     #   python-dateutil
-update-checker==1.0.1
-    # via praw
 urllib3==2.8.0
     # via
     #   docker
@@ -575,9 +568,7 @@ uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
 watchfiles==1.3.0
     # via uvicorn
 websocket-client==1.9.2
-    # via
-    #   kubernetes
-    #   praw
+    # via kubernetes
 websockets==17.3
     # via
     #   uvicorn
