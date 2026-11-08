@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.12.3**
+**Current release: v1.13.0**
 
 ### ⚠️ Important Disclaimer
 
@@ -311,7 +311,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — News sentiment for each picked stock
+### v1.13.0 — News sentiment for each picked stock
 - Each stock the analysis picks now gets a news sentiment score from Marketaux, based on recent articles about the company, and the report shows it next to the stock.
 - A stock with too few recent articles, or a day when the news source is unavailable or out of free requests, shows no score instead of an invented one, and the analysis still finishes.
 - Stock picks come from web search alone, and the old forum source that had stopped returning data is gone, so runs no longer wait on it.
@@ -332,11 +332,6 @@ twine upload dist/*
 ### v1.12.0 — A stronger model for the analysis, review and final steps
 - The draft, review and final steps of every analysis now run on Claude Sonnet 5.5, a stronger model than before. The research steps that gather market, technical and fundamental data stay on the faster Claude Haiku 5.5.
 - Reports are still built the same way: every number is computed from live data, and the model only writes the commentary and chooses each stock's action.
-
-### v1.11.1 — Stock picks now come from what the research found
-- The market research step now runs three web searches instead of one, and a stock is kept only if its ticker symbol actually appears in the search results, so a report can no longer feature a stock the research never mentioned.
-- Each analysis now keeps a short record of the search results its stock picks came from, so a recommendation can be traced back to its sources.
-- Ordinary words and one-letter tickers are no longer counted as stock mentions, and tickers with a dot, such as BRK.B, are now recognised.
 
 ## Roadmap
 
