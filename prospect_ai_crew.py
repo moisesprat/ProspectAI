@@ -10,7 +10,6 @@ from agents.critic_agent import CriticAgent
 from config.config import Config
 from config.task_config_loader import TaskConfigLoader
 
-from utils.reddit_sentiment_tool import RedditSentimentTool
 from utils.technical_analysis_tool import TechnicalAnalysisTool
 from utils.fundamental_data_tool import FundamentalDataTool
 from utils.fundamental_grader_tool import FundamentalGraderTool
@@ -92,7 +91,7 @@ class TaskFactory:
             "market_analysis": {
                 "agent":       self.market_analyst.get_agent(),
                 "agent_tools": [],
-                "flow_tools":  self._timed_by_name("market_analysis", [RedditSentimentTool(), self.search_tool]),
+                "flow_tools":  self._timed_by_name("market_analysis", [self.search_tool]),
             },
             "technical_analysis": {
                 "agent":       self.technical_analyst.get_agent(),

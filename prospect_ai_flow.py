@@ -30,7 +30,6 @@ from utils.fundamental_records import (
     require_narrative_coverage,
 )
 from utils.market_records import (
-    REDDIT_TOOL_NAME,
     SERPER_TOOL_NAME,
     SUPPORTED_SECTORS,
     build_market_corpus,
@@ -38,7 +37,6 @@ from utils.market_records import (
     is_supported_sector,
     market_narrative_context,
     merge_market,
-    reddit_fallback_required,
     require_market_picks,
     serper_queries,
 )
@@ -644,20 +642,20 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     # ─────────────────────────────────────────────────────────────────────────
     @start()
     async def market_analysis(self):
-        """Flow-owned phase (CORR-10, D-14): the Flow calls Reddit and, when Reddit asks for
-        fallback, Serper three times (three fixed queries, one after another); the LLM only
-        chooses up to 5 tickers from that corpus and writes their rationales and the summary.
+        """Flow-owned phase (CORR-10, D-14, D-04): the Flow runs three fixed Serper queries, one
+        after another; the LLM only chooses up to 5 tickers from that corpus and writes their
+        rationales and the summary.
 
-        Every tool call runs off the event loop (call_tool, STALL-02), so the bounded sleeps never
-        block it. The Serper calls are sequential on purpose: a deterministic step and call order,
-        and each query keeps its own plan 02-08 retry budget, so the worst case is three budgets
-        of sleep, all on worker threads. Every number, the sentiment flag and the timestamp are
-        built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
-        only if it is well formed and grounded in the corpus (CR-01). A tool that raises is
-        logged by exception class and treated as no data, never as invented data. The corpus the
-        model saw is stored on the tracker (market_corpus) before the LLM runs. Serper is queried
-        only for a supported sector (backstop for callers that kick the Flow off directly;
-        run_analysis already refuses an unsupported sector, gap review WR-03).
+        Every tool call runs off the event loop (call_tool, STALL-02), so the bounded retry sleeps
+        never block it. The Serper calls are sequential on purpose: a deterministic step and call
+        order, and each query keeps its own plan 02-08 retry budget, so the worst case is three
+        budgets of sleep, all on worker threads. Every number, the sentiment flag and the timestamp
+        are built by utils.market_records.merge_market, never taken from the LLM, and a pick is kept
+        only if it is well formed and grounded in the corpus (CR-01). A tool that raises is logged
+        by exception class and treated as no data, never as invented data. The corpus the model saw
+        is stored on the tracker (market_corpus) before the LLM runs. Serper is queried only for a
+        supported sector (backstop for callers that kick the Flow off directly; run_analysis
+        already refuses an unsupported sector, gap review WR-03).
         """
         self._check_error()
         self._emit_start(0)
@@ -667,23 +665,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         tracker = self._tracker
         if tracker:
             tracker.start_phase(phase, llm=self._phase_llm(phase))
-        try:
-            reddit = await call_tool(
-                self._factory.flow_tool(phase, REDDIT_TOOL_NAME),
-                phase_index=0, step_callback=self._step_callback,
-                thought=f"Reading Reddit discussion for {sector}",
-                sector=sector,
-            )
-        except Exception as exc:
-            logger.warning("%s: Reddit tool failed (%s); using the Serper fallback", phase, type(exc).__name__)
-            reddit = None
-
         serper_results = []
         queries: List[str] = []
         failed_queries = 0
-        if reddit_fallback_required(reddit) and not is_supported_sector(sector):
-            logger.warning("%s: unsupported sector; skipping the Serper fallback", phase)
-        elif reddit_fallback_required(reddit):
+        if not is_supported_sector(sector):
+            logger.warning("%s: unsupported sector; skipping the Serper search", phase)
+        else:
             queries = serper_queries(sector, today)
             for number, query in enumerate(queries, 1):
                 try:
@@ -700,7 +687,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                     )
 
         corpus = build_market_corpus(
-            reddit, serper_results or None, sector, queries=queries, failed_queries=failed_queries,
+            serper_results or None, sector, queries=queries, failed_queries=failed_queries,
         )
         if tracker:
             tracker.set_market_corpus(corpus_record(corpus))
