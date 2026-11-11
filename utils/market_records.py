@@ -71,9 +71,13 @@ The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
 not_in_sector_universe, excluded_etf. A pick that fails is dropped with a warning that
 carries the reason and the ticker cut to 20 characters shown with its repr, never corpus
 text. When none is left the phase answer is a validation failure that spends the bounded
-retry budget; the retry feedback is fixed text per source. What this does not prove: a
-symbol present in the text is not shown to be a real listed company. That check stays
-Phase 4 (CORR-06).
+retry budget; the retry feedback is fixed text per source. The rule differs by source: on
+the serper path it is format + grounding in the search results + ETF exclusion (the sector
+universe is not checked there); on the unavailable path it is format + sector universe +
+ETF exclusion. What this does not prove: a symbol present in the text is not shown to be a
+real listed company. Per the operator decision narrowing D-03 (phase 4 CORR-06) there is no
+listing check here: a symbol yfinance cannot price is excluded by the technical phase
+(plan 02-15).
 
 ``require_market_picks`` is the ``validate=`` callback for
 ``utils.phase_runner.run_phase``.
@@ -89,7 +93,7 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
-from utils.sector_universe import SECTOR_TICKERS
+from utils.sector_universe import SECTOR_ALIASES, SECTOR_TICKERS
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
@@ -110,15 +114,8 @@ _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
 # ── Supported sectors ──────────────────────────────────────────────────────────
 
-# Names the web app (prospectai-web ui/data.js SECTORS) and the backend (SECTOR_ETF) use for two
-# package sectors. They are accepted as supported but NOT remapped, so a run for them behaves
-# exactly as before (empty universe, Serper path); remapping is a separate decision (gap
-# review WR-03).
-SECTOR_ALIASES: Dict[str, str] = {
-    "Financials": "Finance",
-    "Consumer Discretionary": "Consumer",
-}
-
+# SECTOR_ALIASES (the web app's Financials and Consumer Discretionary) lives in
+# utils.sector_universe and is re-exported here; accepted as supported, not remapped (WR-03).
 SUPPORTED_SECTORS: FrozenSet[str] = frozenset(SECTOR_TICKERS) | frozenset(SECTOR_ALIASES)
 
 

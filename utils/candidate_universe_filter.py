@@ -7,11 +7,15 @@ candidates came from the search corpus or utils.sector_universe.SECTOR_TICKERS (
 ETF-free). The search corpus (free-text extraction from Serper snippets)
 has no such curation and can surface a sector's own benchmark ETF --
 e.g. XLE for Energy -- as if it were an investable single-stock candidate).
+The sector aliases the web app sends (Financials, Consumer Discretionary) exclude the
+same benchmark ETF as their package sector (Finance, Consumer).
 Applying the filter after parsing, rather than duplicating it in each source
 path, guarantees it cannot be bypassed by whichever source is active.
 """
 
 from typing import FrozenSet, List, Tuple
+
+from utils.sector_universe import SECTOR_ALIASES
 
 # Standard SPDR/iShares sector-benchmark ETF per ProspectAI sector, matching
 # the sectors in utils.sector_universe.SECTOR_TICKERS.
@@ -35,9 +39,14 @@ BROAD_MARKET_ETFS: FrozenSet[str] = frozenset({
 
 
 def excluded_tickers_for_sector(sector: str) -> FrozenSet[str]:
-    """Tickers to exclude from the candidate universe for a given sector."""
+    """Tickers to exclude from the candidate universe for a given sector.
+
+    A sector alias the web app sends ("Financials", "Consumer Discretionary") resolves to its
+    package sector first, so it excludes the same benchmark ETF (XLF, XLY) as "Finance" and
+    "Consumer" (phase 4 CORR-06). The universe is not remapped, only this lookup.
+    """
     excluded = set(BROAD_MARKET_ETFS)
-    benchmark = SECTOR_BENCHMARK_ETF.get(sector)
+    benchmark = SECTOR_BENCHMARK_ETF.get(SECTOR_ALIASES.get(sector, sector))
     if benchmark:
         excluded.add(benchmark)
     return frozenset(excluded)

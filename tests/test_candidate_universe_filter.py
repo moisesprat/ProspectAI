@@ -50,3 +50,31 @@ def test_filter_candidates_keeps_all_when_no_etf_present():
 def test_unknown_sector_still_excludes_broad_market_etfs():
     excluded = excluded_tickers_for_sector("NotASector")
     assert "SPY" in excluded
+
+
+# ─── Alias sector names (phase 4 CORR-06, orchestrator resolution 4) ───
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("sector,etf", [
+    ("Financials", "XLF"),
+    ("Consumer Discretionary", "XLY"),
+    ("Finance", "XLF"),
+    ("Consumer", "XLY"),
+])
+def test_alias_sector_names_exclude_the_same_benchmark_etf(sector, etf):
+    assert etf in excluded_tickers_for_sector(sector)
+
+
+def test_unknown_sector_gets_only_the_broad_market_etfs():
+    from utils.candidate_universe_filter import BROAD_MARKET_ETFS
+
+    assert excluded_tickers_for_sector("NotASector") == BROAD_MARKET_ETFS
+
+
+def test_filter_candidates_drops_the_alias_benchmark_etf():
+    stocks = [_Stock("JPM"), _Stock("XLF")]
+    kept, dropped = filter_candidates(stocks, "Financials")
+    assert [s.ticker for s in kept] == ["JPM"]
+    assert dropped == ["XLF"]
