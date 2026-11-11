@@ -236,3 +236,182 @@ def test_a_priceless_ticker_is_in_the_critic_gate_context(flow):
     assert kept == [] and len(rejected) == 1
     kept, _ = filter_directives(["AAA: change action to MONITOR because x"], ctx)
     assert kept == ["AAA: change action to MONITOR because x"]
+
+
+# ─── the final stage: downgrade once, read only the technical record ───────────
+
+from unittest.mock import patch  # noqa: E402
+
+from utils.strategy_assembly import CLAMP_SENTENCE, downgrade_priceless_positions  # noqa: E402
+
+
+def _structured(*positions):
+    return {"sector": "Technology", "risk_profile": "conservative", "positions": list(positions),
+            "deployed_pct": 0.0, "reserved_pct": 0.0, "cash_reserve_pct": 100.0, "total_allocated_pct": 0.0}
+
+
+def _pos(ticker, action="LONG-BUY", **extra):
+    pos = {
+        "ticker": ticker, "action": action, "composite_score": 70.0, "allocation_pct": 15.0,
+        "current_price": 99.0, "rationale": f"{ticker} rationale.", "monitoring_triggers": ["t"],
+        "review_frequency": "WEEKLY",
+        "trade_setup": {"direction": "LONG-BUY", "entry_zone_low": 99.0, "entry_zone_high": 99.0,
+                        "stop_loss": 96.03, "take_profit": 106.5},
+    }
+    pos.update(extra)
+    return pos
+
+
+def _seed_scores(flow, *tickers):
+    flow.state.composite_scores = {t: {"ticker": t, "composite_score": 70.0} for t in tickers}
+
+
+class TestDowngradePricelessPositions:
+    def test_a_priceless_buy_becomes_monitor_with_one_record(self, flow, caplog):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        by = {a.ticker: a for a in flow.state.technical_output.technical_analysis}
+        original = _structured(_pos("AAA"), _pos("BBB", current_price=50.0))
+        before = json.loads(json.dumps(original))
+        with caplog.at_level(logging.WARNING):
+            out, clamps = downgrade_priceless_positions(original, by)
+        assert original == before, "the input is not mutated"
+        aaa, bbb = out["positions"]
+        assert aaa["action"] == "MONITOR" and aaa["allocation_pct"] == 0.0 and aaa["trade_setup"] is None
+        assert aaa["rationale"] == "AAA rationale." + CLAMP_SENTENCE.format(
+            rule="price unavailable (no current price): only MONITOR or AVOID are allowed")
+        assert bbb == original["positions"][1]
+        [clamp] = clamps
+        assert clamp["ticker"] == "AAA" and clamp["from_action"] == "LONG-BUY" and clamp["to_action"] == "MONITOR"
+        assert clamp["phase"] == "final_strategy"
+        assert clamp["rule"] == "price unavailable (no current price): only MONITOR or AVOID are allowed"
+        assert clamp["message"] == f"AAA: final action LONG-BUY set to MONITOR by policy: {clamp['rule']}"
+        assert clamp["message"] in caplog.text
+
+    def test_a_priced_buy_and_a_priceless_monitor_are_unchanged(self, flow):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        by = {a.ticker: a for a in flow.state.technical_output.technical_analysis}
+        original = _structured(_pos("AAA", "MONITOR", allocation_pct=0.0, trade_setup=None), _pos("BBB", "WAIT-FOR-ENTRY"))
+        out, clamps = downgrade_priceless_positions(original, by)
+        assert out["positions"] == original["positions"] and clamps == []
+
+    def test_a_ticker_without_a_technical_record_counts_as_priceless(self, flow):
+        prime_draft(flow)
+        by = {a.ticker: a for a in flow.state.technical_output.technical_analysis}
+        out, clamps = downgrade_priceless_positions(_structured(_pos("ZZZ", "WAIT-FOR-ENTRY")), by)
+        assert out["positions"][0]["action"] == "MONITOR" and [c["ticker"] for c in clamps] == ["ZZZ"]
+
+    def test_a_second_pass_changes_nothing(self, flow):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        by = {a.ticker: a for a in flow.state.technical_output.technical_analysis}
+        once, _ = downgrade_priceless_positions(_structured(_pos("AAA")), by)
+        twice, clamps = downgrade_priceless_positions(once, by)
+        assert twice == once and clamps == []
+
+
+class TestFinalizeDowngrade:
+    def test_finalize_publishes_monitor_and_records_one_clamp(self, flow, caplog):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        _seed_scores(flow, "AAA", "BBB")
+        flow.state.policy_clamps = []
+        with caplog.at_level(logging.WARNING):
+            out = flow._finalize_and_validate_portfolio(
+                _structured(_pos("AAA"), _pos("BBB", "MONITOR", allocation_pct=0.0, trade_setup=None,
+                                              current_price=50.0)), "conservative")
+        aaa = out["positions"][0]
+        assert aaa["action"] == "MONITOR" and aaa["allocation_pct"] == 0.0 and aaa["trade_setup"] is None
+        assert [(c["ticker"], c["phase"]) for c in flow.state.policy_clamps] == [("AAA", "final_strategy")]
+        assert sum("price unavailable" in r.getMessage() for r in caplog.records) == 1
+
+    def test_the_retry_after_a_failed_validation_does_not_duplicate_the_clamp(self, flow):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        _seed_scores(flow, "AAA", "BBB")
+        flow.state.policy_clamps = []
+        real = __import__("prospect_ai_flow").validate_bounds
+        calls = []
+
+        def fail_once(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return [{"ticker": None, "rule": "forced", "expected": "x", "actual": "y"}]
+            return real(*args, **kwargs)
+
+        with patch("prospect_ai_flow.validate_bounds", fail_once):
+            out = flow._finalize_and_validate_portfolio(
+                _structured(_pos("AAA"), _pos("BBB", "MONITOR", allocation_pct=0.0, trade_setup=None,
+                                              current_price=50.0)), "conservative")
+        assert len(calls) == 2
+        assert out["positions"][0]["action"] == "MONITOR"
+        assert len(flow.state.policy_clamps) == 1
+
+
+class TestRepriceReadsOnlyTheTechnicalRecord:
+    def _spy(self):
+        sent = []
+        real = PortfolioAllocatorTool._run
+
+        def spy(self_, stocks_json):
+            sent.append(json.loads(stocks_json))
+            return real(self_, stocks_json)
+
+        return sent, patch.object(PortfolioAllocatorTool, "_run", spy)
+
+    def test_a_record_without_zones_prices_from_its_current_price(self, flow):
+        prime_draft(flow)
+        records = []
+        for r in flow.state.technical_output.technical_analysis:
+            if r.ticker == "AAA":
+                r = r.model_copy(update={
+                    "current_price": 108.0,
+                    "momentum_analysis": r.momentum_analysis.model_copy(
+                        update={"entry_zone_low": None, "entry_zone_high": None}),
+                })
+            records.append(r)
+        flow.state.technical_output = flow.state.technical_output.model_copy(update={"technical_analysis": records})
+        _seed_scores(flow, "AAA")
+        sent, patcher = self._spy()
+        with patcher:
+            out = flow._reprice_final_output(_structured(_pos("AAA")), "conservative")
+        item = sent[0]["stocks"][0]
+        assert item["current_price"] == 108.0 and "entry_zone_low" not in item and "entry_zone_high" not in item
+        setup = out["positions"][0]["trade_setup"]
+        assert (setup["entry_zone_low"], setup["entry_zone_high"]) == (108.0, 108.0)
+        assert setup["stop_loss"] == round(108.0 * 0.97, 2)
+
+    def test_llm_written_price_and_setup_never_reach_the_allocator(self, flow):
+        prime_draft(flow)
+        _seed_scores(flow, "AAA")
+        hostile = _pos("AAA", current_price=1.0, trade_setup={
+            "direction": "LONG-BUY", "entry_zone_low": 1.0, "entry_zone_high": 2.0,
+            "stop_loss": 0.5, "take_profit": 9.0})
+        sent, patcher = self._spy()
+        with patcher:
+            out = flow._reprice_final_output(_structured(hostile), "conservative")
+        item = sent[0]["stocks"][0]
+        assert item["current_price"] == 99.0
+        assert set(item) == {"ticker", "action", "composite_score", "entry_zone_low", "entry_zone_high", "current_price"}
+        record = flow.state.technical_output.technical_analysis[0].momentum_analysis
+        assert (item["entry_zone_low"], item["entry_zone_high"]) == (record.entry_zone_low, record.entry_zone_high)
+        assert out["positions"][0]["trade_setup"]["entry_zone_low"] == 99.0
+
+    def test_a_priceless_deployed_position_that_bypasses_the_downgrade_fails_closed(self, flow):
+        from utils.portfolio_bounds_validator import BoundsViolationError
+
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        _seed_scores(flow, "AAA")
+        with pytest.raises(BoundsViolationError) as info:
+            flow._reprice_final_output(_structured(_pos("AAA")), "conservative")
+        assert "without a current price: AAA" in info.value.violations[0]["actual"]
+
+
+def test_a_critic_directive_to_buy_a_priceless_ticker_is_rejected_through_the_flow(flow):
+    prime_draft(flow)
+    _make_aaa_priceless(flow)
+    kept, rejected = filter_directives(["AAA: change action to LONG-BUY because momentum is strong"],
+                                       flow._gate_position_context())
+    assert kept == [] and [r.ticker for r in rejected] == ["AAA"]

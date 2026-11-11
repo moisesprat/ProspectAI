@@ -55,6 +55,7 @@ from utils.strategy_assembly import (
     clamp_actions,
     clamp_warnings,
     composite_inputs,
+    downgrade_priceless_positions,
     eligible_by_ticker,
     excluded_tickers,
     ordered_positions,
@@ -1049,14 +1050,16 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         deterministic Phase-2 technical output and the composite score from the
         Flow's own scores (``state.composite_scores``), never from the LLM or
         from the dict passed in — only `action` is taken from ``structured``.
+        A value the technical record lacks is null and is left out of the
+        allocator payload, never a zero sentinel (D-02); a deployed position
+        without a price never reaches this method because
+        ``_finalize_and_validate_portfolio`` downgrades it to MONITOR first, and
+        the allocator fails closed if one does.
         A ticker with no Flow score raises BoundsViolationError
         (``composite_score_missing``): fail closed, never a 0.0 default.
         Runs unconditionally, even when no action changed relative to the draft.
         """
-        technical_by_ticker: Dict[str, Any] = {}
-        if self.state.technical_output:
-            for t in self.state.technical_output.technical_analysis:
-                technical_by_ticker[t.ticker.upper()] = t
+        technical_by_ticker = self._technical_by_ticker()
 
         positions = structured.get("positions", [])
         require_composite_scores(
@@ -1066,26 +1069,20 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         for pos in positions:
             ticker = str(pos.get("ticker", "")).upper()
             technical = technical_by_ticker.get(ticker)
-            if technical is not None:
-                entry_zone_low = technical.momentum_analysis.entry_zone_low or 0.0
-                entry_zone_high = technical.momentum_analysis.entry_zone_high or 0.0
-                current_price = technical.current_price or pos.get("current_price") or 0.0
-            else:
-                # Ticker not found in the deterministic technical output (should
-                # not normally happen) -- fall back to the LLM's own fields.
-                setup = pos.get("trade_setup") or {}
-                entry_zone_low = setup.get("entry_zone_low", 0.0)
-                entry_zone_high = setup.get("entry_zone_high", 0.0)
-                current_price = pos.get("current_price", 0.0)
-
-            stocks_payload.append({
+            item = {
                 "ticker":          ticker,
                 "action":          pos.get("action", "MONITOR"),
                 "composite_score": float(self.state.composite_scores[ticker]["composite_score"]),
-                "entry_zone_low":  entry_zone_low,
-                "entry_zone_high": entry_zone_high,
-                "current_price":   current_price,
-            })
+            }
+            momentum = technical.momentum_analysis if technical is not None else None
+            for key, value in (
+                ("entry_zone_low", getattr(momentum, "entry_zone_low", None)),
+                ("entry_zone_high", getattr(momentum, "entry_zone_high", None)),
+                ("current_price", getattr(technical, "current_price", None)),
+            ):
+                if value is not None:
+                    item[key] = value
+            stocks_payload.append(item)
 
         payload = {"risk_profile": risk_profile, "stocks": stocks_payload}
         result = json.loads(PortfolioAllocatorTool()._run(json.dumps(payload)))
@@ -1115,6 +1112,12 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         if "reserved_allocations" in result:
             repriced["reserved_allocations"] = result["reserved_allocations"]
         return repriced
+
+    def _technical_by_ticker(self) -> Dict[str, Any]:
+        """ticker (upper case) -> its record from the deterministic Phase-2 technical output."""
+        if not self.state.technical_output:
+            return {}
+        return {t.ticker.upper(): t for t in self.state.technical_output.technical_analysis}
 
     def _entry_zone_status_by_ticker(self) -> Dict[str, str]:
         """ticker -> entry_zone_status from the deterministic Phase-2 technical
@@ -1153,12 +1156,23 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         fundamental output before validation (D-08), and the validator's
         buy_with_unknown_fundamentals rule fails closed on a buy for UNKNOWN.
 
+        Before the first repricing, a LONG-BUY or WAIT-FOR-ENTRY position whose
+        technical record has no usable price is downgraded to MONITOR exactly
+        once (D-01, ``downgrade_priceless_positions``): the backstop at the final
+        stage behind the draft and final clamps. Its clamp records extend
+        ``state.policy_clamps`` and ``run_analysis`` turns them into validation
+        warnings through ``clamp_warnings``; the retry below reuses the
+        downgraded dict, so the clamp is recorded once.
+
         The CURRENT_ENTRY/WAIT-FOR-ENTRY invariant check is included here even
         though the retry cannot fix it (repricing never changes `action`) --
         the point is that a Final Strategist decision violating this invariant
         must never publish silently, matching the fail-closed intent of every
         other check in this validator.
         """
+        structured, price_clamps = downgrade_priceless_positions(structured, self._technical_by_ticker())
+        if price_clamps:
+            self.state.policy_clamps = [*self.state.policy_clamps, *price_clamps]
         zone_status = self._entry_zone_status_by_ticker()
         fundamentals = self._fundamentals_status_by_ticker()
         repriced = self._stamp_fundamentals_status(self._reprice_final_output(structured, risk_profile), fundamentals)

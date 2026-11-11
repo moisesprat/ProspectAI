@@ -307,6 +307,59 @@ def clamp_actions(
     return out, clamps
 
 
+FINAL_PHASE = "final_strategy"
+
+
+def downgrade_priceless_positions(
+    structured: Dict[str, Any], technical_by_ticker: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """(structured copy, clamp records): a LONG-BUY or WAIT-FOR-ENTRY with no usable price becomes MONITOR (D-01).
+
+    The final-stage backstop behind the draft and final clamps: ``structured`` is the published
+    dict (``model_dump``) and a deployed position whose technical record has no usable price
+    (``price_unavailable_reason``; a ticker with no record counts as priceless) is published as
+    MONITOR with allocation 0, no trade setup and the fixed clamp sentence added to its rationale.
+    The record has the shape of ``clamp_actions`` records with phase ``final_strategy``, and each
+    downgrade logs a warning, so it is never silent. Other positions are unchanged, the input is
+    not mutated, and a second call over the result changes nothing (no deployed position is left
+    without a price), which is what keeps a retried validation from recording a clamp twice.
+    """
+    positions: List[Dict[str, Any]] = []
+    clamps: List[Dict[str, Any]] = []
+    for position in structured.get("positions", []):
+        action = position.get("action")
+        ticker = _ticker(position.get("ticker"))
+        if action not in _DEPLOYED_ACTIONS:
+            positions.append(position)
+            continue
+        record = technical_by_ticker.get(ticker)
+        reason = price_unavailable_reason(
+            getattr(record, "current_price", None), getattr(record, "price_data_error", None),
+        )
+        if reason is None:
+            positions.append(position)
+            continue
+        rule = PRICE_RULE.format(reason=reason)
+        rationale = (position.get("rationale") or "") + CLAMP_SENTENCE.format(rule=rule)
+        positions.append({
+            **position,
+            "action": CLAMP_ACTION,
+            "allocation_pct": 0.0,
+            "trade_setup": None,
+            "rationale": rationale if position.get("rationale") else rationale.lstrip(),
+        })
+        clamps.append({
+            "ticker": ticker,
+            "from_action": action,
+            "to_action": CLAMP_ACTION,
+            "rule": rule,
+            "phase": FINAL_PHASE,
+            "message": f"{ticker}: {_stage(FINAL_PHASE)} action {action} set to {CLAMP_ACTION} by policy: {rule}",
+        })
+        logger.warning("%s: %s", FINAL_PHASE, clamps[-1]["message"])
+    return {**structured, "positions": positions}, clamps
+
+
 def clamp_warnings(
     clamps: Sequence[Dict[str, Any]], published_actions: Dict[str, str],
 ) -> List[Dict[str, Any]]:
