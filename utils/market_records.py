@@ -46,7 +46,8 @@ after another (``serper_queries``; the model never picks a query). Their organic
 merged rank by rank across the queries (rank 1 of each, then rank 2 of each, ...), a repeated
 link is removed (an entry with no link repeats when its text repeats), full URLs are scrubbed
 from the text, and the corpus stops at ``MAX_SNIPPETS`` (20) results of at most
-``SNIPPET_CHARS`` (300) characters and ``MAX_CORPUS_TEXT_CHARS`` (6000) characters in total.
+``SNIPPET_CHARS`` (300) characters and ``MAX_CORPUS_TEXT_CHARS`` (6000) characters in total;
+the link host is cut to ``MAX_HOST_CHARS`` (253, the DNS hostname maximum; phase 4 CORR-09).
 ``corpus_record`` is the stored view: what the model saw, host only, cut to
 ``MAX_RECORD_BYTES`` (8192) so it can be kept in the run's public execution metrics.
 
@@ -108,6 +109,9 @@ MAX_SNIPPETS = 20
 SNIPPET_CHARS = 300
 MAX_CORPUS_TEXT_CHARS = 6000
 MAX_RECORD_BYTES = 8192
+# The DNS hostname maximum, so a valid host is never changed. The link host was the one
+# Serper-derived string that reached the prompt uncut (phase 4 CORR-09).
+MAX_HOST_CHARS = 253
 
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
@@ -163,8 +167,9 @@ def _serper_snippets(serper_result: Any) -> List[Dict[str, str]]:
 
     Each entry is exactly ``{"text", "host"}``. Results are taken rank by rank across the lists,
     a repeated link is dropped (no link: a repeated text is dropped), full URLs are scrubbed from
-    the text before it is cut to SNIPPET_CHARS, and the corpus stops at MAX_SNIPPETS results or
-    when the next one would take the text past MAX_CORPUS_TEXT_CHARS.
+    the text before it is cut to SNIPPET_CHARS, the link host is cut to MAX_HOST_CHARS, and the
+    corpus stops at MAX_SNIPPETS results or when the next one would take the text past
+    MAX_CORPUS_TEXT_CHARS.
     """
     results = serper_result if isinstance(serper_result, list) else [serper_result]
     organic_lists = []
@@ -202,7 +207,7 @@ def _serper_snippets(serper_result: Any) -> List[Dict[str, str]]:
                 host = (urlparse(link).hostname or "") if isinstance(link, str) else ""
             except ValueError:
                 host = ""
-            snippets.append({"text": text, "host": host})
+            snippets.append({"text": text, "host": host[:MAX_HOST_CHARS]})
             total += len(text)
     return snippets
 
