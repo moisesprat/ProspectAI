@@ -37,16 +37,20 @@ Order of work in ``ProspectAIFlow.draft_strategy``:
    the ``FUNDAMENTALS_UNKNOWN`` row (quality or growth could not be graded). Because it
    reuses ``eligible_actions``, this covers the CURRENT_ENTRY / WAIT-FOR-ENTRY invariant
    that PortfolioBoundsValidator enforces fail-closed, so a run no longer fails in the
-   validator after full spend on that class of mistake. A ticker whose price or
-   indicators failed never reaches this phase: plan 02-15 records it in failed_tickers
-   and excludes it upstream, which is why there is no price_data_error argument here.
+   validator after full spend on that class of mistake. A record with no usable price
+   (``price_unavailable_reason``: a set ``price_data_error`` or a price that is not a positive
+   number) is capped at MONITOR or AVOID by the same table call (CORR-05, D-01), so a deployed
+   pick without a price is published as MONITOR with "price unavailable" in its rationale. That
+   is a backstop behind plan 02-15, which already excludes a ticker whose price or indicators
+   failed (failed_tickers), so a priceless record is not expected in a normal run.
    The monitoring triggers the LLM wrote for the original action are kept; the Critic
    reviews the clamped position like any other. Each clamp record carries its ``phase``
    and its message says "draft" or "final", so a warning never claims more than it
    describes; ``clamp_warnings`` adds the finally published action when a later phase
    changed the action again.
 5. ``allocator_payload`` builds the allocator input from the clamped actions, the Flow's
-   scores and the technical record (entry zone and price); the Flow calls the allocator.
+   scores and the technical record (entry zone and price); the Flow calls the allocator. A
+   value the record lacks is left out of the payload, never sent as 0 (D-02).
 6. ``assemble_strategy`` builds ``InvestorStrategicOutput``: ``composite_score`` from the
    Flow's scores, ``allocation_pct``, trade setups and the three capital buckets from the
    allocator, ``current_price`` from the technical record, ``fundamentals_status`` from the
@@ -83,6 +87,7 @@ from utils.action_policy_gate import (
     FUNDAMENTALS_UNKNOWN_ROW,
     VALID_ACTIONS,
     eligible_actions,
+    price_unavailable_reason,
     resolve_allowed_actions,
 )
 from utils.phase_runner import PhaseOutputError
@@ -94,6 +99,7 @@ PHASE = "draft_strategy"
 
 CLAMP_ACTION = "MONITOR"
 CLAMP_SENTENCE = " Action set to MONITOR by policy: {rule}."
+PRICE_RULE = "price unavailable ({reason}): only MONITOR or AVOID are allowed"
 
 # technical risk_level -> points; thresholds are inclusive upper bounds (module docstring).
 _RISK_POINTS = {"Low": 1, "Medium": 2, "High": 3}
@@ -202,12 +208,15 @@ def policy_context_by_ticker(
 
     A ticker with no fundamental record has ``fundamentals_status`` None: permissive, the
     same as the Critic gate and the bounds validator (the policy never blocks on missing data).
+    ``price_data_error`` is the shared price rule (``price_unavailable_reason``): None for a
+    priced ticker, the reason text for one without a usable price.
     """
     return {
         _ticker(a.ticker): {
             "entry_zone_status": a.momentum_analysis.entry_zone_status,
             "risk_profile": risk_profile,
             "fundamentals_status": fundamentals_status.get(_ticker(a.ticker)),
+            "price_data_error": price_unavailable_reason(a.current_price, a.price_data_error),
         }
         for a in technical.technical_analysis
     }
@@ -216,10 +225,10 @@ def policy_context_by_ticker(
 def eligible_by_ticker(
     technical: Any, fundamentals_status: Dict[str, str], risk_profile: str,
 ) -> Dict[str, frozenset]:
-    """ticker -> the actions it may take: ``eligible_actions(entry_zone_status, risk_profile, fundamentals_status)``."""
+    """ticker -> the actions it may take: ``eligible_actions(zone, risk_profile, fundamentals_status, price_data_error)``."""
     return {
         ticker: eligible_actions(
-            ctx["entry_zone_status"], risk_profile, ctx["fundamentals_status"],
+            ctx["entry_zone_status"], risk_profile, ctx["fundamentals_status"], ctx["price_data_error"],
         )
         for ticker, ctx in policy_context_by_ticker(technical, fundamentals_status, risk_profile).items()
     }
@@ -227,6 +236,7 @@ def eligible_by_ticker(
 
 def policy_rule(
     action: str, entry_zone_status: Optional[str], risk_profile: str, fundamentals_status: Optional[str],
+    price_data_error: Optional[str] = None,
 ) -> str:
     """Why ``action`` is ineligible, naming each table row that excludes it (reads the table, no copy of it)."""
     parts: List[str] = []
@@ -241,6 +251,8 @@ def policy_rule(
                 f"{FUNDAMENTALS_UNKNOWN_ROW}: fundamentals could not be graded, so only "
                 f"{' or '.join(_ordered(row))} are allowed"
             )
+    if price_data_error and action not in ("MONITOR", "AVOID"):
+        parts.append(PRICE_RULE.format(reason=price_data_error))
     return "; ".join(parts) or f"{action} is not an eligible action for this ticker"
 
 
@@ -275,7 +287,7 @@ def clamp_actions(
         if ctx is not None:
             rule = policy_rule(
                 position.action, ctx.get("entry_zone_status"), ctx.get("risk_profile") or "conservative",
-                ctx.get("fundamentals_status"),
+                ctx.get("fundamentals_status"), price_data_error=ctx.get("price_data_error"),
             )
         else:
             rule = f"{position.action} is not among the eligible actions {_ordered(allowed)}"
@@ -418,7 +430,8 @@ def allocator_payload(
     """Input of ``allocate_portfolio``: the clamped actions, the Flow's scores, and the technical zone and price.
 
     Entry zones and the price come from the technical record, never from the LLM. A zone bound
-    the record lacks is left out, so the allocator falls back to the current price itself.
+    or a price the record lacks is left out (null, never 0), so the allocator falls back to the
+    current price for a zone and rejects a deployed action that has no price.
     """
     stocks: List[Dict[str, Any]] = []
     for position in positions:
@@ -429,8 +442,9 @@ def allocator_payload(
             "ticker": ticker,
             "action": position.action,
             "composite_score": float(composite_by_ticker[ticker]["composite_score"]),
-            "current_price": technical.current_price,
         }
+        if technical.current_price is not None:
+            item["current_price"] = technical.current_price
         if momentum.entry_zone_low is not None:
             item["entry_zone_low"] = momentum.entry_zone_low
         if momentum.entry_zone_high is not None:

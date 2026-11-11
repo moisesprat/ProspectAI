@@ -48,10 +48,14 @@ buy_with_unknown_fundamentals check all read this row rather than re-encoding
 the action list.
 """
 
+import math
 import re
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 VALID_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID")
+
+# Reason text for a record with no usable price (CORR-05, D-02).
+PRICE_UNAVAILABLE_REASON = "no current price"
 
 # First key slot of the data-availability rows in ACTION_POLICY_TABLE (D-08).
 FUNDAMENTALS_UNKNOWN_ROW = "FUNDAMENTALS_UNKNOWN"
@@ -137,6 +141,27 @@ def resolve_allowed_actions(
     return allowed
 
 
+def price_unavailable_reason(current_price: Any, price_data_error: Optional[str] = None) -> Optional[str]:
+    """Why a record has no usable price, or None when it has one (CORR-05, D-01, D-02).
+
+    The one price rule: the draft clamp, the final clamp, the Critic gate and the
+    final-stage downgrade all call this, so they cannot disagree. A non-empty
+    ``price_data_error`` is returned as is; otherwise ``current_price`` must be a
+    finite number above 0 (a bool is not a price). Missing data is null, never a
+    zero sentinel (D-02). The technical phase excludes a ticker without a price
+    upstream (plan 02-15), so this is the backstop that every caller shares.
+    """
+    if isinstance(price_data_error, str) and price_data_error:
+        return price_data_error
+    usable = (
+        isinstance(current_price, (int, float))
+        and not isinstance(current_price, bool)
+        and math.isfinite(current_price)
+        and current_price > 0
+    )
+    return None if usable else PRICE_UNAVAILABLE_REASON
+
+
 def eligible_actions(
     entry_zone_status: Optional[str],
     risk_profile: str,
@@ -150,7 +175,8 @@ def eligible_actions(
     then a truthy price_data_error caps the result at {MONITOR, AVOID} -- a
     position with no usable price cannot be bought. The price cap is not part of
     D-08 and has no table row; from plan 02-15 on price failures are excluded
-    upstream, so it is a backstop. Permissive when a dimension is missing.
+    upstream, so it is a backstop. ``price_unavailable_reason()`` produces the
+    fourth argument for every caller. Permissive when a dimension is missing.
     """
     allowed = resolve_allowed_actions(entry_zone_status, risk_profile, fundamentals_status)
     if price_data_error:

@@ -68,7 +68,7 @@ from utils.strategy_assembly import (
 from utils.recommendation_validator import validate_portfolio
 from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 from utils.portfolio_bounds_validator import BoundsViolationError, validate as validate_bounds
-from utils.action_policy_gate import filter_directives, filter_critiques
+from utils.action_policy_gate import filter_directives, filter_critiques, price_unavailable_reason
 from utils.candidate_universe_filter import filter_candidates
 from utils.fundamental_grader_tool import fundamentals_status
 from utils import yfinance_cache
@@ -583,7 +583,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
                 "entry_zone_status": t.momentum_analysis.entry_zone_status,
                 "risk_profile": self.state.risk_profile,
                 "fundamentals_status": fundamentals.get(t.ticker.upper()),
-                "price_data_error": t.price_data_error,
+                "price_data_error": price_unavailable_reason(t.current_price, t.price_data_error),
             }
             for t in to.technical_analysis
         }

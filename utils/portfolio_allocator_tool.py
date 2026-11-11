@@ -42,10 +42,19 @@ Trade setup formulas (stop_multiplier and rr_ratio from PROFILE_BOUNDS):
 
   WAIT-FOR-ENTRY: same zone-anchored formula as in-zone LONG-BUY.
 
+Missing data is null, never 0 (CORR-05, D-02): current_price is required for LONG-BUY and
+WAIT-FOR-ENTRY, and a deployed stock without a positive price returns an error result (the Flow
+turns it into BoundsViolationError, fail closed; its clamps downgrade such a pick to MONITOR
+first). MONITOR and AVOID need no price and no zones, so the price may be null or absent for them.
+A missing zone bound takes the current price for a deployed action.
+
 The LLM decided the actions. This tool only does the math from those decisions.
 """
 
 import json
+import math
+from typing import Optional
+
 from crewai.tools import BaseTool
 
 PROFILE_BOUNDS = {
@@ -60,6 +69,15 @@ PROFILE_BOUNDS = {
         "rr_ratio":        1.5,
     },
 }
+
+
+def _positive_or_none(value) -> Optional[float]:
+    """A finite int or float above 0 as a float; None for anything else (None, 0, negative, nan, bool, text)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return float(value)
 
 
 def _trade_setup(entry_zone_low: float, entry_zone_high: float, stop_multiplier: float, rr_ratio: float) -> dict:
@@ -111,11 +129,17 @@ class PortfolioAllocatorTool(BaseTool):
               "composite_score": <float>, from compute_composite_scores
               "entry_zone_low":  <float>, from interpret_technical_indicators
               "entry_zone_high": <float>, from interpret_technical_indicators
-              "current_price":   <float>  current market price
+              "current_price":   <float>  current market price; required for LONG-BUY and
+                                 WAIT-FOR-ENTRY, null or absent for MONITOR and AVOID.
+                                 A missing price is null, never 0.
             },
             ...
           ]
         }
+
+    A LONG-BUY or WAIT-FOR-ENTRY stock without a current price returns
+    {"error": "LONG-BUY or WAIT-FOR-ENTRY without a current price: <TICKER>"}.
+    A missing entry zone bound takes the current price.
 
     Profile bounds applied by this tool (deterministic, not overridable by LLM):
       conservative: max 15% per position, stop 3% from zone/price, R/R 2.5
@@ -175,12 +199,19 @@ class PortfolioAllocatorTool(BaseTool):
                     "ticker":          str(s.get("ticker", "UNKNOWN")).upper(),
                     "action":          str(s.get("action", "MONITOR")),
                     "composite_score": float(s.get("composite_score", 0)),
-                    "entry_zone_low":  float(s.get("entry_zone_low",  0)),
-                    "entry_zone_high": float(s.get("entry_zone_high", 0)),
-                    "current_price":   float(s.get("current_price",   0)),
+                    "entry_zone_low":  _positive_or_none(s.get("entry_zone_low")),
+                    "entry_zone_high": _positive_or_none(s.get("entry_zone_high")),
+                    "current_price":   _positive_or_none(s.get("current_price")),
                 })
 
             DEPLOYED_ACTIONS = ("LONG-BUY", "WAIT-FOR-ENTRY")
+
+            # A deployed action needs a price: fail closed, never invent one (D-02).
+            for r in results:
+                if r["action"] in DEPLOYED_ACTIONS and r["current_price"] is None:
+                    return json.dumps({
+                        "error": f"LONG-BUY or WAIT-FOR-ENTRY without a current price: {r['ticker']}",
+                    })
 
             # Single profile-based cap for all deployed action types
             ticker_cap = {
@@ -222,12 +253,13 @@ class PortfolioAllocatorTool(BaseTool):
                 if drift != 0:
                     final_allocs[largest] = round(final_allocs[largest] + drift, 1)
 
-            # ── Resolve effective entry zones (fall back to current_price) ────
+            # ── Resolve effective entry zones (a missing bound takes current_price) ──
+            # Deployed stocks always have a price here; MONITOR and AVOID never reach setup math.
             for r in results:
-                if r["action"] in ("LONG-BUY", "WAIT-FOR-ENTRY"):
-                    if r["entry_zone_low"] <= 0:
+                if r["action"] in DEPLOYED_ACTIONS:
+                    if r["entry_zone_low"] is None:
                         r["entry_zone_low"] = r["current_price"]
-                    if r["entry_zone_high"] <= 0:
+                    if r["entry_zone_high"] is None:
                         r["entry_zone_high"] = r["current_price"]
 
             # ── Build per-position output ────────────────────────────────────
