@@ -173,3 +173,142 @@ def test_invalid_draft_action_ends_the_pass_with_the_exception_class(replay, mon
     assert evidence["error"] == "PhaseSchemaError"
     assert evidence["final"] is None and evidence["published"] is None
     assert replay.passes_used(tmp_path) == 1
+
+
+# ─── The below-zone case, the cap, the key refusal and the dry run (Task 2) ─────
+
+def below_answers(final_action="LONG-BUY", draft_action="LONG-BUY"):
+    ticker = _load().SEED["below-zone"]["ticker"]
+    return [narrative(ticker, draft_action), critic(ticker, "MINOR"), narrative(ticker, final_action)]
+
+
+def test_below_zone_case_is_strictly_below_the_zone_and_long_buy_eligible(replay):
+    case = replay.build_case("below-zone")
+    technical = case.technical.technical_analysis[0]
+    momentum = technical.momentum_analysis
+    assert technical.ticker == replay.SEED["below-zone"]["ticker"]
+    assert technical.current_price == replay.SEED["below-zone"]["price"]
+    assert momentum.entry_zone_status == "BELOW_ZONE"
+    assert technical.current_price < momentum.entry_zone_low < momentum.entry_zone_high
+    assert 0.015 < 1 - technical.current_price / momentum.entry_zone_low < 0.03  # about 2 percent below
+    assert 0.02 < momentum.entry_zone_high / momentum.entry_zone_low - 1 < 0.04  # a zone about 3 percent wide
+    assert momentum.momentum_score >= 7
+    rating = case.fundamental.fundamental_analysis[0].fundamental_rating
+    assert (rating.valuation, rating.quality, rating.growth) == ("FAIR", "High", "High Growth")
+    assert case.fundamental.fundamental_analysis[0].data_status == "ok"
+
+    eligible = replay.preflight(case, ProspectAIFlow())
+    assert "LONG-BUY" in eligible and "WAIT-FOR-ENTRY" not in eligible
+
+
+def test_below_zone_long_buy_is_price_anchored_with_ordered_levels(replay, monkeypatch, tmp_path):
+    install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    case = replay.build_case("below-zone")
+    evidence = replay.run_pass(case, tmp_path, ProspectAIFlow())
+
+    assert evidence["error"] is None and evidence["published"]["action"] == "LONG-BUY"
+    setup = evidence["published"]["trade_setup"]
+    price = evidence["published"]["current_price"]
+    assert price == case.price
+    assert setup["entry_zone_low"] == setup["entry_zone_high"] == price
+    assert setup["stop_loss"] < price < setup["take_profit"]
+    checks = evidence["checks"]
+    assert checks["price_anchored"] is True
+    assert checks["stop_below_price_below_target"] is True
+    assert checks["bounds_ok"] is True and checks["no_critical"] is True
+    assert checks["exercised"] is True
+    assert "exercised" in evidence["informational_checks"]
+    assert replay.mechanical_ok(evidence) is True
+
+
+def test_below_zone_monitor_does_not_exercise_the_branch(replay, monkeypatch, tmp_path, capsys):
+    install_crew(monkeypatch, *below_answers("MONITOR"))
+    code = replay.main(["--case", "below-zone", "--out-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    evidence = json.loads((tmp_path / "pass-1-below-zone.json").read_text(encoding="utf-8"))
+    assert code == 0  # a legitimate judgment is not a failure
+    assert evidence["published"]["action"] == "MONITOR"
+    assert evidence["checks"]["exercised"] is False
+    assert evidence["checks"]["price_anchored"] is None
+    assert evidence["checks"]["stop_below_price_below_target"] is None
+    assert "REPLAY RESULT: below-zone pass 1/6 COMPLETED" in out
+
+
+def test_below_zone_run_never_writes_the_key(replay, monkeypatch, tmp_path, capsys):
+    install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    replay.main(["--case", "below-zone", "--out-dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert SENTINEL not in captured.out + captured.err
+    for path in tmp_path.iterdir():
+        assert SENTINEL not in path.read_text(encoding="utf-8")
+
+
+def test_cap_reached_returns_3_without_building_a_flow_or_calling_the_crew(replay, monkeypatch, tmp_path, capsys):
+    (tmp_path / replay.LEDGER_NAME).write_text(
+        "".join(json.dumps({"pass": n, "case": "conflict"}) + "\n" for n in range(1, 7)),
+        encoding="utf-8",
+    )
+    akickoff = install_crew(monkeypatch, *conflict_answers())
+
+    def no_flow(*args, **kwargs):
+        raise AssertionError("the flow must not be built once the cap is reached")
+
+    monkeypatch.setattr(replay, "ProspectAIFlow", no_flow)
+    code = replay.main(["--case", "conflict", "--out-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 3
+    assert "CAP REACHED: 6 of 6 passes used; stop and report to the operator (D-09)" in out
+    assert akickoff.await_count == 0
+    assert replay.passes_used(tmp_path) == 6
+    assert sorted(p.name for p in tmp_path.iterdir()) == [replay.LEDGER_NAME]
+
+
+def test_cap_counts_passes_across_runs_and_refuses_the_seventh(replay, monkeypatch, tmp_path, capsys):
+    for number in range(1, 7):
+        install_crew(monkeypatch, *conflict_answers())
+        assert replay.main(["--case", "conflict", "--out-dir", str(tmp_path)]) == 0
+        assert replay.passes_used(tmp_path) == number
+    capsys.readouterr()
+    akickoff = install_crew(monkeypatch, *conflict_answers())
+    assert replay.main(["--case", "conflict", "--out-dir", str(tmp_path)]) == 3
+    assert "CAP REACHED" in capsys.readouterr().out
+    assert akickoff.await_count == 0 and replay.passes_used(tmp_path) == 6
+    assert not (tmp_path / "pass-7-conflict.json").exists()
+
+
+def test_missing_key_refuses_before_any_ledger_write(replay, monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    akickoff = install_crew(monkeypatch, *conflict_answers())
+    out_dir = tmp_path / "evidence"
+    with pytest.raises(SystemExit) as info:
+        replay.main(["--case", "conflict", "--out-dir", str(out_dir)])
+    assert "ANTHROPIC_API_KEY" in str(info.value)
+    assert not out_dir.exists()
+    assert akickoff.await_count == 0
+
+
+def test_dry_run_prints_eligible_actions_and_writes_nothing(replay, monkeypatch, tmp_path, capsys):
+    akickoff = install_crew(monkeypatch, *conflict_answers())
+    code = replay.main(["--case", "below-zone", "--out-dir", str(tmp_path / "evidence"), "--dry-run"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Eligible actions:" in out and "LONG-BUY" in out
+    assert "REPLAY RESULT" not in out and SENTINEL not in out
+    assert not (tmp_path / "evidence").exists() and list(tmp_path.iterdir()) == []
+    assert akickoff.await_count == 0
+    # --out-dir is optional for a dry run
+    assert replay.main(["--case", "conflict", "--dry-run"]) == 0
+
+
+def test_long_buy_not_eligible_returns_2_without_a_call_or_ledger_line(replay, monkeypatch, tmp_path, capsys):
+    case = replay.build_case("conflict")
+    rating = case.fundamental.fundamental_analysis[0].fundamental_rating
+    rating.quality, rating.growth = "UNKNOWN", "UNKNOWN"  # fundamentals unknown: only MONITOR or AVOID
+    monkeypatch.setattr(replay, "build_case", lambda name: case)
+    akickoff = install_crew(monkeypatch, *conflict_answers())
+    out_dir = tmp_path / "evidence"
+    code = replay.main(["--case", "conflict", "--out-dir", str(out_dir)])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "LONG-BUY is not eligible" in out
+    assert akickoff.await_count == 0 and not out_dir.exists()
