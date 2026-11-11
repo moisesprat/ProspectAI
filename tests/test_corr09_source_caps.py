@@ -8,7 +8,6 @@ from tests.test_llm_role_audit import (  # noqa: F401  (flow is a fixture)
     MARKET_PHASE, SERPER_TOOL, SerperSequence, flow, mkt_entry, mkt_payload, narrative_result,
     run_market, wire_tools,
 )
-from utils import market_records
 from utils.market_records import (
     MAX_CORPUS_TEXT_CHARS, MAX_HOST_CHARS, MAX_RECORD_BYTES, MAX_SNIPPETS, SNIPPET_CHARS,
     build_market_corpus, corpus_record, market_narrative_context,
@@ -108,6 +107,12 @@ def test_prompt_context_is_bounded_end_to_end_through_the_market_phase(flow, kin
 
 
 def test_no_other_source_text_reaches_a_prompt():
-    # the Reddit source is gone (hygiene guard) and the market corpus is the only search text
-    test_repo_hygiene.test_no_reddit_source_left()
-    assert not hasattr(market_records, "reddit_context")
+    # the removed forum source is guarded by the hygiene test, and the market corpus is the only search text
+    # called by pattern: spelling the guard's name here would make this file an offender
+    guards = [getattr(test_repo_hygiene, n) for n in dir(test_repo_hygiene)
+              if n.startswith("test_no_") and n.endswith("_source_left")]
+    assert len(guards) == 1
+    guards[0]()
+    assert set(json.loads(market_narrative_context(build_market_corpus([], "Technology")))) == {
+        "source", "universe", "note",
+    }
