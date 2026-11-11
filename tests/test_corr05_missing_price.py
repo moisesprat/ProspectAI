@@ -415,3 +415,43 @@ def test_a_critic_directive_to_buy_a_priceless_ticker_is_rejected_through_the_fl
     kept, rejected = filter_directives(["AAA: change action to LONG-BUY because momentum is strong"],
                                        flow._gate_position_context())
     assert kept == [] and [r.ticker for r in rejected] == ["AAA"]
+
+
+# ─── deployed_without_trade_setup through the finalize path (plan 04-02, D-12) ──
+
+from prospect_ai_flow import BoundsViolationError  # noqa: E402
+from tests.test_flow_portfolio_repricing import _technical_output  # noqa: E402
+
+
+class TestDeployedWithoutTradeSetupThroughFinalize:
+    def test_all_zero_composite_scores_raise_after_two_allocator_passes(self, flow):
+        flow.state.technical_output = _technical_output("XYZ", 100.0, 105.0, 102.0)
+        flow.state.composite_scores = {"XYZ": {"ticker": "XYZ", "composite_score": 0.0}}
+        flow.state.policy_clamps = []
+        real_run = PortfolioAllocatorTool._run
+        calls = []
+
+        def counting_run(self, *args, **kwargs):
+            calls.append(1)
+            return real_run(self, *args, **kwargs)
+
+        with patch.object(PortfolioAllocatorTool, "_run", counting_run):
+            with pytest.raises(BoundsViolationError) as exc_info:
+                flow._finalize_and_validate_portfolio(
+                    _structured(_pos("XYZ", allocation_pct=0.0, composite_score=0.0)), "conservative")
+        assert len(calls) == 2
+        assert any(v["rule"] == "deployed_without_trade_setup" and v["ticker"] == "XYZ"
+                   for v in exc_info.value.violations)
+        assert flow.state.policy_clamps == [], "a priced ticker is not downgraded"
+
+    def test_a_priceless_long_buy_still_publishes_as_monitor_with_no_violation(self, flow):
+        prime_draft(flow)
+        _make_aaa_priceless(flow)
+        _seed_scores(flow, "AAA", "BBB")
+        flow.state.policy_clamps = []
+        out = flow._finalize_and_validate_portfolio(
+            _structured(_pos("AAA"), _pos("BBB", "MONITOR", allocation_pct=0.0, trade_setup=None,
+                                          current_price=50.0)), "conservative")
+        aaa = out["positions"][0]
+        assert aaa["action"] == "MONITOR" and aaa["trade_setup"] is None
+        assert [(c["ticker"], c["phase"]) for c in flow.state.policy_clamps] == [("AAA", "final_strategy")]

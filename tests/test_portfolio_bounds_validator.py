@@ -293,3 +293,48 @@ def test_buy_with_unknown_fundamentals_raises_via_validate_or_raise():
     with pytest.raises(BoundsViolationError) as exc_info:
         validate_or_raise(out, "conservative", None, {"XYZ": "UNKNOWN"})
     assert any(v["rule"] == "buy_with_unknown_fundamentals" for v in exc_info.value.violations)
+
+
+# ── deployed_without_trade_setup (phase 4 CORR-05, D-12) ─────────────────────
+
+def _no_setup_rule(violations):
+    return [v for v in violations if v["rule"] == "deployed_without_trade_setup"]
+
+
+@pytest.mark.parametrize("action", ["LONG-BUY", "WAIT-FOR-ENTRY"])
+@pytest.mark.parametrize("missing", [None, {}, "absent"])
+def test_deployed_action_without_trade_setup_is_flagged(action, missing):
+    pos = _position(ticker="XYZ", action=action, alloc=15.0)
+    if missing == "absent":
+        del pos["trade_setup"]
+    else:
+        pos["trade_setup"] = missing
+    out = _output([pos], deployed=15.0 if action == "LONG-BUY" else 0.0,
+                  reserved=15.0 if action == "WAIT-FOR-ENTRY" else 0.0,
+                  cash=85.0,
+                  reserved_allocations=[{"ticker": "XYZ", "pct": 15.0}] if action == "WAIT-FOR-ENTRY" else None)
+    found = _no_setup_rule(validate(out, "conservative"))
+    assert found == [{
+        "ticker": "XYZ", "rule": "deployed_without_trade_setup",
+        "expected": "trade_setup for LONG-BUY and WAIT-FOR-ENTRY", "actual": None,
+    }]
+
+
+@pytest.mark.parametrize("action", ["MONITOR", "AVOID"])
+def test_monitor_and_avoid_need_no_trade_setup(action):
+    pos = _position(ticker="XYZ", action=action, alloc=0.0)
+    pos["trade_setup"] = None
+    out = _output([pos], deployed=0.0, cash=100.0)
+    assert validate(out, "conservative") == []
+
+
+def test_deployed_action_with_a_valid_setup_does_not_trip_the_rule():
+    assert _no_setup_rule(validate(_output([_position(ticker="XYZ")]), "conservative")) == []
+
+
+def test_deployed_without_trade_setup_raises_via_validate_or_raise():
+    pos = _position(ticker="XYZ")
+    pos["trade_setup"] = None
+    with pytest.raises(BoundsViolationError) as exc_info:
+        validate_or_raise(_output([pos]), "conservative")
+    assert [v["rule"] for v in exc_info.value.violations] == ["deployed_without_trade_setup"]
