@@ -113,3 +113,28 @@ def test_etf_only_answer_fails_validation_with_fixed_text(caplog):
     visible = str(excinfo.value) + repr(excinfo.value.errors)
     assert "XLE" not in visible and "SPY" not in visible
     assert "ETF" in visible
+
+
+# ─── Alias sector names (phase 4 CORR-06) ───
+
+@pytest.mark.asyncio
+async def test_flow_filter_backstop_drops_the_alias_benchmark_etf(flow, caplog):
+    """If an ETF reaches filter_candidates under the SPA's sector name, the backstop still reduces it."""
+    from schemas.agent_outputs import MarketAnalysisOutput
+    from tests.test_llm_role_audit import _candidate, _organic
+
+    flow.state.sector = "Consumer Discretionary"
+    _wire_energy_market(flow, _organic("AMZN earnings beat", "XLY and AMZN rally", "AMZN guidance"))
+    merged = MarketAnalysisOutput(
+        sector="Consumer Discretionary",
+        candidate_stocks=[_candidate("XLY"), _candidate("AMZN")],
+        summary="s" * 120,
+    )
+    with caplog.at_level("WARNING"), \
+         patch.object(flow, "_make_crew") as mc, \
+         patch("prospect_ai_flow.merge_market", return_value=merged):
+        mc.return_value.akickoff = AsyncMock(return_value=_narrative_result("AMZN"))
+        await flow.market_analysis()
+
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AMZN"]
+    assert "Excluded sector-benchmark/broad-market ETF candidates: ['XLY']" in caplog.text
