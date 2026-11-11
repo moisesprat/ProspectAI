@@ -92,6 +92,7 @@ from schemas.agent_outputs import (
     ValuationMetrics,
 )
 from utils.execution_tracker import ExecutionTracker
+from utils.fundamental_grader_tool import fundamentals_status
 from utils.portfolio_bounds_validator import BoundsViolationError
 from utils.recommendation_validator import validate_portfolio
 from utils.strategy_assembly import clamp_warnings, eligible_by_ticker
@@ -124,6 +125,7 @@ RISK_PROFILE = "conservative"
 TECHNICAL_HINTS = ("momentum", "rsi", "macd", "trend", "technical", "moving average", "adx", "breakout")
 FUNDAMENTAL_HINTS = ("valuation", "expensive", "fundamental", "quality", "growth", "declining", "earnings")
 ADVISORY_CHECKS = ("hint_mentions_technical", "hint_mentions_fundamental")
+INFORMATIONAL_CHECKS = ("exercised",)
 
 
 @dataclass
@@ -231,7 +233,33 @@ def _build_conflict() -> ReplayCase:
     )
 
 
-_BUILDERS = {"conflict": _build_conflict}
+def _build_below_zone() -> ReplayCase:
+    seed = SEED["below-zone"]
+    ticker, price = seed["ticker"], seed["price"]
+    zone_low = round(price / 0.98, 2)  # the price sits about 2 percent below the zone
+    technical = _technical(
+        ticker, price, momentum=8, status="BELOW_ZONE",
+        zone_low=zone_low, zone_high=round(zone_low * 1.03, 2),  # a zone about 3 percent wide
+        signal="BULLISH", risk_level="Medium", rsi=58.0, adx=30.0, trend="Strong",
+        signals=["MACD bullish crossover", "Price dipped below the pullback zone", "RSI constructive at 58"],
+    )
+    fundamental = _fundamental(
+        ticker, valuation="FAIR", quality="High", growth="High Growth",
+        metrics=ValuationMetrics(
+            pe_ratio=28.0, pb_ratio=6.0, price_to_sales=9.0, roe=0.35,
+            revenue_growth_yoy=0.30, earnings_growth_yoy=0.35, debt_to_equity=0.4,
+        ),
+        strengths=["High return on equity", "Strong revenue and earnings growth"],
+        risks=["Cyclical demand", "Customer concentration"],
+        thesis="Replay thesis: growth and returns are strong and the valuation is in line with growth.",
+    )
+    return ReplayCase(
+        name="below-zone", ticker=ticker, price=price, market=_market(ticker),
+        technical=technical, fundamental=fundamental, seed=dict(seed),
+    )
+
+
+_BUILDERS = {"conflict": _build_conflict, "below-zone": _build_below_zone}
 
 
 def build_case(name: str) -> ReplayCase:
@@ -254,11 +282,24 @@ def _prime(case: ReplayCase, flow: ProspectAIFlow) -> None:
     flow.state.fundamental_output = case.fundamental
 
 
+def eligible_for(case: ReplayCase, fundamentals: Optional[Dict[str, str]] = None) -> List[str]:
+    """Sorted eligible actions for the case's ticker, from the records alone (no flow, no LLM).
+
+    ``fundamentals`` is the flow's ticker -> AVAILABLE | UNKNOWN map; without it the same
+    rule the flow applies is read from the case's fundamental ratings.
+    """
+    if fundamentals is None:
+        fundamentals = {
+            a.ticker.upper(): fundamentals_status(a.fundamental_rating.quality, a.fundamental_rating.growth)
+            for a in case.fundamental.fundamental_analysis
+        }
+    return sorted(eligible_by_ticker(case.technical, fundamentals, case.risk_profile)[case.ticker.upper()])
+
+
 def preflight(case: ReplayCase, flow: ProspectAIFlow) -> List[str]:
     """Set the flow state from ``case`` and return the sorted eligible actions for its ticker."""
     _prime(case, flow)
-    eligible = eligible_by_ticker(case.technical, flow._fundamentals_status_by_ticker(), case.risk_profile)
-    return sorted(eligible[case.ticker.upper()])
+    return eligible_for(case, flow._fundamentals_status_by_ticker())
 
 
 def passes_used(out_dir: Path) -> int:
@@ -305,6 +346,19 @@ def checks(case: ReplayCase, evidence: Dict[str, Any]) -> Dict[str, Any]:
         rationale = ((evidence.get("final") or {}).get("rationale") or "").lower()
         result["hint_mentions_technical"] = any(term in rationale for term in TECHNICAL_HINTS)
         result["hint_mentions_fundamental"] = any(term in rationale for term in FUNDAMENTAL_HINTS)
+    if case.name == "below-zone":
+        exercised = published["action"] == "LONG-BUY"
+        setup = published.get("trade_setup") if exercised else None
+        price = published.get("current_price")
+        result["exercised"] = exercised  # informational: another action is a judgment, not a failure
+        result["price_anchored"] = None
+        result["stop_below_price_below_target"] = None
+        if setup is not None and price is not None:
+            low, high = setup["entry_zone_low"], setup["entry_zone_high"]
+            result["price_anchored"] = abs(low - high) < 1e-6 and abs(low - price) < 0.01
+            result["stop_below_price_below_target"] = setup["stop_loss"] < price < setup["take_profit"]
+        elif exercised:
+            result["price_anchored"] = result["stop_below_price_below_target"] = False  # LONG-BUY without a setup
     return result
 
 
@@ -401,6 +455,7 @@ def run_pass(case: ReplayCase, out_dir: Path, flow: ProspectAIFlow) -> Dict[str,
     }
     evidence["checks"] = checks(case, evidence)
     evidence["advisory_checks"] = [k for k in ADVISORY_CHECKS if k in evidence["checks"]]
+    evidence["informational_checks"] = [k for k in INFORMATIONAL_CHECKS if k in evidence["checks"]]
 
     evidence["evidence_file"] = f"pass-{number}-{case.name}.json"
     path = out_dir / evidence["evidence_file"]
@@ -415,24 +470,48 @@ def _parse(argv: Optional[List[str]]) -> argparse.Namespace:
         description="Live replay of reasoning-depth action selection (one pass; at most 6 per out-dir).",
     )
     parser.add_argument("--case", required=True, choices=CASES)
-    parser.add_argument("--out-dir", required=True, help="evidence directory (also holds the pass ledger)")
-    return parser.parse_args(argv)
+    parser.add_argument("--out-dir", help="evidence directory (also holds the pass ledger); required unless --dry-run")
+    parser.add_argument("--dry-run", action="store_true", help="run only the eligibility preflight; write nothing")
+    args = parser.parse_args(argv)
+    if not args.dry_run and not args.out_dir:
+        parser.error("--out-dir is required unless --dry-run is given")
+    return args
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse(argv)
-    out_dir = Path(args.out_dir)
     case = build_case(args.case)
-    flow = ProspectAIFlow()
-    eligible = preflight(case, flow)
-    models = phase_models(flow)
-    print("Resolved models: " + " ".join(f"{phase}={model}" for phase, model in models.items()))
+
+    # 1. Preflight, from the records alone: the script exists to exercise the LLM's LONG-BUY judgment.
+    eligible = eligible_for(case)
     print(
         f"Case: {case.name} ticker={case.ticker} seed_price={case.price} "
         f"(SYNTHETIC records seeded from a live report: {case.seed.get('source', 'n/a')})"
     )
     print("Eligible actions: " + ", ".join(eligible))
+    if "LONG-BUY" not in eligible:
+        print(
+            f"Preflight refused: LONG-BUY is not eligible for {case.ticker}, so the clamp, not the LLM, "
+            "would decide; no LLM call made."
+        )
+        return 2
+    if args.dry_run:
+        print("Dry run: preflight only, nothing written, no LLM call.")
+        return 0
 
+    # 2. The key, from the environment or ProspectAI/.env; never printed.
+    load_dotenv(ROOT / ".env")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise SystemExit("Set ANTHROPIC_API_KEY (environment or .env) first.")
+
+    # 3. The spend cap (D-09), before any flow is built.
+    out_dir = Path(args.out_dir)
+    if passes_used(out_dir) >= MAX_PASSES:
+        print(f"CAP REACHED: {MAX_PASSES} of {MAX_PASSES} passes used; stop and report to the operator (D-09)")
+        return 3
+
+    flow = ProspectAIFlow()
+    print("Resolved models: " + " ".join(f"{phase}={model}" for phase, model in phase_models(flow).items()))
     evidence = run_pass(case, out_dir, flow)
     number = evidence["pass"]
     print(f"Pass {number} of {MAX_PASSES} (hard cap per out-dir)")
