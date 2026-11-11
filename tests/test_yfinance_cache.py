@@ -310,3 +310,48 @@ def test_executor_worker_gets_a_fresh_lazy_cache_per_task():
 
 def test_run_scoped_marker():
     assert cache.RUN_SCOPED is True
+
+
+# ── Empty-answer warning (CORR-07, phase 4 D-06) ───────────────────────────────
+
+def _cache_warnings(caplog):
+    return [r for r in caplog.records if r.name == "utils.yfinance_cache" and r.levelname == "WARNING"]
+
+
+def test_empty_history_warns_once_per_run(caplog):
+    mock = _mock_ticker()
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=mock):
+            cache.get_history("ZZZ", "1y")
+            cache.get_history("ZZZ", "1y")
+    warnings = _cache_warnings(caplog)
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "price history" in msg
+    assert "'ZZZ'" in msg
+
+
+def test_non_empty_history_does_not_warn(caplog):
+    frame = pd.DataFrame({"Close": [1.0, 2.0]})
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker(history_df=frame)):
+            cache.get_history("AAPL", "1y")
+    assert _cache_warnings(caplog) == []
+
+
+def test_warning_cuts_a_long_ticker_to_20_characters_in_repr_quotes(caplog):
+    long_ticker = "A" * 40
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker()):
+            cache.get_history(long_ticker, "1y")
+    msg = _cache_warnings(caplog)[0].getMessage()
+    assert repr("A" * 20) in msg
+    assert "A" * 21 not in msg
+
+
+def test_warning_escapes_newlines_in_the_ticker(caplog):
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker()):
+            cache.get_history("AB\nCD", "1y")
+    msg = _cache_warnings(caplog)[0].getMessage()
+    assert "\n" not in msg

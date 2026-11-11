@@ -22,14 +22,24 @@ Instead the cache lives in a ContextVar:
   context, so nothing leaks from one task to the next task on the same worker.
   Only clear() installs a cache.
 - The cache ends with the run's context, so memory no longer grows across runs.
+
+An empty answer from Yahoo (no rows, no keys, None) is logged once per run per
+key, on the fetch path only: the empty value is cached, so a cache hit never
+warns again. The warning names the dataset and the ticker cut to 20 characters
+and escaped with repr(); it carries no data. The caller decides what an empty
+answer means (the technical phase excludes the ticker, plan 02-15; phase 4
+CORR-07).
 """
 from __future__ import annotations
 
+import logging
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 # prospectai-backend reads this through getattr() to decide whether concurrent
 # runs in one process are safe (CORR-08). An older engine without it is run one
@@ -85,12 +95,33 @@ def _yf_symbol(ticker: str) -> str:
     return ticker.strip().upper().replace(".", "-")
 
 
+def _warn_if_empty(dataset: str, ticker: str, value: Any) -> None:
+    """Log one WARNING when yfinance answered with nothing for this dataset.
+
+    Empty means None, an empty DataFrame or Series, or an empty dict. Any other
+    type logs nothing. Only the dataset name and repr() of the first 20
+    characters of the ticker are logged, never the contents of the value.
+    """
+    if value is None:
+        empty = True
+    elif isinstance(value, (pd.DataFrame, pd.Series)):
+        empty = value.empty
+    elif isinstance(value, dict):
+        empty = not value
+    else:
+        empty = False
+    if empty:
+        logger.warning("yfinance returned no %s for %s", dataset, repr(str(ticker)[:20]))
+
+
 def get_history(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
     """Return OHLCV history DataFrame, fetching from yfinance on first access."""
     cache = _cache()
     key = (ticker.upper(), period, interval)
     if key not in cache.history:
-        cache.history[key] = yf.Ticker(_yf_symbol(ticker)).history(period=period, interval=interval)
+        frame = yf.Ticker(_yf_symbol(ticker)).history(period=period, interval=interval)
+        _warn_if_empty("price history", ticker, frame)
+        cache.history[key] = frame
     return cache.history[key]
 
 
@@ -99,7 +130,9 @@ def get_info(ticker: str) -> Dict[str, Any]:
     cache = _cache()
     key = ticker.upper()
     if key not in cache.info:
-        cache.info[key] = yf.Ticker(_yf_symbol(ticker)).info
+        info = yf.Ticker(_yf_symbol(ticker)).info
+        _warn_if_empty("company info", ticker, info)
+        cache.info[key] = info
     return cache.info[key]
 
 
@@ -108,7 +141,9 @@ def get_financials(ticker: str) -> Any:
     cache = _cache()
     key = ticker.upper()
     if key not in cache.financials:
-        cache.financials[key] = yf.Ticker(_yf_symbol(ticker)).financials
+        financials = yf.Ticker(_yf_symbol(ticker)).financials
+        _warn_if_empty("income statement", ticker, financials)
+        cache.financials[key] = financials
     return cache.financials[key]
 
 
@@ -117,5 +152,7 @@ def get_cashflow(ticker: str) -> Any:
     cache = _cache()
     key = ticker.upper()
     if key not in cache.cashflow:
-        cache.cashflow[key] = yf.Ticker(_yf_symbol(ticker)).cashflow
+        cashflow = yf.Ticker(_yf_symbol(ticker)).cashflow
+        _warn_if_empty("cash flow", ticker, cashflow)
+        cache.cashflow[key] = cashflow
     return cache.cashflow[key]
