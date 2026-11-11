@@ -455,3 +455,74 @@ class TestDeployedWithoutTradeSetupThroughFinalize:
         aaa = out["positions"][0]
         assert aaa["action"] == "MONITOR" and aaa["trade_setup"] is None
         assert [(c["ticker"], c["phase"]) for c in flow.state.policy_clamps] == [("AAA", "final_strategy")]
+
+
+# ─── the recommendation validator and the schema say it (plan 04-02) ───────────
+
+from schemas.agent_outputs import PositionRecommendation  # noqa: E402
+from utils.recommendation_validator import validate_position  # noqa: E402
+
+_SETUP = {"direction": "LONG-BUY", "entry_zone_low": 99.0, "entry_zone_high": 101.0,
+          "stop_loss": 96.0, "take_profit": 107.0}
+
+
+def _issues(position):
+    return [(i.severity, i.field, i.message) for i in validate_position(position)]
+
+
+class TestRecommendationValidatorDeployedIssues:
+    def test_long_buy_without_a_setup_is_critical(self):
+        issues = _issues({"ticker": "AAA", "action": "LONG-BUY", "current_price": 100.0})
+        assert ("critical", "trade_setup", "LONG-BUY has no trade setup") in issues
+        assert not any(f == "current_price" for _, f, _ in issues)
+
+    def test_wait_for_entry_without_a_price_is_critical(self):
+        issues = _issues({"ticker": "AAA", "action": "WAIT-FOR-ENTRY", "trade_setup": dict(_SETUP),
+                          "current_price": None})
+        assert ("critical", "current_price", "WAIT-FOR-ENTRY has no current price") in issues
+        assert not any(f == "trade_setup" and m.endswith("has no trade setup") for _, f, m in issues)
+
+    @pytest.mark.parametrize("price", [0, -3.0, float("nan")])
+    def test_an_unusable_price_counts_as_missing(self, price):
+        issues = _issues({"ticker": "AAA", "action": "LONG-BUY", "trade_setup": dict(_SETUP),
+                          "current_price": price})
+        assert ("critical", "current_price", "LONG-BUY has no current price") in issues
+
+    @pytest.mark.parametrize("action", ["MONITOR", "AVOID"])
+    def test_monitor_and_avoid_with_neither_are_clean(self, action):
+        assert _issues({"ticker": "AAA", "action": action, "current_price": None}) == []
+
+    def test_a_priced_long_buy_with_a_setup_is_clean_of_both(self):
+        issues = _issues({"ticker": "AAA", "action": "LONG-BUY", "trade_setup": dict(_SETUP),
+                          "current_price": 100.0})
+        assert not any(m.endswith(("has no trade setup", "has no current price")) for _, _, m in issues)
+
+
+def _recommendation(price, setup=None, ticker="AAA", action="LONG-BUY"):
+    return PositionRecommendation.model_validate({
+        "ticker": ticker, "action": action, "composite_score": 70.0, "allocation_pct": 10.0,
+        "current_price": price, "trade_setup": setup, "rationale": "R" * 60,
+        "monitoring_triggers": ["t"], "review_frequency": "WEEKLY",
+    })
+
+
+class TestSchemaWarnsWhenNoSetupCanBeBuilt:
+    def test_no_price_and_no_setup_logs_one_warning_and_validates(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="schemas.agent_outputs"):
+            pos = _recommendation(None, ticker="A" * 30)
+        assert pos.trade_setup is None
+        [record] = [r for r in caplog.records if r.name == "schemas.agent_outputs"]
+        assert record.levelno == logging.WARNING
+        assert repr("A" * 20) in record.getMessage() and "A" * 21 not in record.getMessage()
+        assert "LONG-BUY" in record.getMessage() and "no current price" in record.getMessage()
+
+    def test_a_price_still_builds_the_setup_and_logs_nothing(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="schemas.agent_outputs"):
+            pos = _recommendation(100.0)
+        assert pos.trade_setup is not None and pos.trade_setup.stop_loss == 97.0
+        assert [r for r in caplog.records if r.name == "schemas.agent_outputs"] == []
+
+    def test_monitor_without_a_price_logs_nothing(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="schemas.agent_outputs"):
+            _recommendation(None, action="MONITOR")
+        assert [r for r in caplog.records if r.name == "schemas.agent_outputs"] == []

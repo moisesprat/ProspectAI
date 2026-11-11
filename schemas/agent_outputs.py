@@ -5,9 +5,12 @@ typed structures. The Investor Strategic Agent reads these directly.
 """
 
 from __future__ import annotations
+import logging
 from datetime import datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +329,12 @@ class PositionRecommendation(BaseModel):
                         entry_zone_high=price,
                         stop_loss=stop,
                         take_profit=tp,
+                    )
+                else:
+                    # Phase 4 CORR-05: say so instead of leaving the setup silently empty.
+                    logger.warning(
+                        "%s: %s has no current price, so no trade setup could be built",
+                        repr(self.ticker[:20]), self.action,
                     )
         return self
 
