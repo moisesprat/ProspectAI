@@ -44,6 +44,26 @@ Cases and what the operator reviews
               pullback zone" as a key signal, a P/E the grader would grade EXPENSIVE
               under a FAIR label, and no sentiment (the normal path measures it). See
               04-07-FIXTURE-REVISION.md.
+  below-zone-aggressive
+              The same SYNTHETIC below-zone records (byte-identical market, technical
+              and fundamental records, same seed, same mechanical checks, same pinned
+              eligible actions AVOID, LONG-BUY, MONITOR) under the ``aggressive`` risk
+              profile instead of ``conservative``. Added on the operator's decision after
+              10 of 10 conservative-profile passes answered MONITOR, the model reasoning
+              that a conservative profile does not buy below the zone. The claim of this
+              case is narrower than the conservative one and stated so: "under an
+              aggressive profile, a below-zone name with strong evidence can be bought,
+              and then yields a price-anchored valid setup (stop < price < target)". It
+              does not claim that a conservative profile buys below the zone. Nothing in
+              the records or prompts names the profile or an action; only the
+              ``risk_profile`` of the flow state differs, which the draft, critic and
+              final prompts render as their RISK PROFILE disposition. The profile used is
+              saved in the evidence JSON (``risk_profile``), and the file is named
+              ``pass-N-below-zone-aggressive.json``. Consequence of the profile for the
+              deterministic path: the allocator caps a lone position at 30 percent
+              (conservative 15), stop 0.95 times price (0.97) and reward/risk 1.5 (2.5);
+              no mechanical check reads those numbers, and the price-anchored setup is
+              derived from the same price either way.
 
 Cost: a few cents to tens of cents per pass on the Sonnet 5.5 phases. Hard cap: 6
 passes per ``--out-dir`` (D-09), counted in ``passes.jsonl`` and enforced before any
@@ -55,6 +75,7 @@ Usage, from ProspectAI/:
 
     .venv/bin/python scripts/replay_reasoning_depth.py --case conflict --out-dir DIR
     .venv/bin/python scripts/replay_reasoning_depth.py --case below-zone --out-dir DIR
+    .venv/bin/python scripts/replay_reasoning_depth.py --case below-zone-aggressive --out-dir DIR
     .venv/bin/python scripts/replay_reasoning_depth.py --case conflict --dry-run
 
 The key is read from the environment or ProspectAI/.env. ``--dry-run`` runs only the
@@ -78,7 +99,7 @@ import json
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -114,7 +135,8 @@ from utils.technical_records import trend_strength_from_adx
 # D-09: the hard spend cap. Six passes per out-dir; one pass is draft + critic + final for one case.
 MAX_PASSES = 6
 LEDGER_NAME = "passes.jsonl"
-CASES = ("conflict", "below-zone")
+CASES = ("conflict", "below-zone", "below-zone-aggressive")
+BELOW_ZONE_CASES = ("below-zone", "below-zone-aggressive")  # share records and mechanical checks
 PHASES = ("draft_strategy", "critique_review", "final_strategy")
 
 # Real ticker and price per case, read once at authoring time (2026-11-12) from the live
@@ -134,6 +156,7 @@ SEED: Dict[str, Dict[str, Any]] = {
 
 SECTOR = "Technology"
 RISK_PROFILE = "conservative"
+AGGRESSIVE_PROFILE = "aggressive"  # case below-zone-aggressive only; the other cases keep RISK_PROFILE
 
 # below-zone case: the hand-typed raw inputs of the two deterministic tools (SYNTHETIC apart from the
 # seeded price). The record's zone, status, regime, momentum score, risk level and every fundamental grade
@@ -330,7 +353,16 @@ def _build_below_zone() -> ReplayCase:
     )
 
 
-_BUILDERS = {"conflict": _build_conflict, "below-zone": _build_below_zone}
+def _build_below_zone_aggressive() -> ReplayCase:
+    """The below-zone records unchanged, run under the aggressive profile; only name and profile differ."""
+    return replace(_build_below_zone(), name="below-zone-aggressive", risk_profile=AGGRESSIVE_PROFILE)
+
+
+_BUILDERS = {
+    "conflict": _build_conflict,
+    "below-zone": _build_below_zone,
+    "below-zone-aggressive": _build_below_zone_aggressive,
+}
 
 
 def build_case(name: str) -> ReplayCase:
@@ -417,7 +449,7 @@ def checks(case: ReplayCase, evidence: Dict[str, Any]) -> Dict[str, Any]:
         rationale = ((evidence.get("final") or {}).get("rationale") or "").lower()
         result["hint_mentions_technical"] = any(term in rationale for term in TECHNICAL_HINTS)
         result["hint_mentions_fundamental"] = any(term in rationale for term in FUNDAMENTAL_HINTS)
-    if case.name == "below-zone":
+    if case.name in BELOW_ZONE_CASES:
         exercised = published["action"] == "LONG-BUY"
         setup = published.get("trade_setup") if exercised else None
         price = published.get("current_price")
@@ -555,8 +587,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 1. Preflight, from the records alone: the script exists to exercise the LLM's LONG-BUY judgment.
     eligible = eligible_for(case)
+    profile = "" if case.risk_profile == RISK_PROFILE else f"risk_profile={case.risk_profile} "
     print(
-        f"Case: {case.name} ticker={case.ticker} seed_price={case.price} "
+        f"Case: {case.name} ticker={case.ticker} {profile}seed_price={case.price} "
         f"(SYNTHETIC records seeded from a live report: {case.seed.get('source', 'n/a')})"
     )
     print("Eligible actions: " + ", ".join(eligible))
