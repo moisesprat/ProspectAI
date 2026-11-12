@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
 from utils.action_policy_gate import price_unavailable_reason
+from utils.portfolio_bounds_validator import _is_price_anchored
 
 
 @dataclass
@@ -80,7 +81,14 @@ def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
             ))
 
     # ── Degenerate entry zone ─────────────────────────────────────────────────
-    if entry_low and entry_high and entry_high - entry_low < entry_low * 0.003:
+    # A price-anchored deployed pick (zone collapsed to current_price on purpose by the allocator)
+    # is exempt; the rule is shared with PortfolioBoundsValidator (deferred item D-04-06-1).
+    price_anchored = (
+        action in ("LONG-BUY", "WAIT-FOR-ENTRY")
+        and entry_low is not None and entry_high is not None
+        and _is_price_anchored(entry_low, entry_high, current_price)
+    )
+    if entry_low and entry_high and not price_anchored and entry_high - entry_low < entry_low * 0.003:
         width = round(entry_high - entry_low, 4)
         issues.append(ValidationIssue(
             severity="critical",

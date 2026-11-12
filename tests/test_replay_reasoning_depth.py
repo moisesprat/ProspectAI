@@ -216,13 +216,13 @@ def test_below_zone_long_buy_is_price_anchored_with_ordered_levels(replay, monke
     assert checks["price_anchored"] is True
     assert checks["stop_below_price_below_target"] is True
     assert checks["bounds_ok"] is True and evidence["bounds_violations"] == []
-    # no_critical mirrors the validator's critical issues faithfully. validate_portfolio currently
-    # reports a zero-width (price-anchored) zone as a critical "degenerate" issue although the
-    # bounds validator accepts it (deferred item of plan 04-06), so the value is not pinned here.
-    assert checks["no_critical"] is (evidence["critical_issues"] == [])
+    # validate_portfolio now exempts the price-anchored zone (deferred item D-04-06-1), so the
+    # below-zone LONG-BUY carries no critical issue.
+    assert evidence["critical_issues"] == []
+    assert checks["no_critical"] is True
     assert checks["exercised"] is True
     assert "exercised" in evidence["informational_checks"]
-    assert replay.mechanical_ok(evidence) is (evidence["critical_issues"] == [])
+    assert replay.mechanical_ok(evidence) is True
 
 
 def test_below_zone_monitor_does_not_exercise_the_branch(replay, monkeypatch, tmp_path, capsys):
