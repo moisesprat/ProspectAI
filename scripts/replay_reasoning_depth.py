@@ -28,10 +28,22 @@ Cases and what the operator reviews
               LLM. The operator reads the draft, critic and final rationales and
               judges whether the final action is coherent with the conflict; the
               two ``hint_*`` checks are advisory keyword hints, not a verdict.
-  below-zone  entry_zone_status BELOW_ZONE with the price strictly below the zone
-              and healthy fundamentals. When the LLM answers LONG-BUY the checks
-              show the setup is price-anchored with stop < price < target; any
+  below-zone  entry_zone_status BELOW_ZONE with the price strictly below the zone,
+              graded-strong fundamentals (FAIR, High, High Growth) and a measured
+              positive news sentiment. The zone, status, regime and momentum are what
+              the real TechnicalInterpretationTool computes from hand-typed raw
+              indicators (BELOW_ZONE_INDICATORS: an intact SMA20 > SMA50 > SMA200
+              stack with the price above SMA50 and SMA200), and the grades are what the
+              real FundamentalGraderTool computes from BELOW_ZONE_FUNDAMENTALS, so no
+              zone, grade or score is a typed number. When the LLM answers LONG-BUY the
+              checks show the setup is price-anchored with stop < price < target; any
               other action is a legitimate judgment that did not exercise the branch.
+              Revision 2026-11-12: seven live passes of the first version all chose
+              MONITOR; it was a TRENDING-regime record that the real tool can never
+              label BELOW_ZONE, carried the author's own phrase "dipped below the
+              pullback zone" as a key signal, a P/E the grader would grade EXPENSIVE
+              under a FAIR label, and no sentiment (the normal path measures it). See
+              04-07-FIXTURE-REVISION.md.
 
 Cost: a few cents to tens of cents per pass on the Sonnet 5.5 phases. Hard cap: 6
 passes per ``--out-dir`` (D-09), counted in ``passes.jsonl`` and enforced before any
@@ -92,10 +104,12 @@ from schemas.agent_outputs import (
     ValuationMetrics,
 )
 from utils.execution_tracker import ExecutionTracker
-from utils.fundamental_grader_tool import fundamentals_status
+from utils.fundamental_grader_tool import FundamentalGraderTool, fundamentals_status
 from utils.portfolio_bounds_validator import BoundsViolationError
 from utils.recommendation_validator import validate_portfolio
 from utils.strategy_assembly import clamp_warnings, eligible_by_ticker
+from utils.technical_interpretation_tool import TechnicalInterpretationTool
+from utils.technical_records import trend_strength_from_adx
 
 # D-09: the hard spend cap. Six passes per out-dir; one pass is draft + critic + final for one case.
 MAX_PASSES = 6
@@ -121,6 +135,32 @@ SEED: Dict[str, Dict[str, Any]] = {
 SECTOR = "Technology"
 RISK_PROFILE = "conservative"
 
+# below-zone case: the hand-typed raw inputs of the two deterministic tools (SYNTHETIC apart from the
+# seeded price). The record's zone, status, regime, momentum score, risk level and every fundamental grade
+# are computed from these by the real tools in _build_below_zone, never typed. NEUTRAL regime on purpose:
+# the interpretation tool anchors a TRENDING zone just under the price, so it never reports BELOW_ZONE
+# there; BELOW_ZONE needs the price more than two ATR under SMA20, here about 7 percent, while the
+# SMA20 > SMA50 > SMA200 stack ("Strong Uptrend") is intact and the price is above SMA50 and SMA200.
+BELOW_ZONE_INDICATORS: Dict[str, Any] = {
+    "current_price": SEED["below-zone"]["price"],
+    "sma_20": 181.0, "sma_50": 163.4, "sma_200": 141.0, "atr": 2.7,
+    "rsi": 44.0, "adx": 23.0,
+    "macd_status": "Bullish", "ma_status": "Strong Uptrend", "bb_status": "Normal Range",
+    "stochastic_status": "Neutral",
+}
+# Input of FundamentalGraderTool: P/E 22 grades FAIR (15 to 25), current ratio 2.1 with debt to equity 0.4 and
+# positive free cash flow grades High quality, revenue growth 30 percent grades High Growth.
+BELOW_ZONE_FUNDAMENTALS: Dict[str, Any] = {
+    "ticker": SEED["below-zone"]["ticker"],
+    "valuation": {"pe_ratio": 22.0, "ps_ratio": 9.0},
+    "balance_sheet": {"current_ratio": 2.1, "debt_to_equity": 0.4, "free_cash_flow": 4.2e10},
+    "growth": {"revenue_growth_yoy": 0.30},
+}
+# Measured news sentiment of the pick on the normal (phase 3.1) path: the provider's score in [-1, 1] and the
+# count of the symbol in the search snippets.
+BELOW_ZONE_SENTIMENT = 0.35
+BELOW_ZONE_MENTIONS = 6
+
 # Advisory keyword hints (conflict case): the operator, not these sets, decides coherence.
 TECHNICAL_HINTS = ("momentum", "rsi", "macd", "trend", "technical", "moving average", "adx", "breakout")
 FUNDAMENTAL_HINTS = ("valuation", "expensive", "fundamental", "quality", "growth", "declining", "earnings")
@@ -144,21 +184,35 @@ class ReplayCase:
 
 # ─── Case construction ─────────────────────────────────────────────────────────
 
-def _market(ticker: str) -> MarketAnalysisOutput:
+def _market(
+    ticker: str, *, sentiment: Optional[float] = None, mentions: Optional[int] = None,
+) -> MarketAnalysisOutput:
+    """One candidate. With ``sentiment`` it is a news-provider score as the Serper path publishes it
+    (mention_count, relevance = count over the largest count = 1.0 for the lone candidate); without it
+    nothing is measured and every measured field is null, never 0.
+    """
+    measured = sentiment is not None
     return MarketAnalysisOutput(
         sector=SECTOR,
         candidate_stocks=[CandidateStock(
-            ticker=ticker, mention_count=None, average_sentiment=None, relevance_score=None,
+            ticker=ticker, mention_count=mentions, average_sentiment=sentiment,
+            relevance_score=1.0 if measured else None,
             rationale=f"{ticker} is a large-cap {SECTOR} candidate chosen as the replay input for this case.",
         )],
-        summary="Replay market record: one candidate, no sentiment measured, used only as the strategy input. " * 2,
-        sentiment_available=False,
+        summary=(
+            "Replay market record: one candidate with a measured news sentiment, used only as the strategy input. "
+            if measured else
+            "Replay market record: one candidate, no sentiment measured, used only as the strategy input. "
+        ) * 2,
+        sentiment_available=measured,
     )
 
 
 def _technical(
     ticker: str, price: float, *, momentum: float, status: str, zone_low: float, zone_high: float,
     signal: str, risk_level: str, rsi: float, adx: float, trend: str, signals: List[str],
+    regime: str = "TRENDING", macd: str = "bullish", ma: str = "above SMA50 and SMA200",
+    stochastic: str = "neutral",
 ) -> TechnicalAnalysisOutput:
     return TechnicalAnalysisOutput(
         sector=SECTOR,
@@ -167,8 +221,7 @@ def _technical(
             ticker=ticker,
             current_price=price,
             raw_indicators=RawIndicators(
-                rsi=rsi, adx=adx, macd_status="bullish", ma_status="above SMA50 and SMA200",
-                stochastic_status="neutral",
+                rsi=rsi, adx=adx, macd_status=macd, ma_status=ma, stochastic_status=stochastic,
             ),
             momentum_analysis=MomentumAnalysis(
                 momentum_score=momentum,
@@ -181,7 +234,7 @@ def _technical(
                 entry_zone_status=status,
                 entry_zone_low=zone_low,
                 entry_zone_high=zone_high,
-                regime="TRENDING",
+                regime=regime,
             ),
             investment_recommendation=f"{ticker} replay technical view: {signal.lower()} signal, status {status}.",
         )],
@@ -236,25 +289,43 @@ def _build_conflict() -> ReplayCase:
 def _build_below_zone() -> ReplayCase:
     seed = SEED["below-zone"]
     ticker, price = seed["ticker"], seed["price"]
-    zone_low = round(price / 0.98, 2)  # the price sits about 2 percent below the zone
+    raw = BELOW_ZONE_INDICATORS
+    computed = json.loads(TechnicalInterpretationTool()._run(ticker, json.dumps(raw)))
+    if computed.get("entry_zone_status") != "BELOW_ZONE":  # a drifted tool or raw input must not pass silently
+        raise ValueError(f"below-zone indicators no longer compute BELOW_ZONE: {computed}")
+    grade = json.loads(FundamentalGraderTool()._run(json.dumps({"fundamentals": [BELOW_ZONE_FUNDAMENTALS]})))["grades"][0]
+    if grade["data_status"] != "ok" or fundamentals_status(grade["quality"], grade["growth"]) != "AVAILABLE":
+        raise ValueError(f"below-zone fundamentals no longer grade as available: {grade}")
+    # Readings only, each restating a raw input or a tool output; no interpretation and no action word.
+    signals = [
+        f"MACD {raw['macd_status'].lower()}",
+        "SMA20 above SMA50 above SMA200",
+        f"Price above SMA50 ({raw['sma_50']:.2f}) and SMA200 ({raw['sma_200']:.2f})",
+        f"RSI {raw['rsi']:.0f}",
+    ]
     technical = _technical(
-        ticker, price, momentum=8, status="BELOW_ZONE",
-        zone_low=zone_low, zone_high=round(zone_low * 1.03, 2),  # a zone about 3 percent wide
-        signal="BULLISH", risk_level="Medium", rsi=58.0, adx=30.0, trend="Strong",
-        signals=["MACD bullish crossover", "Price dipped below the pullback zone", "RSI constructive at 58"],
+        ticker, price, momentum=computed["momentum_score"], status=computed["entry_zone_status"],
+        zone_low=computed["entry_zone_low"], zone_high=computed["entry_zone_high"],
+        signal="BULLISH", risk_level=computed["risk_level"], rsi=raw["rsi"], adx=raw["adx"],
+        trend=trend_strength_from_adx(raw["adx"]), signals=signals, regime=computed["regime"],
+        macd=raw["macd_status"], ma=raw["ma_status"], stochastic=raw["stochastic_status"],
     )
     fundamental = _fundamental(
-        ticker, valuation="FAIR", quality="High", growth="High Growth",
+        ticker, valuation=grade["valuation"], quality=grade["quality"], growth=grade["growth"],
         metrics=ValuationMetrics(
-            pe_ratio=28.0, pb_ratio=6.0, price_to_sales=9.0, roe=0.35,
-            revenue_growth_yoy=0.30, earnings_growth_yoy=0.35, debt_to_equity=0.4,
+            pe_ratio=BELOW_ZONE_FUNDAMENTALS["valuation"]["pe_ratio"], pb_ratio=6.0,
+            price_to_sales=BELOW_ZONE_FUNDAMENTALS["valuation"]["ps_ratio"], roe=0.35,
+            revenue_growth_yoy=BELOW_ZONE_FUNDAMENTALS["growth"]["revenue_growth_yoy"], earnings_growth_yoy=0.35,
+            debt_to_equity=BELOW_ZONE_FUNDAMENTALS["balance_sheet"]["debt_to_equity"],
+            free_cash_flow=BELOW_ZONE_FUNDAMENTALS["balance_sheet"]["free_cash_flow"],
         ),
         strengths=["High return on equity", "Strong revenue and earnings growth"],
         risks=["Cyclical demand", "Customer concentration"],
         thesis="Replay thesis: growth and returns are strong and the valuation is in line with growth.",
     )
     return ReplayCase(
-        name="below-zone", ticker=ticker, price=price, market=_market(ticker),
+        name="below-zone", ticker=ticker, price=price,
+        market=_market(ticker, sentiment=BELOW_ZONE_SENTIMENT, mentions=BELOW_ZONE_MENTIONS),
         technical=technical, fundamental=fundamental, seed=dict(seed),
     )
 
