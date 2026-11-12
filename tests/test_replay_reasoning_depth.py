@@ -191,14 +191,119 @@ def test_below_zone_case_is_strictly_below_the_zone_and_long_buy_eligible(replay
     assert momentum.entry_zone_status == "BELOW_ZONE"
     assert technical.current_price < momentum.entry_zone_low < momentum.entry_zone_high
     assert 0.015 < 1 - technical.current_price / momentum.entry_zone_low < 0.03  # about 2 percent below
-    assert 0.02 < momentum.entry_zone_high / momentum.entry_zone_low - 1 < 0.04  # a zone about 3 percent wide
-    assert momentum.momentum_score >= 7
+    assert momentum.momentum_score >= 7 and momentum.overall_signal == "BULLISH"
     rating = case.fundamental.fundamental_analysis[0].fundamental_rating
     assert (rating.valuation, rating.quality, rating.growth) == ("FAIR", "High", "High Growth")
     assert case.fundamental.fundamental_analysis[0].data_status == "ok"
 
-    eligible = replay.preflight(case, ProspectAIFlow())
+    flow = ProspectAIFlow()
+    eligible = replay.preflight(case, flow)
+    assert flow._fundamentals_status_by_ticker() == {case.ticker: "AVAILABLE"}
     assert "LONG-BUY" in eligible and "WAIT-FOR-ENTRY" not in eligible
+    # The preflight is pinned for the revised fixture: exactly these three actions are open.
+    assert eligible == ["AVOID", "LONG-BUY", "MONITOR"]
+    assert replay.eligible_for(case) == eligible
+
+
+# ─── The below-zone records are internally consistent (fixture revision, plan 04-07) ──────────
+
+def test_below_zone_technical_record_is_what_the_real_interpretation_tool_computes(replay):
+    """Zone, status, regime, momentum and risk are the deterministic tool's output, not typed numbers.
+
+    A TRENDING regime can never end BELOW_ZONE in that tool (its zone is anchored just under the
+    price), so a trending below-zone record was an impossible combination.
+    """
+    from utils.technical_interpretation_tool import TechnicalInterpretationTool
+    from utils.technical_records import trend_strength_from_adx
+
+    case = replay.build_case("below-zone")
+    raw = replay.BELOW_ZONE_INDICATORS
+    assert raw["current_price"] == replay.SEED["below-zone"]["price"]
+    computed = json.loads(TechnicalInterpretationTool()._run(case.ticker, json.dumps(raw)))
+    technical = case.technical.technical_analysis[0]
+    momentum = technical.momentum_analysis
+    assert computed["entry_zone_status"] == momentum.entry_zone_status == "BELOW_ZONE"
+    assert computed["entry_zone_low"] == momentum.entry_zone_low
+    assert computed["entry_zone_high"] == momentum.entry_zone_high
+    assert computed["regime"] == momentum.regime and momentum.regime != "TRENDING"
+    assert computed["momentum_score"] == momentum.momentum_score
+    assert computed["risk_level"] == momentum.risk_level
+    assert momentum.trend_strength == trend_strength_from_adx(raw["adx"])
+    indicators = technical.raw_indicators
+    assert (indicators.rsi, indicators.adx) == (raw["rsi"], raw["adx"])
+    assert (indicators.macd_status, indicators.ma_status, indicators.stochastic_status) == (
+        raw["macd_status"], raw["ma_status"], raw["stochastic_status"],
+    )
+
+
+def test_below_zone_key_signals_are_readings_of_the_raw_indicators(replay):
+    """The long-term averages the signals cite hold in the raw inputs, and the stack label matches them."""
+    raw = replay.BELOW_ZONE_INDICATORS
+    assert raw["sma_20"] > raw["sma_50"] > raw["sma_200"]  # the "Strong Uptrend" label in ma_status
+    assert raw["ma_status"] == "Strong Uptrend"
+    assert raw["current_price"] > raw["sma_50"] > raw["sma_200"]  # price above both long averages
+    signals = replay.build_case("below-zone").technical.technical_analysis[0].momentum_analysis.key_signals
+    assert any("SMA50" in signal and f"{raw['sma_50']:.2f}" in signal for signal in signals)
+    assert any("SMA200" in signal and f"{raw['sma_200']:.2f}" in signal for signal in signals)
+    assert any("RSI" in signal and f"{raw['rsi']:.0f}" in signal for signal in signals)
+
+
+def test_below_zone_fundamental_record_is_what_the_real_grader_computes(replay):
+    from utils.fundamental_grader_tool import FundamentalGraderTool
+
+    case = replay.build_case("below-zone")
+    analysis = case.fundamental.fundamental_analysis[0]
+    batch = {"fundamentals": [replay.BELOW_ZONE_FUNDAMENTALS]}
+    grade = json.loads(FundamentalGraderTool()._run(json.dumps(batch)))["grades"][0]
+    rating = analysis.fundamental_rating
+    assert (rating.valuation, rating.quality, rating.growth) == (grade["valuation"], grade["quality"], grade["growth"])
+    assert analysis.data_status == grade["data_status"] == "ok"
+    assert "UNKNOWN" not in (rating.valuation, rating.quality, rating.growth)
+    metrics = analysis.valuation_metrics
+    raw = replay.BELOW_ZONE_FUNDAMENTALS
+    assert metrics.pe_ratio == raw["valuation"]["pe_ratio"]
+    assert metrics.debt_to_equity == raw["balance_sheet"]["debt_to_equity"]
+    assert metrics.free_cash_flow == raw["balance_sheet"]["free_cash_flow"] > 0
+    assert metrics.revenue_growth_yoy == raw["growth"]["revenue_growth_yoy"]
+
+
+def test_below_zone_market_record_carries_measured_sentiment_and_conflict_stays_unmeasured(replay):
+    """Post phase 3.1 a pick normally has a news-provider score; the conflict case is left as it was."""
+    below = replay.build_case("below-zone").market
+    stock = below.candidate_stocks[0]
+    assert below.sentiment_available is True
+    assert stock.average_sentiment is not None and 0.0 < stock.average_sentiment <= 1.0
+    assert stock.mention_count is not None and stock.mention_count > 0
+    assert stock.relevance_score == 1.0  # the only candidate: count over the largest count
+    conflict = replay.build_case("conflict").market
+    assert conflict.sentiment_available is False
+    assert conflict.candidate_stocks[0].average_sentiment is None
+
+
+def test_replay_records_do_not_steer_the_choice_of_action(replay):
+    """No record text names an action, instructs, or editorialises on the setup (no coaching)."""
+    import re
+
+    steering = re.compile(
+        r"\b(long-buy|buy|sell|wait|monitor|avoid|should|must|recommend\w*|breakdown|dip\w*|weakness)\b",
+        re.IGNORECASE,
+    )
+
+    def strings(value, key=""):
+        if isinstance(value, str):
+            yield key, value
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                yield from strings(v, k)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item, key)
+
+    for name in ("conflict", "below-zone"):
+        case = replay.build_case(name)
+        for record in (case.market, case.technical, case.fundamental):
+            for key, text in strings(record.model_dump(mode="json")):
+                assert not steering.search(text), f"{name}: {key!r} steers the model: {text!r}"
 
 
 def test_below_zone_long_buy_is_price_anchored_with_ordered_levels(replay, monkeypatch, tmp_path):
