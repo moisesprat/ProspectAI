@@ -299,7 +299,7 @@ def test_replay_records_do_not_steer_the_choice_of_action(replay):
             for item in value:
                 yield from strings(item, key)
 
-    for name in ("conflict", "below-zone"):
+    for name in replay.CASES:
         case = replay.build_case(name)
         for record in (case.market, case.technical, case.fundamental):
             for key, text in strings(record.model_dump(mode="json")):
@@ -350,6 +350,118 @@ def test_below_zone_run_never_writes_the_key(replay, monkeypatch, tmp_path, caps
     assert SENTINEL not in captured.out + captured.err
     for path in tmp_path.iterdir():
         assert SENTINEL not in path.read_text(encoding="utf-8")
+
+
+# ─── The aggressive-profile below-zone case (operator decision after 10 conservative MONITORs) ──────
+
+AGGRESSIVE = "below-zone-aggressive"
+
+
+def test_aggressive_case_is_registered_and_the_other_cases_keep_their_profile(replay):
+    assert replay.CASES == ("conflict", "below-zone", AGGRESSIVE)
+    assert replay.build_case("conflict").risk_profile == "conservative"
+    assert replay.build_case("below-zone").risk_profile == "conservative"
+    assert replay.build_case("below-zone").name == "below-zone"
+    case = replay.build_case(AGGRESSIVE)
+    assert case.name == AGGRESSIVE and case.risk_profile == "aggressive" and case.synthetic is True
+
+
+def test_aggressive_case_uses_the_same_synthetic_records_as_the_conservative_below_zone_case(replay):
+    """Only the profile differs: the evidence the model reads is identical, so the claim stays honest."""
+    base = replay.build_case("below-zone")
+    case = replay.build_case(AGGRESSIVE)
+    assert (case.ticker, case.price, case.sector, case.seed) == (base.ticker, base.price, base.sector, base.seed)
+    for name in ("market", "technical", "fundamental"):
+        assert getattr(case, name).model_dump(mode="json") == getattr(base, name).model_dump(mode="json")
+    assert case.technical.technical_analysis[0].momentum_analysis.entry_zone_status == "BELOW_ZONE"
+
+
+def test_aggressive_case_preflight_pins_the_eligible_actions_and_primes_the_profile(replay):
+    case = replay.build_case(AGGRESSIVE)
+    flow = ProspectAIFlow()
+    eligible = replay.preflight(case, flow)
+    assert flow.state.risk_profile == "aggressive"
+    assert eligible == ["AVOID", "LONG-BUY", "MONITOR"]
+    assert replay.eligible_for(case) == eligible
+
+
+def test_aggressive_long_buy_is_price_anchored_and_the_profile_is_in_the_evidence(replay, monkeypatch, tmp_path):
+    from utils.portfolio_allocator_tool import PROFILE_BOUNDS
+
+    install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    case = replay.build_case(AGGRESSIVE)
+    evidence = replay.run_pass(case, tmp_path, ProspectAIFlow())
+
+    assert evidence["case"] == AGGRESSIVE and evidence["risk_profile"] == "aggressive"
+    assert evidence["evidence_file"] == f"pass-1-{AGGRESSIVE}.json"
+    assert json.loads((tmp_path / evidence["evidence_file"]).read_text(encoding="utf-8")) == evidence
+    assert evidence["error"] is None and evidence["published"]["action"] == "LONG-BUY"
+    assert evidence["eligible_actions"] == ["AVOID", "LONG-BUY", "MONITOR"]
+    price = evidence["published"]["current_price"]
+    setup = evidence["published"]["trade_setup"]
+    # Same mechanical checks as the conservative case, held under the aggressive bounds.
+    assert setup["entry_zone_low"] == setup["entry_zone_high"] == price == case.price
+    assert setup["stop_loss"] < price < setup["take_profit"]
+    assert setup["stop_loss"] == round(price * PROFILE_BOUNDS["aggressive"]["stop_multiplier"], 2)
+    # The aggressive cap is 30 percent for a lone position (15 under conservative); no check reads it.
+    assert evidence["published"]["allocation_pct"] == PROFILE_BOUNDS["aggressive"]["max_alloc_pct"]
+    checks = evidence["checks"]
+    assert checks["price_anchored"] is True and checks["stop_below_price_below_target"] is True
+    assert checks["bounds_ok"] is True and checks["no_critical"] is True
+    assert checks["exercised"] is True and "exercised" in evidence["informational_checks"]
+    assert evidence["bounds_violations"] == [] and evidence["critical_issues"] == []
+    assert replay.mechanical_ok(evidence) is True
+
+
+def test_conservative_below_zone_evidence_still_records_the_conservative_profile(replay, monkeypatch, tmp_path):
+    install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    evidence = replay.run_pass(replay.build_case("below-zone"), tmp_path, ProspectAIFlow())
+    assert evidence["risk_profile"] == "conservative" and evidence["evidence_file"] == "pass-1-below-zone.json"
+    assert evidence["published"]["allocation_pct"] == 15.0
+
+
+def test_aggressive_monitor_does_not_exercise_the_branch(replay, monkeypatch, tmp_path, capsys):
+    install_crew(monkeypatch, *below_answers("MONITOR"))
+    code = replay.main(["--case", AGGRESSIVE, "--out-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    evidence = json.loads((tmp_path / f"pass-1-{AGGRESSIVE}.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert evidence["checks"]["exercised"] is False and evidence["checks"]["price_anchored"] is None
+    assert f"REPLAY RESULT: {AGGRESSIVE} pass 1/6 COMPLETED" in out
+
+
+def test_aggressive_dry_run_prints_case_and_eligible_actions_and_writes_nothing(replay, monkeypatch, tmp_path, capsys):
+    akickoff = install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    assert replay.main(["--case", AGGRESSIVE, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"Case: {AGGRESSIVE} ticker=NVDA" in out and "risk_profile=aggressive" in out
+    assert "Eligible actions: AVOID, LONG-BUY, MONITOR" in out
+    assert "REPLAY RESULT" not in out and SENTINEL not in out
+    assert akickoff.await_count == 0 and list(tmp_path.iterdir()) == []
+
+
+def test_conservative_dry_run_header_is_unchanged(replay, capsys):
+    """The case line of the existing cases must stay byte-identical (no profile suffix)."""
+    assert replay.main(["--case", "below-zone", "--dry-run"]) == 0
+    first = capsys.readouterr().out.splitlines()[0]
+    assert first == (
+        "Case: below-zone ticker=NVDA seed_price=168.89 (SYNTHETIC records seeded from a live report: "
+        "report cc3581b8-2b32-4e48-be36-c92ea401c56b run_at 2026-11-10T21:32:23Z)"
+    )
+
+
+def test_aggressive_cap_is_per_out_dir_and_still_six(replay, monkeypatch, tmp_path, capsys):
+    assert replay.MAX_PASSES == 6
+    (tmp_path / replay.LEDGER_NAME).write_text(
+        "".join(json.dumps({"pass": n, "case": "below-zone"}) + "\n" for n in range(1, 7)), encoding="utf-8",
+    )
+    akickoff = install_crew(monkeypatch, *below_answers("LONG-BUY"))
+    assert replay.main(["--case", AGGRESSIVE, "--out-dir", str(tmp_path)]) == 3
+    assert "CAP REACHED: 6 of 6" in capsys.readouterr().out and akickoff.await_count == 0
+    fresh = tmp_path / "fresh"
+    install_crew(monkeypatch, *below_answers("MONITOR"))
+    assert replay.main(["--case", AGGRESSIVE, "--out-dir", str(fresh)]) == 0
+    assert replay.passes_used(fresh) == 1
 
 
 def test_cap_reached_returns_3_without_building_a_flow_or_calling_the_crew(replay, monkeypatch, tmp_path, capsys):
