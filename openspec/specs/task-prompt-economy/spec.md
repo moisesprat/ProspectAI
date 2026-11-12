@@ -1,4 +1,9 @@
-## ADDED Requirements
+# task-prompt-economy Specification
+
+## Purpose
+Defines economy constraints on the task prompts in tasks.yaml: no persona openers, compact schema annotations, capped rationale length, one-line issue entries, and a bounded draft_strategy reasoning framework.
+
+## Requirements
 
 ### Requirement: Task descriptions omit agent persona openers
 Task `description` strings SHALL NOT begin with "You are the X Agent" or any equivalent persona statement. Agent identity is provided by the `role` and `backstory` fields.
@@ -21,13 +26,6 @@ The `market_analysis` task description SHALL specify that each candidate stock r
 - **WHEN** the market_analysis task description specifies a per-stock rationale length
 - **THEN** the upper bound is ≤ 120 words
 
-### Requirement: draft_strategy action-selection expressed as a decision table
-Action-selection logic in draft_strategy STEP 3 SHALL be expressed as a compact condition → action table, one rule per line, occupying ≤ 20 lines total.
-
-#### Scenario: Action rules fit within line budget
-- **WHEN** the draft_strategy action-selection section is read
-- **THEN** it occupies no more than 20 lines
-
 ### Requirement: critique_review issue-type entries are one line each
 Each issue type in the critique_review adversarial checklist SHALL occupy a single line in the format: `TYPE_NAME — condition (SEVERITY)`.
 
@@ -41,3 +39,10 @@ The `draft_strategy` task description SHALL NOT contain a sentence noting that o
 #### Scenario: Critic preface absent
 - **WHEN** the draft_strategy task description is read
 - **THEN** it contains no reference to the Critic reviewing the output
+
+### Requirement: draft_strategy reasoning framework has a word budget
+The `draft_strategy` STEP 3 reasoning-framework block (replacing the removed decision table) SHALL occupy approximately 250–350 words, keeping prompt cost roughly comparable to the table it replaces while allowing room to state the reasoning approach, the surviving hard invariants, and the requirement that the rationale name conflicting signals explicitly.
+
+#### Scenario: Reasoning framework fits within the word budget
+- **WHEN** the `draft_strategy` STEP 3 reasoning-framework text is word-counted
+- **THEN** the count falls within approximately 250–350 words
