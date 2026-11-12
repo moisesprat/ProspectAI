@@ -7,7 +7,7 @@
 ## ADDED Requirements
 
 ### Requirement: draft_strategy reasoning framework has a word budget
-The `draft_strategy` STEP 3 reasoning-framework block (replacing the removed decision table) SHALL occupy approximately 250–350 words, keeping prompt cost roughly comparable to the table it replaces while allowing room to state the reasoning approach, the two surviving hard invariants, and the requirement that the rationale name conflicting signals explicitly.
+The `draft_strategy` STEP 3 reasoning-framework block (replacing the removed decision table) SHALL occupy approximately 250–350 words, keeping prompt cost roughly comparable to the table it replaces while allowing room to state the reasoning approach, the surviving hard invariants, and the requirement that the rationale name conflicting signals explicitly.
 
 #### Scenario: Reasoning framework fits within the word budget
 - **WHEN** the `draft_strategy` STEP 3 reasoning-framework text is word-counted

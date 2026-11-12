@@ -41,17 +41,17 @@ The Critic SHALL flag `UNCONVINCING_OVERRIDE` (MAJOR) when a position has
 `risk_profile=aggressive`, `action=LONG-BUY`, weak momentum, and weak financial health,
 AND the rationale cites no specific catalyst (earnings, product launch, macro event). The
 qualifying condition SHALL be expressed qualitatively — "weak momentum" and "weak financial
-health" as read from the provided `overall_signal`/`momentum_score`/`financial_health`
+health" as read from the provided `overall_signal`/`momentum_score`/`fundamental_rating.quality`
 fields — not as a fixed numeric threshold embedded in the Critic's instructions; the Critic
 uses its own judgment on what counts as weak in context, the same freedom the Draft
 Strategist has.
 
 #### Scenario: Critic flags aggressive LONG-BUY with weak momentum and weak health
-- **WHEN** a position has `risk_profile=aggressive`, `action=LONG-BUY`, `momentum_score=3`, `financial_health=WEAK`, and the rationale contains no specific catalyst
+- **WHEN** a position has `risk_profile=aggressive`, `action=LONG-BUY`, `momentum_score=3`, `fundamental_rating.quality=Low`, and the rationale contains no specific catalyst
 - **THEN** Critic SHALL produce an `UNCONVINCING_OVERRIDE` finding with severity MAJOR
 
 #### Scenario: Critic does not flag aggressive LONG-BUY with adequate momentum
-- **WHEN** a position has `risk_profile=aggressive`, `action=LONG-BUY`, `momentum_score=6`, `financial_health=ADEQUATE`
+- **WHEN** a position has `risk_profile=aggressive`, `action=LONG-BUY`, `momentum_score=6`, `fundamental_rating.quality=Medium`
 - **THEN** Critic SHALL NOT produce `UNCONVINCING_OVERRIDE`
 
 ## ADDED Requirements
