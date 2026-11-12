@@ -155,6 +155,16 @@ class TestTechnicalAnalysisErrors:
             result = TechnicalAnalysisTool()._run('["FAKE"]')
         assert "error" in result["technical_analysis"][0]
 
+    def test_empty_history_warning_is_logged_by_the_cache(self, caplog):
+        with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+            with patch("yfinance.Ticker", return_value=_mock_ticker(pd.DataFrame())):
+                result = TechnicalAnalysisTool()._run('["ZZZ"]')
+        assert "error" in result["technical_analysis"][0]
+        warnings = [r for r in caplog.records if r.name == "utils.yfinance_cache"]
+        assert len(warnings) == 1
+        assert "price history" in warnings[0].getMessage()
+        assert "'ZZZ'" in warnings[0].getMessage()
+
     def test_exception_returns_error_dict(self):
         with patch("yfinance.Ticker", side_effect=Exception("network error")):
             result = TechnicalAnalysisTool()._run('["NVDA"]')
@@ -167,6 +177,19 @@ class TestTechnicalAnalysisErrors:
     def test_empty_array_returns_error(self):
         result = TechnicalAnalysisTool()._run("[]")
         assert "error" in result
+
+
+# ── Dotted share-class tickers (CORR-07) ──────────────────────────────────────
+
+class TestTechnicalDottedTicker:
+
+    def test_brk_b_reaches_yahoo_as_brk_dash_b(self):
+        with patch("yfinance.Ticker", return_value=_mock_ticker(_make_price_df())) as mock_cls:
+            result = TechnicalAnalysisTool()._run('["BRK.B"]')
+        mock_cls.assert_called_once_with("BRK-B")
+        entry = result["technical_analysis"][0]
+        assert "error" not in entry
+        assert entry["stock_data"]["ticker"] == "BRK.B"
 
 
 # ── Status helper methods ─────────────────────────────────────────────────────

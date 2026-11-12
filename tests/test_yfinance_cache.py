@@ -3,6 +3,9 @@ Tests for utils/yfinance_cache.py.
 yfinance is mocked — no network required.
 """
 
+import ast
+import pathlib
+
 import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
@@ -310,3 +313,115 @@ def test_executor_worker_gets_a_fresh_lazy_cache_per_task():
 
 def test_run_scoped_marker():
     assert cache.RUN_SCOPED is True
+
+
+# ── Empty-answer warning (CORR-07, phase 4 D-06) ───────────────────────────────
+
+def _cache_warnings(caplog):
+    return [r for r in caplog.records if r.name == "utils.yfinance_cache" and r.levelname == "WARNING"]
+
+
+def test_empty_history_warns_once_per_run(caplog):
+    mock = _mock_ticker()
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=mock):
+            cache.get_history("ZZZ", "1y")
+            cache.get_history("ZZZ", "1y")
+    warnings = _cache_warnings(caplog)
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "price history" in msg
+    assert "'ZZZ'" in msg
+
+
+def test_non_empty_history_does_not_warn(caplog):
+    frame = pd.DataFrame({"Close": [1.0, 2.0]})
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker(history_df=frame)):
+            cache.get_history("AAPL", "1y")
+    assert _cache_warnings(caplog) == []
+
+
+def test_warning_cuts_a_long_ticker_to_20_characters_in_repr_quotes(caplog):
+    long_ticker = "A" * 40
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker()):
+            cache.get_history(long_ticker, "1y")
+    msg = _cache_warnings(caplog)[0].getMessage()
+    assert repr("A" * 20) in msg
+    assert "A" * 21 not in msg
+
+
+def test_warning_escapes_newlines_in_the_ticker(caplog):
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker()):
+            cache.get_history("AB\nCD", "1y")
+    msg = _cache_warnings(caplog)[0].getMessage()
+    assert "\n" not in msg
+
+
+@pytest.mark.parametrize(
+    "getter, dataset, empty_kwargs, full_kwargs",
+    [
+        ("get_info", "company info", {"info_dict": {}}, {"info_dict": {"symbol": "AAPL"}}),
+        ("get_financials", "income statement", {}, {"financials_df": pd.DataFrame({"2023": [1.0]})}),
+        ("get_cashflow", "cash flow", {}, {"cashflow_df": pd.DataFrame({"2023": [1.0]})}),
+    ],
+)
+def test_other_getters_warn_once_on_empty_answer(caplog, getter, dataset, empty_kwargs, full_kwargs):
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker(**empty_kwargs)):
+            getattr(cache, getter)("ZZZ")
+            getattr(cache, getter)("ZZZ")
+    warnings = _cache_warnings(caplog)
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert dataset in msg
+    assert "'ZZZ'" in msg
+
+    caplog.clear()
+    cache.clear()
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=_mock_ticker(**full_kwargs)):
+            getattr(cache, getter)("AAPL")
+    assert _cache_warnings(caplog) == []
+
+
+def test_get_info_none_warns(caplog):
+    mock = MagicMock()
+    mock.info = None
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=mock):
+            cache.get_info("ZZZ")
+    assert len(_cache_warnings(caplog)) == 1
+
+
+def test_mock_values_do_not_warn(caplog):
+    """A MagicMock answer is not a recognised empty type and must not warn."""
+    mock = MagicMock()
+    with caplog.at_level("WARNING", logger="utils.yfinance_cache"):
+        with patch("utils.yfinance_cache.yf.Ticker", return_value=mock):
+            cache.get_info("AAPL")
+            cache.get_financials("AAPL")
+    assert _cache_warnings(caplog) == []
+
+
+# ── Import guard: yfinance stays in one module (CORR-07, T-04-13) ──────────────
+
+def test_only_yfinance_cache_imports_yfinance():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    files = []
+    for sub in ("utils", "agents", "schemas", "config"):
+        files.extend((root / sub).rglob("*.py"))
+    files.extend(root / name for name in ("prospect_ai_flow.py", "prospect_ai_crew.py", "main.py"))
+    offenders = []
+    for path in files:
+        if path.name == "yfinance_cache.py" and path.parent.name == "utils":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "yfinance" for a in node.names):
+                offenders.append(str(path.relative_to(root)))
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "yfinance":
+                offenders.append(str(path.relative_to(root)))
+    assert offenders == [], f"only utils/yfinance_cache.py may import yfinance, found: {offenders}"

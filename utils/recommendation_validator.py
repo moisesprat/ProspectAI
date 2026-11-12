@@ -4,11 +4,16 @@ Recommendation Validator — post-generation sanity checks on pipeline output.
 Runs after the Investor Strategist output is parsed and before it reaches the
 frontend. Detects contradictions, bad R/R ratios, and trigger proximity issues.
 Exposes findings as ValidationIssue list; caller decides how to surface them.
+A LONG-BUY or WAIT-FOR-ENTRY with no trade setup, or with no usable current
+price, is a critical issue (phase 4 CORR-05); run_analysis logs and publishes it.
 """
 
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+
+from utils.action_policy_gate import price_unavailable_reason
+from utils.portfolio_bounds_validator import _is_price_anchored
 
 
 @dataclass
@@ -32,6 +37,23 @@ def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
     entry_high  = setup.get("entry_zone_high")
     stop_loss   = setup.get("stop_loss")
     take_profit = setup.get("take_profit")
+
+    # ── Deployed action needs a trade setup and a usable price (phase 4 CORR-05) ──
+    if action in ("LONG-BUY", "WAIT-FOR-ENTRY"):
+        if not position.get("trade_setup"):
+            issues.append(ValidationIssue(
+                severity="critical",
+                ticker=ticker,
+                field="trade_setup",
+                message=f"{action} has no trade setup",
+            ))
+        if price_unavailable_reason(current_price) is not None:
+            issues.append(ValidationIssue(
+                severity="critical",
+                ticker=ticker,
+                field="current_price",
+                message=f"{action} has no current price",
+            ))
 
     # ── TradeSetup invariant (should be caught by Pydantic, but belt-and-suspenders) ──
     if stop_loss is not None and entry_low is not None:
@@ -59,7 +81,14 @@ def validate_position(position: Dict[str, Any]) -> List[ValidationIssue]:
             ))
 
     # ── Degenerate entry zone ─────────────────────────────────────────────────
-    if entry_low and entry_high and entry_high - entry_low < entry_low * 0.003:
+    # A price-anchored deployed pick (zone collapsed to current_price on purpose by the allocator)
+    # is exempt; the rule is shared with PortfolioBoundsValidator (deferred item D-04-06-1).
+    price_anchored = (
+        action in ("LONG-BUY", "WAIT-FOR-ENTRY")
+        and entry_low is not None and entry_high is not None
+        and _is_price_anchored(entry_low, entry_high, current_price)
+    )
+    if entry_low and entry_high and not price_anchored and entry_high - entry_low < entry_low * 0.003:
         width = round(entry_high - entry_low, 4)
         issues.append(ValidationIssue(
             severity="critical",

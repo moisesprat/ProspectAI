@@ -644,3 +644,23 @@ def test_critic_agent_text_asks_for_json_and_no_number_copying():
     text = f"{cfg['goal']} {cfg['backstory']}"
     assert "Python dict" not in text and "JSON" in text
     assert cfg["thinking"] == "low" and cfg["max_tokens"] == 16000
+
+
+def test_no_case_b_branch_in_any_config_file():
+    """CORR-04 (phase 4 D-07): no config file keeps the old two-case tool branch."""
+    config_dir = TaskConfigLoader().config_path.parent
+    files = sorted(config_dir.glob("*.yaml"))
+    assert files
+    for path in files:
+        assert "case b" not in path.read_text(encoding="utf-8").lower(), path.name
+
+
+def test_final_strategy_allocator_is_flow_owned(monkeypatch):
+    """CORR-04 (phase 4 D-07): the Flow calls the allocator; the final agent has no tools."""
+    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
+    from prospect_ai_crew import TaskFactory
+    from utils.portfolio_allocator_tool import PortfolioAllocatorTool
+
+    factory = TaskFactory()
+    assert factory._phase_config["final_strategy"]["agent_tools"] == []
+    assert isinstance(factory.flow_tool("final_strategy", "allocate_portfolio"), PortfolioAllocatorTool)

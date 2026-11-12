@@ -4,6 +4,8 @@ Covers all five output schemas, key validation rules, and the new
 composite_score / deployed_pct / reserved_pct fields added in v1.5+.
 """
 
+import typing
+
 import pytest
 from datetime import datetime
 from pydantic import ValidationError
@@ -24,6 +26,8 @@ from schemas.agent_outputs import (
     InvestorStrategicOutput,
     CriticOutput,
     CritiqueItem,
+    PositionNarrative,
+    StrategyNarrativeOutput,
 )
 
 
@@ -355,7 +359,6 @@ def test_position_monitor_valid_no_setup():
         composite_score=52.0,
         allocation_pct=0.0,
         trade_setup=None,
-        scaled_entry_setups=None,
         rationale=(
             "MSFT RSI=72 VERY_EXPENSIVE valuation. composite_score=52.0 below "
             "threshold. Watching for pullback and valuation reset before deploying capital."
@@ -373,7 +376,6 @@ def test_position_avoid_valid():
         composite_score=35.0,
         allocation_pct=0.0,
         trade_setup=None,
-        scaled_entry_setups=None,
         rationale=(
             "WEAK balance sheet, negative revenue growth, negative sentiment. "
             "composite_score=35.0 disqualifies from any capital deployment."
@@ -387,6 +389,29 @@ def test_position_scaled_entry_is_rejected():
     # SCALED-ENTRY is no longer a valid action — schema must reject it
     with pytest.raises(ValidationError):
         _position(action="SCALED-ENTRY", composite_score=78.0, trade_setup=None)
+
+
+def test_scaled_entry_setups_is_not_a_model_field():
+    """CORR-03 is obsolete (phase 4 D-05): the retired action and its field cannot come back.
+
+    The schema ignores and drops an extra key instead of rejecting it (no ``extra="forbid"``),
+    because stored reports still carry the old key and must keep loading.
+    """
+    from schemas.agent_outputs import Action
+
+    for model in (PositionRecommendation, InvestorStrategicOutput, PositionNarrative, StrategyNarrativeOutput):
+        assert "scaled_entry_setups" not in model.model_fields, model.__name__
+    assert set(typing.get_args(Action)) == {"LONG-BUY", "WAIT-FOR-ENTRY", "MONITOR", "AVOID"}
+    assert len(typing.get_args(Action)) == 4
+
+    stored = _portfolio().model_dump()
+    stored["scaled_entry_setups"] = []
+    for position in stored["positions"]:
+        position["scaled_entry_setups"] = None
+    loaded = InvestorStrategicOutput.model_validate(stored)
+    dumped = loaded.model_dump()
+    assert "scaled_entry_setups" not in dumped
+    assert all("scaled_entry_setups" not in p for p in dumped["positions"])
 
 
 def test_position_wait_for_entry_valid():

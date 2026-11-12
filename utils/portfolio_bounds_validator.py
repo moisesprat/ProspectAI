@@ -32,6 +32,12 @@ are about to be published satisfy the invariants:
     hardcoding the action list, so the table, the Critic gate and this
     validator cannot drift. It holds even if the Final Strategist chose the
     action on its own.
+  - a LONG-BUY or WAIT-FOR-ENTRY always publishes a trade setup (rule
+    deployed_without_trade_setup, phase 4 CORR-05, D-12). A missing price is
+    downgraded to MONITOR upstream (plan 04-01, D-01), so this rule only fires
+    for a position that bypassed every clamp or received no allocation (all
+    deployed composite scores at 0). It fails closed rather than publishing a
+    buy with no setup, and it never repairs the position (D-11).
 """
 
 from typing import Any, Dict, List, Optional
@@ -140,6 +146,13 @@ def validate(
             })
 
         setup = pos.get("trade_setup")
+        if action in DEPLOYED_ACTIONS and not setup:
+            violations.append({
+                "ticker": ticker, "rule": "deployed_without_trade_setup",
+                "expected": "trade_setup for LONG-BUY and WAIT-FOR-ENTRY", "actual": None,
+            })
+            continue  # the setup checks below need a setup
+
         if action in DEPLOYED_ACTIONS and setup:
             low   = float(setup.get("entry_zone_low", 0.0) or 0.0)
             high  = float(setup.get("entry_zone_high", 0.0) or 0.0)

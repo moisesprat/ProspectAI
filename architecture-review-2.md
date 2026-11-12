@@ -44,11 +44,13 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 - Location: `utils/recommendation_validator.py:22-117`
 - Stop/TP and R/R validation only runs on `trade_setup`. SCALED-ENTRY positions (which have `trade_setup=None`) are unchecked.
 - Fix: Extract `_validate_setup(ticker, setup, label)` and call it for both `trade_setup` and each entry in `scaled_entry_setups`.
+- Resolved in phase 4: no scaled-entry field or action exists any more. The action list is LONG-BUY, WAIT-FOR-ENTRY, MONITOR and AVOID, and a schema test pins that the field is absent from every position and strategy model.
 
 **S-27 — `final_strategy` phase has no tools in TaskFactory (PortfolioAllocatorTool missing)**
 - Location: `prospect_ai_crew.py:79-83` (`TaskFactory._phase_config["final_strategy"]["tools"]: []`)
 - tasks.yaml STEP 2 CASE B ("Call allocate_portfolio ONCE with revised actions") cannot execute because the tool is not wired. The legacy ProspectAICrew correctly had `[CompositeScoreTool(), PortfolioAllocatorTool()]` for final_strategy.
 - Fix: Add `PortfolioAllocatorTool()` to `_phase_config["final_strategy"]["tools"]`.
+- Resolved in phase 4: the Flow itself calls the allocator for the final phase, the final agent has no tools, and the final prompt asks for no tool call. Tests pin all three, and no config file keeps a "Case B" branch.
 
 ### MINOR
 
@@ -122,14 +124,14 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 
 ### Phase 1 — Immediate (Critical correctness)
 
-1. **S-27** — Add `PortfolioAllocatorTool()` to `TaskFactory._phase_config["final_strategy"]["tools"]`. ~5 min. This fixes a broken feature silently failing in production.
+1. **S-27** — Add `PortfolioAllocatorTool()` to `TaskFactory._phase_config["final_strategy"]["tools"]`. ~5 min. This fixes a broken feature silently failing in production. *(Resolved in phase 4: the Flow owns the final allocator.)*
 2. **F-21** — Align `FundamentalRating` literals with grader output (`STRONG/ADEQUATE/WEAK`, `HIGH/MODERATE/LOW/DECLINING`). Update schema + tests. ~30 min. Eliminates F-12 and the runtime translation maps.
 3. **F-19 + F-20 + F-24** — Rewrite tasks.yaml STEP 4 specs to match schema field names exactly. ~2-3 h. Eliminates the LLM contradiction that causes random pipeline failures.
 4. **F-09** — Remove duplicate "NET" from SECTOR_TICKERS. ~2 min.
 
 ### Phase 2 — Short-term
 
-5. **F-23** — Extend `recommendation_validator` to cover `scaled_entry_setups`. ~30 min.
+5. **F-23** — Extend `recommendation_validator` to cover `scaled_entry_setups`. ~30 min. *(Resolved in phase 4: the field and its action no longer exist.)*
 6. **F-22** — Per-run cache isolation (ContextVar or injection). ~2 h.
 7. **F-10, F-11, F-13, F-14** — Dead-code deletions. ~30 min total.
 8. **F-16** — `ValidationIssue.to_dict()`. ~10 min.

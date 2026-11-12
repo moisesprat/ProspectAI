@@ -191,6 +191,18 @@ class TestFundamentalDataSuccess:
         assert len(meta["description_snippet"]) <= 402  # 400 chars + "…"
 
 
+class TestFundamentalDottedTicker:
+
+    def test_brk_b_reaches_yahoo_as_brk_dash_b_for_every_getter(self):
+        with patch("yfinance.Ticker", return_value=_make_ticker()) as mock_cls:
+            raw = json.loads(FundamentalDataTool()._run('["BRK.B"]'))
+        entry = raw["fundamentals"][0]
+        assert "error" not in entry
+        assert entry["ticker"] == "BRK.B"
+        assert mock_cls.call_count == 3  # info, financials, cashflow
+        assert all(call.args == ("BRK-B",) for call in mock_cls.call_args_list)
+
+
 class TestFundamentalDataMissingValues:
 
     def test_none_values_are_returned_as_none(self):

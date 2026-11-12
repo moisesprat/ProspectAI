@@ -9,7 +9,6 @@ import sys
 from typing import Dict, Any, List
 import pandas as pd
 from datetime import datetime
-import yfinance as yf
 from utils import yfinance_cache
 from utils.technical_interpretation_tool import TechnicalInterpretationTool
 

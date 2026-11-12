@@ -70,3 +70,15 @@ SECTOR_TICKERS: Dict[str, List[str]] = {
         "NWE", "BKH", "OTTER", "AWK", "SWX", "ATO",
     ],
 }
+
+
+# Names the web app (prospectai-web ui/data.js SECTORS) and the backend (SECTOR_ETF) use for two
+# package sectors. They are accepted as supported sectors but the universe is NOT remapped, so a
+# run for them behaves as before (empty unavailable-path universe, Serper path); remapping is a
+# separate decision (gap review WR-03 stays open). The ETF filter does resolve them
+# (utils.candidate_universe_filter.excluded_tickers_for_sector), so the sector-benchmark ETF is
+# excluded under either name (phase 4 CORR-06).
+SECTOR_ALIASES: Dict[str, str] = {
+    "Financials": "Finance",
+    "Consumer Discretionary": "Consumer",
+}

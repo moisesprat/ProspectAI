@@ -45,9 +45,9 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 | 1. Market Analysis | MarketAnalyst | `PatientSerperDevTool` | — |
 | 2. Technical Analysis | TechnicalAnalyst | `TechnicalAnalysisTool`, `TechnicalInterpretationTool` | Task 1 |
 | 3. Fundamental Analysis | FundamentalAnalyst | `FundamentalDataTool`, `FundamentalGraderTool` | Tasks 1–2 |
-| 4. Draft Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–3 |
+| 4. Draft Strategy | InvestorStrategic | — (the pipeline runs `CompositeScoreTool` and `PortfolioAllocatorTool` itself) | Tasks 1–3 |
 | 5. Critic Review | Critic | — (synthesis only) | Tasks 1–4 |
-| 6. Final Strategy | InvestorStrategic | `CompositeScoreTool`, `PortfolioAllocatorTool` | Tasks 1–5 |
+| 6. Final Strategy | InvestorStrategic | — (the pipeline runs `CompositeScoreTool` and `PortfolioAllocatorTool` itself) | Tasks 1–5 |
 
 ### Agent Descriptions
 
@@ -71,10 +71,10 @@ MarketAnalyst → TechnicalAnalyst → FundamentalAnalyst → DraftStrategist �
 
 #### Investor Strategic Agent — Draft (Task 4)
 - **Purpose**: First-pass portfolio construction
-- **Function**: Computes composite scores via `CompositeScoreTool`, allocates positions via `PortfolioAllocatorTool`
+- **Function**: The pipeline computes composite scores and allocations; the model picks one action per stock from `LONG-BUY`, `WAIT-FOR-ENTRY`, `MONITOR` and `AVOID`
 - **Composite Score**: 30 pts sentiment + 40 pts momentum + 30 pts fundamentals (max 100)
-- **Recommendations**: `STRONG_BUY / BUY / HOLD / REDUCE / AVOID` — allocation cap 40% per position
-- **Trade setups**: `LONG-BUY`, `SCALED-ENTRY`, `WAIT-FOR-ENTRY`
+- **Position cap**: 15% per position for the conservative profile, 30% for the aggressive profile
+- **Trade setups**: exist for `LONG-BUY` and `WAIT-FOR-ENTRY`
 
 #### Critic Agent (Task 5)
 - **Purpose**: Adversarial quality gate between the draft and final strategy
@@ -269,7 +269,7 @@ ProspectAI/
 │   ├── fundamental_data_tool.py        # yfinance financial data fetcher
 │   ├── fundamental_grader_tool.py      # Grades individual fundamental metrics
 │   ├── composite_score_tool.py         # 30/40/30 composite scoring
-│   ├── portfolio_allocator_tool.py     # Allocation math with 40% cap
+│   ├── portfolio_allocator_tool.py     # Allocation math with a per-profile cap
 │   └── recommendation_validator.py    # Post-generation validation
 ├── scripts/
 │   └── deploy.sh                       # Bump version, build, publish to PyPI, deploy Modal
@@ -310,6 +310,13 @@ twine upload dist/*
 | Sentiment is always empty (null, `sentiment_available` false) | Check that `NEWS_SENTIMENT_API_KEY` is set and valid, then read `execution_metrics.sentiment_lookup`: `status` `no_key` means no key, `stopped_reason` `quota` or `rate_limited` means the provider's daily free-tier quota ran out (it resets daily; results already looked up that UTC day are cached), `access_denied` means the key was refused, and `scores` below the number of picks means those stocks had no article in the last 7 days |
 
 ## Release Notes
+
+### Unreleased — Clearer handling of missing prices, funds and share-class tickers
+- A buy or wait-for-entry pick whose price cannot be read is now shown as monitor with "price unavailable" and a dash for the price, and the analysis still finishes.
+- A buy can no longer be published without its entry, stop and target.
+- Sector funds such as XLF and XLY are no longer picked as stocks for Financials and Consumer Discretionary.
+- Share-class tickers such as BRK.B now get their price and company data.
+- The search text the model reads now has a fixed size limit.
 
 ### v1.13.0 — News sentiment for each picked stock
 - Each stock the analysis picks now gets a news sentiment score from Marketaux, based on recent articles about the company, and the report shows it next to the stock.
