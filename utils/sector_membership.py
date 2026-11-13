@@ -32,6 +32,14 @@ lookup and a lookup that did not finish in the budget are all ``skipped`` and th
 Absence is None, never a placeholder. A skip is logged by reason and exception class name only,
 never the exception message.
 
+Retry (D-06). ``lookup_sector`` retries a failed lookup exactly once on the same worker: an
+exception directly, an empty (None, {}, non-dict) answer after ``yfinance_cache.forget_info``
+evicted the cached empty entry; an answer with both labels missing is never retried. Matrix
+(first outcome -> retry -> verdict -> log): ok -> never -> member / not_in_sector or skipped
+no_sector_data -> WARNING only for the skip; exception -> yes -> skipped lookup_error after a
+second failure, WARNING with the class name; empty -> yes, after forget_info -> skipped empty_info
+after a second failure, WARNING.
+
 Blocking I/O never runs on the event loop (STALL-02). Lookups run in a dedicated 5-worker
 thread pool under one run-level budget (``SECTOR_CHECK_BUDGET_SEC``), the pool is shut down
 with ``wait=False, cancel_futures=True`` so a hung Yahoo call never holds the Flow past the
@@ -97,13 +105,8 @@ def classify(canonical: str, sector: object, industry: object) -> str:
     return "not_in_sector"
 
 
-def lookup_sector(ticker: str) -> dict:
-    """One yfinance info lookup; never raises.
-
-    ``{"status": "ok", "sector", "industry"}`` (the raw ``info.get`` values) for a non-empty dict,
-    ``{"status": "error", "reason": "empty_info"}`` for None, an empty dict or a non-dict, and
-    ``{"status": "error", "reason": "lookup_error", "error": <class name>}`` for any Exception.
-    """
+def _attempt(ticker: str) -> dict:
+    """One ``get_info`` call turned into an outcome dict; never raises."""
     try:
         info = yfinance_cache.get_info(ticker)
     except Exception as exc:
@@ -111,6 +114,40 @@ def lookup_sector(ticker: str) -> dict:
     if not isinstance(info, dict) or not info:
         return {"status": "error", "reason": "empty_info"}
     return {"status": "ok", "sector": info.get("sector"), "industry": info.get("industry")}
+
+
+def lookup_sector(ticker: str) -> dict:
+    """Look up one ticker's yfinance labels with at most one retry; never raises.
+
+    Fail-open matrix (D-04, D-05, D-06). At most two ``get_info`` calls, on the same worker thread,
+    no sleep between them (the retry runs inside the same run budget, D-08):
+
+    ==============================  ===============  =====================  ==========================
+    first call                      retry            final outcome          verdict, log line
+    ==============================  ===============  =====================  ==========================
+    non-empty dict                  never            ok (labels as given)   member / not_in_sector, or
+                                                                            skipped no_sector_data when
+                                                                            both labels are missing
+    exception                       yes              second call's outcome  skipped lookup_error, WARNING
+                                                                            with the class name only
+    None, {} or a non-dict          yes, after       second call's outcome  skipped empty_info, WARNING
+                                    ``forget_info``
+    ==============================  ===============  =====================  ==========================
+
+    A non-empty dict is final, including one whose labels are both missing (assumption A5: it is
+    stable across runs, so a retry cannot help). The first empty answer is forgotten so the retry
+    really fetches; a second empty answer stays cached so the fundamentals phase does not refetch.
+    The exception message is never logged or stored: only ``type(exc).__name__``.
+
+    Returns ``{"status": "ok", "sector", "industry"}`` (raw ``info.get`` values) or
+    ``{"status": "error", "reason": "empty_info" | "lookup_error", "error"?: <class name>}``.
+    """
+    outcome = _attempt(ticker)
+    if outcome["status"] == "ok":
+        return outcome
+    if outcome["reason"] == "empty_info":
+        yfinance_cache.forget_info(ticker)
+    return _attempt(ticker)
 
 
 def _field(label: object) -> str | None:

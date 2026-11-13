@@ -28,7 +28,8 @@ key, on the fetch path only: the empty value is cached, so a cache hit never
 warns again. The warning names the dataset and the ticker cut to 20 characters
 and escaped with repr(); it carries no data. The caller decides what an empty
 answer means (the technical phase excludes the ticker, plan 02-15; phase 4
-CORR-07).
+CORR-07). forget_info() evicts a cached info answer so a caller that wants one
+more try after an empty answer can get it (phase 4.1 D-06).
 """
 from __future__ import annotations
 
@@ -134,6 +135,17 @@ def get_info(ticker: str) -> Dict[str, Any]:
         _warn_if_empty("company info", ticker, info)
         cache.info[key] = info
     return cache.info[key]
+
+
+def forget_info(ticker: str) -> None:
+    """Evict the cached info answer of ``ticker`` from the current run's cache; no-op when absent.
+
+    ``get_info`` caches empty answers, so a caller that wants one more try (the sector check's
+    single retry, phase 4.1 D-06) must forget the entry first. Outside a run it touches only the
+    throwaway cache. The warning rule of the module docstring is unchanged: the retry's fetch
+    may warn again, a cache hit never does.
+    """
+    _cache().info.pop(ticker.upper(), None)
 
 
 def get_financials(ticker: str) -> Any:

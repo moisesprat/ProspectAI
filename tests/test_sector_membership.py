@@ -184,3 +184,176 @@ def test_picks_reads_the_memo_on_the_serper_path_only():
     malformed = {**serper, "sector_check": {"AAA": "not_in_sector", "BBB": {"verdict": None}}}
     kept, dropped = _picks(narrative, malformed)
     assert [t for t, _ in kept] == ["AAA", "BBB"] and dropped == []
+
+
+# ─── Fail open: lookup problems keep the pick (D-04, D-05, D-06) ──────────────
+
+SOFTWARE = {"sector": "Technology", "industry": "Software - Application"}
+
+
+def _serper_corpus(sector="Technology", *tickers):
+    from utils.market_records import build_market_corpus
+    texts = [f"{t} beats estimates" for t in tickers] or ["AAA beats estimates"]
+    return build_market_corpus(_organic(*texts), sector)
+
+
+def _narrative(*tickers):
+    return MarketNarrativeOutput.model_validate(mkt_payload(*[mkt_entry(t) for t in tickers]))
+
+
+def _skip_lines(caplog):
+    return [r.getMessage() for r in caplog.records if "sector_check_skipped" in r.getMessage()]
+
+
+def _sequence_ticker(outcomes):
+    """yf.Ticker replacement whose successive ``.info`` reads yield ``outcomes`` (an exception is raised)."""
+    queue = list(outcomes)
+    constructed = []
+    lock = threading.Lock()
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            with lock:
+                constructed.append(symbol)
+
+        @property
+        def info(self):
+            with lock:
+                outcome = queue.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+    FakeTicker.constructed = constructed
+    return FakeTicker
+
+
+def _sequence_get_info(monkeypatch, outcomes):
+    queue = list(outcomes)
+    calls = []
+
+    def get_info(ticker):
+        calls.append(ticker)
+        outcome = queue.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(yfinance_cache, "get_info", get_info)
+    return calls
+
+
+def test_exception_then_answer_is_retried_once(flow, caplog, monkeypatch, real_sector_check):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    calls = _sequence_get_info(monkeypatch, [ConnectionError("down"), SOFTWARE])
+    corpora = _capture_corpus(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    assert calls == ["AAA", "AAA"]
+    assert corpora[0]["sector_check"]["AAA"]["verdict"] == "member"
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+    assert _skip_lines(caplog) == []
+
+
+def test_two_exceptions_keep_the_pick_and_log_the_class_only(flow, caplog, monkeypatch, real_sector_check):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    calls = _sequence_get_info(monkeypatch, [
+        ConnectionError("token=SECRET-MARKER"), ConnectionError("token=SECRET-MARKER")])
+    corpora = _capture_corpus(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    assert len(calls) == 2
+    entry = corpora[0]["sector_check"]["AAA"]
+    assert (entry["verdict"], entry["reason"]) == ("skipped", "lookup_error")
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+    assert _skip_lines(caplog) == ["market_analysis: sector_check_skipped (lookup_error): 'AAA'; error ConnectionError"]
+    assert "SECRET-MARKER" not in caplog.text
+
+
+@pytest.mark.parametrize("first", [{}, None], ids=["empty-dict", "none"])
+def test_empty_answer_is_forgotten_and_retried_once(flow, caplog, monkeypatch, real_sector_check, first):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    fake = _sequence_ticker([first, SOFTWARE])
+    monkeypatch.setattr(yfinance_cache.yf, "Ticker", fake)
+    corpora = _capture_corpus(monkeypatch)
+
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    assert corpora[0]["sector_check"]["AAA"]["verdict"] == "member"
+    assert len(fake.constructed) == 2
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+
+
+def test_two_empty_answers_keep_the_pick(flow, caplog, monkeypatch, real_sector_check):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    fake = _sequence_ticker([{}, {}])
+    monkeypatch.setattr(yfinance_cache.yf, "Ticker", fake)
+    corpora = _capture_corpus(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    entry = corpora[0]["sector_check"]["AAA"]
+    assert (entry["verdict"], entry["reason"]) == ("skipped", "empty_info")
+    assert _skip_lines(caplog) == ["market_analysis: sector_check_skipped (empty_info): 'AAA'"]
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+    # The second empty answer stays cached: the fundamentals phase does not refetch it.
+    assert yfinance_cache.get_info("AAA") == {}
+    assert len(fake.constructed) == 2
+
+
+@pytest.mark.parametrize("answer", [
+    {"trailingPegRatio": None},
+    {"longName": "X", "sector": None, "industry": None},
+    {"sector": 3, "industry": "  "},
+], ids=["unknown-symbol", "none-labels", "non-string-labels"])
+def test_missing_labels_keep_the_pick_without_a_retry(
+        flow, caplog, monkeypatch, real_sector_check, answer):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    calls = _sequence_get_info(monkeypatch, [answer])
+    corpora = _capture_corpus(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    assert calls == ["AAA"]
+    entry = corpora[0]["sector_check"]["AAA"]
+    assert (entry["verdict"], entry["reason"]) == ("skipped", "no_sector_data")
+    assert _skip_lines(caplog) == ["market_analysis: sector_check_skipped (no_sector_data): 'AAA'"]
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAA"]
+
+
+def test_long_and_multiline_labels_are_cut_and_escaped(flow, caplog, monkeypatch, real_sector_check):
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "JPM and AAA")), phase=MARKET_PHASE)
+    fake_info(monkeypatch, {"AAA": {"sector": "Technology", "industry": "Consumer Electronics\n" + "x" * 100}})
+    corpora = _capture_corpus(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("JPM"))))
+
+    assert len(corpora[0]["sector_check"]["AAA"]["industry"]) == 40
+    lines = _drop_lines(caplog, "not_in_sector")
+    assert len(lines) == 1 and "\n" not in lines[0] and "\\n" in lines[0]
+
+
+def test_no_value_is_invented_for_a_skipped_pick(monkeypatch, real_sector_check):
+    from datetime import datetime, timezone
+    from utils.market_records import merge_market
+    corpus = _serper_corpus("Technology", "AAA", "AAA")
+    narrative = _narrative("AAA")
+    _sequence_get_info(monkeypatch, [{}, {}])
+
+    asyncio.run(check_sector_membership(narrative, corpus))
+
+    entry = corpus["sector_check"]["AAA"]
+    assert (entry["verdict"], entry["sector"], entry["industry"]) == ("skipped", None, None)
+    now = datetime(2026, 4, 29, tzinfo=timezone.utc)
+    with_check = merge_market("Technology", corpus, narrative, now).candidate_stocks[0]
+    without = {k: v for k, v in corpus.items() if k != "sector_check"}
+    plain = merge_market("Technology", without, narrative, now).candidate_stocks[0]
+    assert (with_check.mention_count, with_check.relevance_score) == (plain.mention_count, plain.relevance_score)
