@@ -21,6 +21,9 @@ Contract:
   an API outage or MissingToolCallError, propagates at once.
 - When the budget runs out the phase fails with PhaseSchemaError. There is no
   deterministic fallback: an exhausted phase never publishes a substitute (D-12).
+  This describes run_phase itself, which never substitutes; the one caller-side
+  exception is the Flow's curated market fallback after a Serper-path answer
+  left no surviving pick (phase 4.1 D-13, utils/market_fallback.py).
 - D-11: enum fields have no case normaliser in the schema, so a case or
   whitespace variant is a validation error that spends this budget.
 - Security: PhaseSchemaError and PhaseOutputError messages carry the phase, the

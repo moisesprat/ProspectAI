@@ -309,8 +309,14 @@ twine upload dist/*
 | No stocks found from search | Check `SERPER_API_KEY` and the Serper quota |
 | Sentiment is always empty (null, `sentiment_available` false) | Check that `NEWS_SENTIMENT_API_KEY` is set and valid, then read `execution_metrics.sentiment_lookup`: `status` `no_key` means no key, `stopped_reason` `quota` or `rate_limited` means the provider's daily free-tier quota ran out (it resets daily; results already looked up that UTC day are cached), `access_denied` means the key was refused, and `scores` below the number of picks means those stocks had no article in the last 7 days |
 | A stock mentioned in the search is missing from the report | Read `execution_metrics.sector_check`: `dropped` lists stocks outside the sector with their listed sector and industry, and `skipped` lists stocks kept because their sector could not be read |
+| The market step's text says its stocks come from a curated list | No stock found in the web search could be confirmed in the sector after the retries. Read `execution_metrics.market_fallback` (`tickers` are the curated stocks used, `dropped` counts why the chosen stocks were set aside) and `execution_metrics.market_corpus.queries` for what was searched |
 
 ## Release Notes
+
+### Unreleased — Better stock searches, and a safe list when the search finds none
+- The web searches for each sector now use plain sector terms and name a few of the sector's best-known stocks, so an analysis such as Financials finds bank and financial stocks to choose from instead of general market news.
+- When none of the stocks chosen from the web search can be confirmed as part of the sector you picked, the analysis now continues with five well-known stocks of that sector instead of stopping with an error, and the market step's text says the stocks came from this list.
+- Those five stocks show no mention count, relevance or news sentiment, because they were not found in the web search, and the run record notes that the list was used and why.
 
 ### v1.13.2 — Stock picks stay in the chosen sector
 - A stock found in the web search is now kept only when its listed sector or industry belongs to the sector you chose, so a web-search mention of a company such as Apple or Nvidia no longer puts it in a Financials analysis.
