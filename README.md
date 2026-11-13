@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.13.2**
+**Current release: v1.13.3**
 
 ### ⚠️ Important Disclaimer
 
@@ -313,7 +313,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Better stock searches, and a safe list when the search finds none
+### v1.13.3 — Better stock searches, and a safe list when the search finds none
 - The web searches for each sector now use plain sector terms and name a few of the sector's best-known stocks, so an analysis such as Financials finds bank and financial stocks to choose from instead of general market news.
 - When none of the stocks chosen from the web search can be confirmed as part of the sector you picked, the analysis now continues with five well-known stocks of that sector instead of stopping with an error, and the market step's text says the stocks came from this list.
 - Those five stocks show no mention count, relevance or news sentiment, because they were not found in the web search, and the run record notes that the list was used and why.
@@ -338,12 +338,6 @@ twine upload dist/*
 ### v1.12.3 — Analyses that run at the same time stay separate
 - When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.
 - Within a single analysis nothing changes: each stock's data is still fetched once and reused across the steps.
-
-### v1.12.2 — More accurate run figures and stricter stock picks
-- The token and cost figures shown for a run no longer count the draft step a second time under the final step, so the per-step, per-model and total figures now match what each step really used.
-- A sector fund or a market-wide fund picked as a stock is now set aside before the picks are checked, so it can no longer leave a run without stocks or lower the other picks' relevance.
-- Common capitalised words and abbreviations such as AI, CEO and EV in web search results no longer count as stock mentions unless they are written as a ticker, for example $AI or NYSE: AI.
-- An analysis for a sector the app does not support is now refused straight away instead of starting paid web searches, and the stored record of a run's web searches never keeps a web address.
 
 ## Roadmap
 
