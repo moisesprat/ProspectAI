@@ -580,3 +580,78 @@ def test_offline_stub_accepts_the_tracker_keyword(monkeypatch):
     assert calls == []
     assert "sector_check" not in corpus
     assert "sector_check" not in tracker.to_dict()
+
+
+# ─── Zero survivors: bounded retry, fixed feedback, no backfill (plan 04.1-03, D-11) ──────────
+
+OFF_SECTOR = {
+    "AAPL": {"sector": "Technology", "industry": "Consumer Electronics"},
+    "NVDA": {"sector": "Technology", "industry": "Semiconductors"},
+}
+FINANCIALS_SERPER = ("JPM beats estimates", "AAPL and JPM lead the market", "NVDA and AAPL rally")
+
+
+def test_all_off_sector_picks_spend_the_retry_and_the_second_answer_is_published(
+        flow, caplog, monkeypatch, real_sector_check):
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic(*FINANCIALS_SERPER)), phase=MARKET_PHASE)
+    calls = fake_info(monkeypatch, OFF_SECTOR)
+
+    with caplog.at_level("WARNING"):
+        kickoff = run_market(
+            flow,
+            narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("NVDA"))),
+            narrative_result(mkt_payload(mkt_entry("JPM"))),
+        )
+
+    assert kickoff.await_count == 2
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["JPM"]
+    feedback = flow._factory.build_task.call_args_list[1].kwargs["feedback"]
+    assert "candidates" in feedback
+    assert "the company must belong to the requested sector" in feedback
+    for forbidden in ("AAPL", "NVDA", "JPM", "Headline", "estimates", "rally"):
+        assert forbidden not in feedback
+    assert sorted(t for t, _ in calls) == ["AAPL", "NVDA"]
+    assert len(_drop_lines(caplog, "not_in_sector")) == 2
+
+
+def test_three_off_sector_answers_fail_with_a_clear_error_and_no_backfill(
+        flow, monkeypatch, real_sector_check):
+    from utils.phase_runner import PhaseSchemaError
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic(*FINANCIALS_SERPER)), phase=MARKET_PHASE)
+    calls = fake_info(monkeypatch, OFF_SECTOR)
+    before = list(flow.state.market_output.candidate_stocks)
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+
+    with pytest.raises(PhaseSchemaError) as info:
+        run_market(flow, off(), off(), off())
+
+    assert info.value.phase == MARKET_PHASE
+    assert info.value.fields == ["candidates"]
+    assert info.value.attempts == 3
+    assert [t for t, _ in calls] == ["AAPL"]
+    assert flow.state.market_output.candidate_stocks == before
+
+
+def test_a_partly_off_sector_answer_continues_with_the_survivors(flow, monkeypatch, real_sector_check):
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic(*FINANCIALS_SERPER)), phase=MARKET_PHASE)
+    fake_info(monkeypatch, OFF_SECTOR)
+
+    kickoff = run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("JPM"))))
+
+    assert kickoff.await_count == 1
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["JPM"]
+
+
+def test_serper_retry_hint_names_the_sector_rule():
+    from utils.market_records import _SOURCE_HINTS, _no_picks_error, build_market_corpus
+    corpus = build_market_corpus(_organic("AAA beats estimates"), "Technology")
+    assert corpus["source"] == "serper"
+    msg = _no_picks_error(corpus, []).errors[0]["msg"]
+    assert "choose only tickers whose symbol itself appears in the search results" in msg
+    assert msg.endswith("the company must belong to the requested sector")
+    assert msg == _SOURCE_HINTS["serper"]
+    for source in ("universe", "open"):
+        assert "belong to the requested sector" not in _SOURCE_HINTS[source]

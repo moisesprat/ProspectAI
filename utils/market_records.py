@@ -74,6 +74,12 @@ industry prove it is outside the requested sector (``utils.sector_membership``).
 network I/O, so it is a separate async step that runs before the retry decision and stores its
 verdicts in ``corpus["sector_check"]`` (``SECTOR_CHECK_KEY``); ``_picks`` stays pure and offline
 and only reads that memo. With no memo (the check did not run) ``_picks`` behaves exactly as before.
+Picks in the curated list of the requested sector are exempt (verdict curated, no lookup), a verdict
+is read from the memo and never fetched here, so this module stays pure and offline, and
+a failed lookup keeps the pick: only proof from the yfinance labels drops one. The retry feedback for the
+serper path ends with the fixed sentence "the company must belong to the requested sector" (the hint is
+kept short enough that the 200-character cap of ``utils.phase_runner.feedback_from`` does not cut it), so a
+model whose picks were all set aside is told the rule without being shown a ticker or any search text.
 
 The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
 not_in_sector_universe, excluded_etf, not_in_sector. A pick that fails is dropped with a warning that
@@ -351,7 +357,8 @@ def serper_sentiment_by_ticker(corpus: Dict[str, Any], tickers: Iterable[str]) -
 _SOURCE_HINTS = {
     "serper": (
         "choose only tickers whose symbol itself appears in the search results; "
-        "a ticker is 1 to 5 capital letters; sector and broad-market ETFs are not eligible"
+        "a ticker is 1 to 5 capital letters; no sector or broad-market ETFs"
+        "; the company must belong to the requested sector"
     ),
     "universe": (
         "choose tickers from the listed universe only; a ticker is 1 to 5 capital letters"

@@ -51,9 +51,9 @@ tasks:
         - source unavailable: pick from "universe" when it is not empty; when it is
           empty, pick well-known companies of the sector by their real ticker symbols.
       The pipeline keeps a pick only if it is in the data: a search pick whose symbol
-      is not in the results, or an unavailable-source pick outside
-      the universe is discarded, and an answer with no kept pick costs a
-      retry. Do not copy the example's tickers or wording; it only shows the shape.
+      is not in the results, a search pick of a company outside the $sector sector,
+      or an unavailable-source pick outside the universe is discarded, and an answer
+      with no kept pick costs a retry. Do not copy the example's tickers or wording; it only shows the shape.
       Never invent ticker symbols. Pick individual companies, never ETFs: no sector
       funds (for example XLE, XLK, XLF) and no broad-market funds (for example SPY, QQQ),
       even when they appear prominently in the data.
