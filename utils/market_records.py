@@ -85,7 +85,10 @@ The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
 not_in_sector_universe, excluded_etf, not_in_sector. A pick that fails is dropped with a warning that
 carries the reason and the ticker cut to 20 characters shown with its repr, never corpus
 text. When none is left the phase answer is a validation failure that spends the bounded
-retry budget; the retry feedback is fixed text per source. The rule differs by source: on
+retry budget; the retry feedback is fixed text per source. After the serper-path budget ends with
+none left, the Flow publishes the curated fallback of ``utils.market_fallback`` (phase 4.1 D-13), the
+one exception to the rule that an exhausted phase never publishes a substitute; the error that ends
+the last attempt is a ``NoPicksError`` so the Flow can tell this case from a schema failure. The rule differs by source: on
 the serper path it is format + grounding in the search results + ETF exclusion (the sector
 universe is not checked there); on the unavailable path it is format + sector universe +
 ETF exclusion. What this does not prove: a symbol present in the text is not shown to be a
@@ -114,6 +117,12 @@ from utils.ticker_matching import is_valid_ticker, symbol_pattern
 logger = logging.getLogger(__name__)
 
 PHASE = "market_analysis"
+
+# The closed set of dropped-pick reasons, in the order the module docstring lists them. The public
+# ``execution_metrics.market_fallback`` record counts drops by these names only (phase 4.1 D-13).
+DROP_REASONS: Tuple[str, ...] = (
+    "invalid_format", "not_in_search_results", "not_in_sector_universe", "excluded_etf", "not_in_sector",
+)
 
 # Key of the memo ``utils.sector_membership`` writes into the corpus and ``_picks`` reads
 # ({TICKER: {"verdict", "reason", "sector", "industry"}}); phase 4.1 D-07.
@@ -445,7 +454,23 @@ def _log_dropped(dropped: List[Tuple[str, str]], corpus: Optional[Dict[str, Any]
             logger.warning("%s: pick dropped (%s): %s", PHASE, reason, repr(ticker[:20]))
 
 
-def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> PhaseOutputError:
+class NoPicksError(PhaseOutputError):
+    """No chosen pick can be published (phase 4.1 D-13).
+
+    A PhaseOutputError like any other, so the bounded retry treats it the same. ``dropped`` holds
+    the (ticker, reason) pairs of the answer that failed: model output, so it stays inside this
+    exception object and is never serialised or logged by the type.
+    """
+
+    def __init__(
+        self, message: str, fields: List[str], errors: List[Dict[str, Any]],
+        dropped: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        super().__init__(message, fields, errors)
+        self.dropped: List[Tuple[str, str]] = list(dropped or [])
+
+
+def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> NoPicksError:
     """The shared failure when no pick can be published: fixed text per source, no ticker, no corpus text."""
     _log_dropped(dropped, corpus)
     source = corpus["source"]
@@ -454,7 +479,7 @@ def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> P
     else:
         hint = _SOURCE_HINTS[source]
     message = f"{PHASE}: no chosen ticker is well formed and grounded in the data; fields: candidates"
-    return PhaseOutputError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}])
+    return NoPicksError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}], dropped)
 
 
 def require_market_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> None:

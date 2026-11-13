@@ -41,7 +41,8 @@ from utils.market_records import (
     serper_queries,
 )
 from utils.news_sentiment import PROVIDER as NEWS_SENTIMENT_PROVIDER, TOOL_NAME as NEWS_SENTIMENT_TOOL
-from utils.phase_runner import extract_model, run_phase
+from utils.market_fallback import fallback_market_output, fallback_tickers, is_zero_survivor_failure
+from utils.phase_runner import PhaseSchemaError, extract_model, run_phase
 from utils.sector_membership import validate_market_picks
 from utils.technical_records import (
     build_technical_records,
@@ -715,6 +716,11 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         Flow looks the grounded picks up through the news-sentiment tool (``_news_sentiment``) and
         stores the provider's scores on the corpus for ``merge_market``. The LLM never sees them
         before choosing and never writes one; a pick without a usable score is null.
+
+        Zero-survivor fallback (phase 4.1 D-13): when the Serper-path answer still leaves no surviving
+        pick after the bounded retry, the Flow publishes the five curated stocks of the sector
+        (``utils.market_fallback``) instead of failing the run: null numbers, no news lookup, fixed
+        text. Any other failure of the phase still raises.
         """
         self._check_error()
         self._emit_start(0)
@@ -752,20 +758,41 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
             tracker.set_market_corpus(corpus_record(corpus))
         logger.info("%s: corpus source=%s", phase, corpus["source"])
         ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
-        result, narrative = await self._run_phase(
-            phase, 0, MarketNarrativeOutput, build_args=(ctx,),
-            validate=lambda n: validate_market_picks(n, corpus, tracker=tracker),
-            start_tracker=False,
-        )
-        if corpus["source"] == "serper":
-            corpus["news_sentiment"] = await self._news_sentiment(phase, grounded_picks(narrative, corpus))
-        self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
+        try:
+            result, narrative = await self._run_phase(
+                phase, 0, MarketNarrativeOutput, build_args=(ctx,),
+                validate=lambda n: validate_market_picks(n, corpus, tracker=tracker),
+                start_tracker=False,
+            )
+        except PhaseSchemaError as exc:
+            if not is_zero_survivor_failure(exc, corpus):
+                raise
+            result = None
+            self.state.market_output = self._publish_market_fallback(phase, sector, corpus, exc)
+        else:
+            if corpus["source"] == "serper":
+                corpus["news_sentiment"] = await self._news_sentiment(phase, grounded_picks(narrative, corpus))
+            self.state.market_output = merge_market(sector, corpus, narrative, datetime.now(timezone.utc))
         kept, dropped = filter_candidates(self.state.market_output.candidate_stocks, sector)
         if dropped:
             logger.warning("Excluded sector-benchmark/broad-market ETF candidates: %s", dropped)
             self.state.market_output.candidate_stocks = kept
         self._emit_progress_model(0, self.state.market_output, result)
-        return result.raw or ""
+        return (result.raw or "") if result is not None else ""
+
+    def _publish_market_fallback(
+        self, phase: str, sector: str, corpus: Dict[str, Any], exc: PhaseSchemaError,
+    ) -> MarketAnalysisOutput:
+        """The curated market output for a Serper-path answer that left no surviving pick (D-13).
+
+        Sync and free of I/O. Logs exactly one WARNING with the phase, the attempts, the sector and
+        the curated tickers; never corpus text or a model-chosen ticker.
+        """
+        logger.warning(
+            "%s: no pick survived %d attempts; publishing the curated fallback for %s: %s",
+            phase, exc.attempts, sector, ", ".join(fallback_tickers(sector)),
+        )
+        return fallback_market_output(sector, datetime.now(timezone.utc))
 
     @listen(market_analysis)
     async def technical_analysis(self):

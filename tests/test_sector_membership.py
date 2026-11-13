@@ -1,11 +1,12 @@
 """Tests for the sector-membership check on search-grounded market picks (phase 4.1, D-01 to D-11)."""
 import asyncio
+import json
 import threading
 
 import pytest
 
 from tests.test_llm_role_audit import (  # noqa: F401  (flow is a fixture)
-    MARKET_PHASE, _log_has_no_corpus_text, _organic, flow, market_tools, mkt_entry, mkt_payload,
+    MARKET_PHASE, NEWS_TOOL, StubTool, _log_has_no_corpus_text, _organic, flow, market_tools, mkt_entry, mkt_payload,
     narrative_result, run_market, run_technical, tech_entry, tech_narrative_entry, tech_payload,
     tech_tools, wire_tools,
 )
@@ -552,20 +553,31 @@ def test_metrics_record_holds_no_corpus_text_and_is_bounded(flow, monkeypatch, r
     assert len(json.dumps(record)) < 4096
 
 
-def test_failed_market_phase_keeps_the_record_in_the_partial_snapshot(flow, monkeypatch, real_sector_check):
+def test_a_schema_failure_on_the_last_attempt_still_fails_the_run_and_keeps_the_record(
+        flow, monkeypatch, real_sector_check):
+    """Replaces the partial-snapshot test that used three off-sector answers to get a failed run.
+
+    Those answers now publish the curated fallback (phase 4.1 D-13), so the failed run is built from a
+    last attempt that fails the schema (a too-short summary): the fallback exists for an unusable search
+    corpus, not an unusable model answer, so this still raises and the record stays in the partial snapshot.
+    """
     from utils.phase_runner import PhaseSchemaError
     flow.state.sector = "Financials"
     wire_tools(flow, market_tools(serper=_organic("AAPL beats estimates", "AAPL again")), phase=MARKET_PHASE)
     tracker = _tracked(flow)
     fake_info(monkeypatch, {"AAPL": {"sector": "Technology", "industry": "Consumer Electronics"}})
     off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+    short = narrative_result(mkt_payload(mkt_entry("AAPL"), summary="too short"))
+    before = list(flow.state.market_output.candidate_stocks)
 
-    with pytest.raises(PhaseSchemaError):
-        run_market(flow, off(), off(), off())
+    with pytest.raises(PhaseSchemaError) as info:
+        run_market(flow, off(), off(), short)
 
+    assert "summary" in info.value.fields
     snap = tracker.snapshot()
     assert snap["partial"] is True
     assert [d["ticker"] for d in snap["sector_check"]["dropped"]] == ["AAPL"]
+    assert flow.state.market_output.candidate_stocks == before
 
 
 def test_offline_stub_accepts_the_tracker_keyword(monkeypatch):
@@ -615,23 +627,45 @@ def test_all_off_sector_picks_spend_the_retry_and_the_second_answer_is_published
     assert len(_drop_lines(caplog, "not_in_sector")) == 2
 
 
-def test_three_off_sector_answers_fail_with_a_clear_error_and_no_backfill(
-        flow, monkeypatch, real_sector_check):
-    from utils.phase_runner import PhaseSchemaError
+def test_three_off_sector_answers_publish_the_curated_fallback(
+        flow, caplog, monkeypatch, real_sector_check):
+    """Replaces the test that pinned PhaseSchemaError for three dropped answers (D-11: no backfill).
+
+    Phase 4.1 D-13 reverses that rule on the Serper path: the failure made visitor-facing Financials
+    runs fail (two live runs on 1.13.2), so the Flow now publishes the five curated Finance stocks
+    with null numbers and no news lookup, and the technical step receives them.
+    """
     flow.state.sector = "Financials"
-    wire_tools(flow, market_tools(serper=_organic(*FINANCIALS_SERPER)), phase=MARKET_PHASE)
+    news = StubTool(NEWS_TOOL, {"scores": {}})
+    tools = {
+        **market_tools(serper=_organic(*FINANCIALS_SERPER)),
+        NEWS_TOOL: news,
+        **tech_tools({"technical_analysis": [tech_entry(t) for t in ("JPM", "BAC", "WFC", "GS", "MS")]}),
+    }
+    wire_tools(flow, tools, phase=MARKET_PHASE)
     calls = fake_info(monkeypatch, OFF_SECTOR)
-    before = list(flow.state.market_output.candidate_stocks)
     off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
 
-    with pytest.raises(PhaseSchemaError) as info:
-        run_market(flow, off(), off(), off())
+    with caplog.at_level("WARNING"):
+        kickoff = run_market(flow, off(), off(), off())
 
-    assert info.value.phase == MARKET_PHASE
-    assert info.value.fields == ["candidates"]
-    assert info.value.attempts == 3
+    assert kickoff.await_count == 3
+    output = flow.state.market_output
+    assert [c.ticker for c in output.candidate_stocks] == ["JPM", "BAC", "WFC", "GS", "MS"]
+    assert output.sector == "Financials"
+    for c in output.candidate_stocks:
+        assert (c.mention_count, c.relevance_score, c.average_sentiment) == (None, None, None)
+    assert output.sentiment_available is False
+    assert news.calls == []
     assert [t for t, _ in calls] == ["AAPL"]
-    assert flow.state.market_output.candidate_stocks == before
+    assert "curated" in output.summary
+    assert [r for r in caplog.records if r.levelname == "WARNING" and "curated fallback" in r.getMessage()]
+
+    run_technical(flow, narrative_result(tech_payload(*[
+        tech_narrative_entry(t) for t in ("JPM", "BAC", "WFC", "GS", "MS")])))
+    sent = tools["calculate_technical_indicators"].calls
+    assert len(sent) == 1
+    assert json.loads(sent[0]["tickers_json"]) == ["JPM", "BAC", "WFC", "GS", "MS"]
 
 
 def test_a_partly_off_sector_answer_continues_with_the_survivors(flow, monkeypatch, real_sector_check):
