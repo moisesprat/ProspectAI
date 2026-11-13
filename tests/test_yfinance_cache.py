@@ -128,6 +128,30 @@ def test_clear_forces_refetch():
     assert mock_cls.call_count == 2
 
 
+# ── forget_info (phase 4.1, D-06) ──────────────────────────────────────────────
+
+def test_forget_info_drops_only_that_ticker_case_insensitively():
+    mock = _mock_ticker(info_dict={"symbol": "X"})
+    with patch("utils.yfinance_cache.yf.Ticker", return_value=mock) as mock_cls:
+        cache.get_info("aaa")
+        cache.get_info("BBB")
+        assert mock_cls.call_count == 2
+        cache.forget_info("Aaa")
+        cache.get_info("BBB")
+        assert mock_cls.call_count == 2
+        cache.get_info("AAA")
+        assert mock_cls.call_count == 3
+
+
+def test_forget_info_is_safe_when_absent_or_outside_a_run():
+    cache.forget_info("NEVER")
+    token = cache._run_cache.set(None)
+    try:
+        cache.forget_info("AAA")
+    finally:
+        cache._run_cache.reset(token)
+
+
 # ── Per-run isolation (CORR-08) ────────────────────────────────────────────────
 #
 # The backend runs each analysis in its own plain thread (empty context), so a

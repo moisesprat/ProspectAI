@@ -8,13 +8,15 @@ matches) and are ETF-free. Consumers:
 - the unavailable-path universe in ``utils.market_records.build_market_corpus``
 - the CLI ``--sector`` choices in ``main.py``
 - the ETF filter in ``utils.candidate_universe_filter``
+- the sector-membership check of search-grounded picks in ``utils.sector_membership``
+  (``SECTOR_MEMBERSHIP`` and ``canonical_sector``, phase 4.1)
 
 Kept as a standalone module in phase 3.1 so that the universe does not depend on
 any one sentiment source (decision D-05). Do not reorder or edit entries
 without updating the parity tests in ``tests/test_sector_universe.py``.
 """
 
-from typing import Dict, List
+from typing import Dict, FrozenSet, List, Tuple
 
 SECTOR_TICKERS: Dict[str, List[str]] = {
     "Technology": [
@@ -81,4 +83,30 @@ SECTOR_TICKERS: Dict[str, List[str]] = {
 SECTOR_ALIASES: Dict[str, str] = {
     "Financials": "Finance",
     "Consumer Discretionary": "Consumer",
+}
+
+
+def canonical_sector(sector: str) -> str:
+    """The package sector name for ``sector`` (the two SPA aliases resolve; any other name is returned as is)."""
+    return SECTOR_ALIASES.get(sector, sector)
+
+
+# Accepted yfinance labels per package sector, as (sectors, industries). The strings are verbatim
+# from a live yfinance 1.7.0 probe on 2026-11-13. A pick is a member when its yfinance sector OR
+# industry is in these sets (phase 4.1 D-02). Hand-written and never derived at runtime (D-01):
+# the curated lists above hold names, not Yahoo labels, and a derived map would drift. Yahoo labels
+# can change (A9): re-run the label probe before editing. Same key order as SECTOR_TICKERS.
+SECTOR_MEMBERSHIP: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
+    "Technology": (frozenset({"Technology"}), frozenset({"Internet Content & Information"})),
+    "Semiconductors": (
+        frozenset(),
+        frozenset({"Semiconductors", "Semiconductor Equipment & Materials"}),
+    ),
+    "Healthcare": (frozenset({"Healthcare"}), frozenset()),
+    "Finance": (frozenset({"Financial Services"}), frozenset()),
+    "Energy": (frozenset({"Energy"}), frozenset()),
+    "Consumer": (frozenset({"Consumer Cyclical", "Consumer Defensive"}), frozenset()),
+    "Industrials": (frozenset({"Industrials"}), frozenset()),
+    "Real Estate": (frozenset({"Real Estate"}), frozenset()),
+    "Utilities": (frozenset({"Utilities"}), frozenset()),
 }

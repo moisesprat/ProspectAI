@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, cast
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar, cast
 
 _M = TypeVar("_M", bound="BaseModel")
 
@@ -38,11 +38,11 @@ from utils.market_records import (
     is_supported_sector,
     market_narrative_context,
     merge_market,
-    require_market_picks,
     serper_queries,
 )
 from utils.news_sentiment import PROVIDER as NEWS_SENTIMENT_PROVIDER, TOOL_NAME as NEWS_SENTIMENT_TOOL
 from utils.phase_runner import extract_model, run_phase
+from utils.sector_membership import validate_market_picks
 from utils.technical_records import (
     build_technical_records,
     merge_technical,
@@ -343,7 +343,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         model_cls: Type[_M],
         build_args: tuple = (),
         build_kwargs: Optional[Dict[str, Any]] = None,
-        validate: Optional[Callable[[_M], None]] = None,
+        validate: Optional[Callable[[_M], Optional[Awaitable[None]]]] = None,
         start_tracker: bool = True,
     ) -> "tuple[CrewOutput, _M]":
         """Run one phase through utils.phase_runner.run_phase (bounded, per-phase retries).
@@ -754,7 +754,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
         result, narrative = await self._run_phase(
             phase, 0, MarketNarrativeOutput, build_args=(ctx,),
-            validate=lambda n: require_market_picks(n, corpus),
+            validate=lambda n: validate_market_picks(n, corpus, tracker=tracker),
             start_tracker=False,
         )
         if corpus["source"] == "serper":

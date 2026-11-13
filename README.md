@@ -308,8 +308,14 @@ twine upload dist/*
 | Ollama model not found | Run `ollama pull <model-name>` |
 | No stocks found from search | Check `SERPER_API_KEY` and the Serper quota |
 | Sentiment is always empty (null, `sentiment_available` false) | Check that `NEWS_SENTIMENT_API_KEY` is set and valid, then read `execution_metrics.sentiment_lookup`: `status` `no_key` means no key, `stopped_reason` `quota` or `rate_limited` means the provider's daily free-tier quota ran out (it resets daily; results already looked up that UTC day are cached), `access_denied` means the key was refused, and `scores` below the number of picks means those stocks had no article in the last 7 days |
+| A stock mentioned in the search is missing from the report | Read `execution_metrics.sector_check`: `dropped` lists stocks outside the sector with their listed sector and industry, and `skipped` lists stocks kept because their sector could not be read |
 
 ## Release Notes
+
+### Unreleased — Stock picks stay in the chosen sector
+- A stock found in the web search is now kept only when its listed sector or industry belongs to the sector you chose, so a web-search mention of a company such as Apple or Nvidia no longer puts it in a Financials analysis.
+- The new check never sets aside a sector's well-known stocks, and it keeps a stock whose listed sector cannot be read, so a slow or failed lookup never stops the analysis.
+- The run record now lists the stocks the check set aside for being outside the sector, with their listed sector and industry.
 
 ### v1.13.1 — Clearer handling of missing prices, funds and share-class tickers
 - A buy or wait-for-entry pick whose price cannot be read is now shown as monitor with "price unavailable" and a dash for the price, and the analysis still finishes.

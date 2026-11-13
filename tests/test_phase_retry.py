@@ -226,6 +226,33 @@ def test_validate_callback_failure_spends_budget():
     assert "technical_analysis" in seen[1]
 
 
+def test_async_validate_failure_spends_budget():
+    calls = []
+
+    async def validate(model):
+        calls.append(model)
+        if len(calls) == 1:
+            raise PhaseOutputError("coverage", ["technical_analysis"])
+
+    build, seen = _builder()
+    kickoff = _kickoff(_ok_result(), _ok_result())
+    _run(build_task=build, kickoff=kickoff, validate=validate)
+    assert len(kickoff.calls) == 2
+    assert len(calls) == 2
+    assert "technical_analysis" in seen[1]
+
+
+def test_async_validate_success_returns_the_model():
+    async def validate(model):
+        return None
+
+    build, _ = _builder()
+    kickoff = _kickoff(_ok_result())
+    result, model = _run(build_task=build, kickoff=kickoff, validate=validate)
+    assert len(kickoff.calls) == 1
+    assert isinstance(model, TechnicalAnalysisOutput)
+
+
 def test_max_retries_zero_means_one_attempt():
     build, _ = _builder()
     kickoff = _kickoff(_bad_trend_error(), _ok_result())

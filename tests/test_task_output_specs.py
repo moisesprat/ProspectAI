@@ -664,3 +664,11 @@ def test_final_strategy_allocator_is_flow_owned(monkeypatch):
     factory = TaskFactory()
     assert factory._phase_config["final_strategy"]["agent_tools"] == []
     assert isinstance(factory.flow_tool("final_strategy", "allocate_portfolio"), PortfolioAllocatorTool)
+
+
+def test_market_prompt_says_off_sector_search_picks_are_discarded():
+    """Phase 4.1 (D-12): a hint only; the deterministic sector check is the guarantee."""
+    description = " ".join(render_task("market_analysis")["description"].split())
+    assert "a search pick of a company outside the Technology sector" in description
+    for wanted in ("ticker symbol itself", "is discarded", "Do not copy the example"):
+        assert wanted in description

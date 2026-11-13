@@ -126,6 +126,13 @@ class ExecutionTracker:
     Serper path), so a run without a lookup has no such key. It holds the provider name, fixed
     status and reason strings, tickers, scores, article counts and request, cache-hit and
     cache-error counts, never a token, a request address or exception text.
+
+    ``sector_check`` is a third additive field of v2 (phase 4.1, D-10): which search picks the
+    sector check dropped or kept unchecked, and why. It appears only after the Flow ran the check
+    on the Serper path (``set_sector_check``), so any other run has no such key, and it is part of
+    the partial snapshot of a failed run. It holds validated tickers, fixed reason strings, yfinance
+    labels cut to 40 characters, counts and the time budget, never exception text, corpus text or a
+    URL. ``metrics_version`` stays 2.
     """
 
     def __init__(self) -> None:
@@ -138,6 +145,7 @@ class ExecutionTracker:
         self._tool_calls: List[ToolCallRecord] = []
         self._market_corpus: Optional[Dict[str, Any]] = None
         self._sentiment_lookup: Optional[Dict[str, Any]] = None
+        self._sector_check: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -161,6 +169,11 @@ class ExecutionTracker:
         """Store the news-sentiment lookup record (None clears it)."""
         with self._lock:
             self._sentiment_lookup = copy.deepcopy(record) if record is not None else None
+
+    def set_sector_check(self, record: Optional[Dict[str, Any]]) -> None:
+        """Store the sector-membership check record (None clears it)."""
+        with self._lock:
+            self._sector_check = copy.deepcopy(record) if record is not None else None
 
     # ── Tool calls ─────────────────────────────────────────────────────────────
 
@@ -367,6 +380,7 @@ class ExecutionTracker:
             records = list(self._tool_calls)
             market_corpus = copy.deepcopy(self._market_corpus)
             sentiment_lookup = copy.deepcopy(self._sentiment_lookup)
+            sector_check = copy.deepcopy(self._sector_check)
         by_phase: Dict[str, List[ToolCallRecord]] = {}
         for rec in records:
             by_phase.setdefault(rec.phase, []).append(rec)
@@ -472,6 +486,8 @@ class ExecutionTracker:
             metrics["market_corpus"] = market_corpus
         if sentiment_lookup is not None:
             metrics["sentiment_lookup"] = sentiment_lookup
+        if sector_check is not None:
+            metrics["sector_check"] = sector_check
         return metrics
 
     @staticmethod
