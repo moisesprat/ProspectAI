@@ -41,7 +41,9 @@ from utils.market_records import (
     serper_queries,
 )
 from utils.news_sentiment import PROVIDER as NEWS_SENTIMENT_PROVIDER, TOOL_NAME as NEWS_SENTIMENT_TOOL
-from utils.market_fallback import fallback_market_output, fallback_tickers, is_zero_survivor_failure
+from utils.market_fallback import (
+    fallback_market_output, is_zero_survivor_failure, market_fallback_record,
+)
 from utils.phase_runner import PhaseSchemaError, extract_model, run_phase
 from utils.sector_membership import validate_market_picks
 from utils.technical_records import (
@@ -785,12 +787,23 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
     ) -> MarketAnalysisOutput:
         """The curated market output for a Serper-path answer that left no surviving pick (D-13).
 
-        Sync and free of I/O. Logs exactly one WARNING with the phase, the attempts, the sector and
-        the curated tickers; never corpus text or a model-chosen ticker.
+        Sync and free of I/O. Closes the market phase's tracker window (a failed phase leaves it open
+        and the failed attempts' tokens are real cost), stores the public ``market_fallback`` record
+        and logs exactly one WARNING with the phase, attempts, sector, drop-reason counts and curated
+        tickers; never corpus text or a model-chosen ticker.
         """
+        dropped = getattr(exc.__cause__, "dropped", [])
+        record = market_fallback_record(sector, exc.attempts, dropped)
+        tracker = self._tracker
+        if tracker:
+            llm = self._phase_llm(phase)
+            tracker.record_phase_attempts(phase, exc.attempts)
+            tracker.finish_phase(phase, None, str(getattr(llm, "model", "unknown")), llm=llm)
+            tracker.set_market_fallback(record)
+        reasons = ", ".join(f"{r} {n}" for r, n in record["dropped"].items()) or "none recorded"
         logger.warning(
-            "%s: no pick survived %d attempts; publishing the curated fallback for %s: %s",
-            phase, exc.attempts, sector, ", ".join(fallback_tickers(sector)),
+            "%s: no pick survived %d attempts (%s); publishing the curated fallback for %s: %s",
+            phase, exc.attempts, reasons, sector, ", ".join(record["tickers"]),
         )
         return fallback_market_output(sector, datetime.now(timezone.utc))
 

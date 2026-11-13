@@ -28,15 +28,20 @@ lookup (the composite renormalises over the technical and fundamental components
 of the unavailable source), and the rationale and summary are fixed text built from the sector name
 and the symbol only, with no digit. The text says the stocks come from a curated list and were not
 found in the web search; the LLM still chooses only the action, later (D-12).
+
+Visibility (``market_fallback_record``). The Flow stores a public record in
+``execution_metrics.market_fallback``: a fixed reason, the source, the attempt count, the curated
+tickers and counts of the closed-set drop reasons (``utils.market_records.DROP_REASONS``) of the last
+attempt. Model-chosen ticker strings are never read, so no model text, corpus text or URL can reach it.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput
-from utils.market_records import PHASE, NoPicksError
+from utils.market_records import DROP_REASONS, PHASE, NoPicksError
 from utils.phase_runner import PhaseSchemaError
 from utils.sector_universe import FALLBACK_PICKS, canonical_sector
 
@@ -62,6 +67,22 @@ _SUMMARY = (
 def fallback_tickers(sector: str) -> list[str]:
     """The curated fallback tickers of ``sector`` (the SPA aliases resolve), empty when it has no table."""
     return list(FALLBACK_PICKS.get(canonical_sector(sector), ()))
+
+
+def market_fallback_record(sector: str, attempts: int, dropped: Iterable[tuple[str, str]]) -> dict[str, Any]:
+    """The public record of a fallback: constants, the curated tickers and counts per closed-set reason.
+
+    ``dropped`` is the (ticker, reason) list of the last attempt; only the reasons are read, and a
+    reason outside ``DROP_REASONS`` is ignored, so the ticker strings (model output) never reach it.
+    """
+    reasons = [reason for _, reason in dropped]
+    return {
+        "reason": FALLBACK_REASON,
+        "source": "serper",
+        "attempts": int(attempts),
+        "tickers": fallback_tickers(sector),
+        "dropped": {r: reasons.count(r) for r in DROP_REASONS if r in reasons},
+    }
 
 
 def is_zero_survivor_failure(exc: BaseException, corpus: dict[str, Any]) -> bool:

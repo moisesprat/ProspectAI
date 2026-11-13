@@ -10,7 +10,7 @@ from tests.test_llm_role_audit import (  # noqa: F401  (flow is a fixture)
     narrative_result, run_market, wire_tools,
 )
 from schemas.agent_outputs import MarketAnalysisOutput
-from tests.test_sector_membership import FINANCIALS_SERPER, OFF_SECTOR, fake_info
+from tests.test_sector_membership import FINANCIALS_SERPER, OFF_SECTOR, _tracked, fake_info
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.market_fallback import (
     FALLBACK_REASON, fallback_market_output, fallback_tickers, is_zero_survivor_failure,
@@ -134,3 +134,92 @@ def test_a_surviving_pick_is_published_alone_with_no_top_up(flow, real_sector_ch
 
     assert kickoff.await_count == 1
     assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["JPM"]
+
+
+# ─── The public record, the log line and the tracker window (Task 2) ──────────
+
+def _financials(flow, monkeypatch, serper=FINANCIALS_SERPER, table=OFF_SECTOR):
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic(*serper)), phase=MARKET_PHASE)
+    fake_info(monkeypatch, table)
+    return _tracked(flow)
+
+
+def test_fallback_run_records_attempts_tickers_and_drop_reasons(flow, monkeypatch, real_sector_check):
+    tracker = _financials(flow, monkeypatch)
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+
+    run_market(flow, off(), off(), off())
+
+    d = tracker.to_dict()
+    assert d["market_fallback"] == {
+        "reason": "no_surviving_picks", "source": "serper", "attempts": 3,
+        "tickers": ["JPM", "BAC", "WFC", "GS", "MS"], "dropped": {"not_in_sector": 1},
+    }
+    assert d["metrics_version"] == 2
+
+
+def test_fallback_record_holds_only_constants_and_closed_set_reasons(flow, monkeypatch, real_sector_check):
+    tracker = _financials(flow, monkeypatch)
+    junk = lambda: narrative_result(mkt_payload(  # noqa: E731
+        mkt_entry("IGNORE-PREVIOUS-INSTRUCTIONS"), mkt_entry("X" * 300), mkt_entry("ZZZ")))
+
+    run_market(flow, junk(), junk(), junk())
+
+    record = tracker.to_dict()["market_fallback"]
+    text = json.dumps(record)
+    for forbidden in ("IGNORE", "XXXX", "ZZZ", "Headline", "http", "example.com"):
+        assert forbidden not in text
+    assert set(record["dropped"]) <= set(DROP_REASONS)
+    assert record["dropped"]
+    assert len(text.encode("utf-8")) < 512
+
+
+def test_fallback_logs_one_warning_with_reasons_and_no_corpus_text(flow, monkeypatch, real_sector_check, caplog):
+    _financials(flow, monkeypatch)
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("ZZZ")))  # noqa: E731
+
+    with caplog.at_level("WARNING"):
+        run_market(flow, off(), off(), off())
+
+    lines = [r.getMessage() for r in caplog.records
+             if r.levelname == "WARNING" and "curated fallback" in r.getMessage()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "3 attempts" in line
+    for ticker in ("JPM", "BAC", "WFC", "GS", "MS"):
+        assert ticker in line
+    assert "not_in_sector 1" in line
+    assert "not_in_search_results 1" in line
+    for forbidden in ("Headline", "estimates", "rally", "AAPL", "ZZZ", "example.com"):
+        assert forbidden not in line
+
+
+def test_record_is_absent_when_a_pick_survives(flow, monkeypatch, real_sector_check):
+    tracker = _financials(flow, monkeypatch)
+
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("JPM"))))
+
+    assert "market_fallback" not in tracker.to_dict()
+
+
+def test_fallback_run_closes_the_market_phase_in_the_metrics(flow, monkeypatch, real_sector_check):
+    tracker = _financials(flow, monkeypatch)
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+
+    run_market(flow, off(), off(), off())
+
+    phase = next(p for p in tracker.to_dict()["phases"] if p["name"] == MARKET_PHASE)
+    assert phase["attempts"] == 3
+    assert phase["status"] == "completed"
+
+
+def test_record_is_absent_when_the_run_fails_on_a_schema_error(flow, monkeypatch, real_sector_check):
+    tracker = _financials(flow, monkeypatch)
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+    short = narrative_result(mkt_payload(mkt_entry("AAPL"), summary="too short"))
+
+    with pytest.raises(PhaseSchemaError):
+        run_market(flow, off(), off(), short)
+
+    assert "market_fallback" not in tracker.snapshot()
