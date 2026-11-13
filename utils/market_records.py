@@ -42,7 +42,9 @@ Search text is untrusted (prompt injection): the corpus the LLM reads is capped 
 snippets, bounded length, link host only), and the LLM has no tool and no number field.
 
 Search and corpus bounds (change 02-23, G2/G3). The Flow runs three fixed Serper queries one
-after another (``serper_queries``; the model never picks a query). Their organic results are
+after another (``serper_queries``; the model never picks a query). The queries use a plain sector
+phrase instead of the SPA label and the third names four curated symbols of the sector, so on-sector
+tickers reach the corpus (phase 4.1 D-14); the corpus caps below are unchanged. Their organic results are
 merged rank by rank across the queries (rank 1 of each, then rank 2 of each, ...), a repeated
 link is removed (an entry with no link repeats when its text repeats), full URLs are scrubbed
 from the text, and the corpus stops at ``MAX_SNIPPETS`` (20) results of at most
@@ -85,7 +87,10 @@ The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
 not_in_sector_universe, excluded_etf, not_in_sector. A pick that fails is dropped with a warning that
 carries the reason and the ticker cut to 20 characters shown with its repr, never corpus
 text. When none is left the phase answer is a validation failure that spends the bounded
-retry budget; the retry feedback is fixed text per source. The rule differs by source: on
+retry budget; the retry feedback is fixed text per source. After the serper-path budget ends with
+none left, the Flow publishes the curated fallback of ``utils.market_fallback`` (phase 4.1 D-13), the
+one exception to the rule that an exhausted phase never publishes a substitute; the error that ends
+the last attempt is a ``NoPicksError`` so the Flow can tell this case from a schema failure. The rule differs by source: on
 the serper path it is format + grounding in the search results + ETF exclusion (the sector
 universe is not checked there); on the unavailable path it is format + sector universe +
 ETF exclusion. What this does not prove: a symbol present in the text is not shown to be a
@@ -108,12 +113,20 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
-from utils.sector_universe import SECTOR_ALIASES, SECTOR_TICKERS
+from utils.sector_universe import (
+    FALLBACK_PICKS, SEARCH_PHRASES, SECTOR_ALIASES, SECTOR_TICKERS, canonical_sector,
+)
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
 
 PHASE = "market_analysis"
+
+# The closed set of dropped-pick reasons, in the order the module docstring lists them. The public
+# ``execution_metrics.market_fallback`` record counts drops by these names only (phase 4.1 D-13).
+DROP_REASONS: Tuple[str, ...] = (
+    "invalid_format", "not_in_search_results", "not_in_sector_universe", "excluded_etf", "not_in_sector",
+)
 
 # Key of the memo ``utils.sector_membership`` writes into the corpus and ``_picks`` reads
 # ({TICKER: {"verdict", "reason", "sector", "industry"}}); phase 4.1 D-07.
@@ -131,6 +144,9 @@ MAX_RECORD_BYTES = 8192
 # Serper-derived string that reached the prompt uncut (phase 4 CORR-09).
 MAX_HOST_CHARS = 253
 
+# How many curated symbols the third Serper query names (phase 4.1 D-14).
+QUERY_SYMBOLS = 4
+
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
 
@@ -147,11 +163,29 @@ def is_supported_sector(sector: Any) -> bool:
 
 
 def serper_queries(sector: str, today: str) -> List[str]:
-    """The three fixed Serper queries of the market search, the original wording first."""
+    """The three fixed Serper queries of the market search (phase 4.1 D-14).
+
+    The SPA label alone ("Financials sector stocks ...") returned generic market pages that name
+    companies in prose and carry almost no on-sector ticker symbols (the 2026-11-13 live runs), so
+    the analyst had nothing on-sector to choose from. A supported sector now uses its plain phrase
+    from ``SEARCH_PHRASES``, and only the third query also names the first ``QUERY_SYMBOLS`` curated
+    symbols of the sector, so most of the corpus stays unbiased. Every query keeps the run date. The
+    text comes only from tables in code and the Flow's date, never from the model or the visitor. A
+    sector with no phrase keeps the original wording.
+    """
+    canonical = canonical_sector(sector)
+    phrase = SEARCH_PHRASES.get(canonical)
+    if phrase is None:
+        return [
+            f"{sector} sector stocks investors discussing {today}",
+            f"{sector} sector stocks to watch analyst picks {today}",
+            f"most discussed trending {sector} stocks this week {today}",
+        ]
+    symbols = " ".join(FALLBACK_PICKS[canonical][:QUERY_SYMBOLS])
     return [
-        f"{sector} sector stocks investors discussing {today}",
-        f"{sector} sector stocks to watch analyst picks {today}",
-        f"most discussed trending {sector} stocks this week {today}",
+        f"{phrase} stocks investors discussing {today}",
+        f"{phrase} stocks to watch analyst picks {today}",
+        f"most discussed trending {phrase} stocks {symbols} this week {today}",
     ]
 
 
@@ -445,7 +479,23 @@ def _log_dropped(dropped: List[Tuple[str, str]], corpus: Optional[Dict[str, Any]
             logger.warning("%s: pick dropped (%s): %s", PHASE, reason, repr(ticker[:20]))
 
 
-def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> PhaseOutputError:
+class NoPicksError(PhaseOutputError):
+    """No chosen pick can be published (phase 4.1 D-13).
+
+    A PhaseOutputError like any other, so the bounded retry treats it the same. ``dropped`` holds
+    the (ticker, reason) pairs of the answer that failed: model output, so it stays inside this
+    exception object and is never serialised or logged by the type.
+    """
+
+    def __init__(
+        self, message: str, fields: List[str], errors: List[Dict[str, Any]],
+        dropped: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        super().__init__(message, fields, errors)
+        self.dropped: List[Tuple[str, str]] = list(dropped or [])
+
+
+def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> NoPicksError:
     """The shared failure when no pick can be published: fixed text per source, no ticker, no corpus text."""
     _log_dropped(dropped, corpus)
     source = corpus["source"]
@@ -454,7 +504,7 @@ def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> P
     else:
         hint = _SOURCE_HINTS[source]
     message = f"{PHASE}: no chosen ticker is well formed and grounded in the data; fields: candidates"
-    return PhaseOutputError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}])
+    return NoPicksError(message, ["candidates"], [{"loc": ("candidates",), "msg": hint}], dropped)
 
 
 def require_market_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]) -> None:

@@ -2,7 +2,10 @@
 
 A phase whose output fails schema validation is retried by the Flow at most
 MAX_SCHEMA_RETRIES times with the failing field paths fed back to the model,
-then fails with PhaseSchemaError. There is no deterministic fallback (D-12).
+then fails with PhaseSchemaError. There is no deterministic fallback (D-12);
+this describes run_phase itself, which never substitutes. The one caller-side
+exception is the Flow's curated market fallback after a Serper-path answer left
+no surviving pick (phase 4.1 D-13, utils/market_fallback.py).
 """
 import asyncio
 import json

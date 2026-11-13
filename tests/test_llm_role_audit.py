@@ -776,9 +776,9 @@ SERPER_TOOL = "Search the internet with Serper"
 NEWS_TOOL = "lookup_news_sentiment"
 
 QUERIES_TECH = [
-    "Technology sector stocks investors discussing 2026-04-29",
-    "Technology sector stocks to watch analyst picks 2026-04-29",
-    "most discussed trending Technology stocks this week 2026-04-29",
+    "technology stocks investors discussing 2026-04-29",
+    "technology stocks to watch analyst picks 2026-04-29",
+    "most discussed trending technology stocks AAPL MSFT GOOGL CRM this week 2026-04-29",
 ]
 
 def _organic(*texts):
@@ -997,15 +997,17 @@ def test_example_tickers_absent_from_results_are_retried(flow):
         assert forbidden not in feedback
 
 
-def test_all_ungrounded_answers_exhaust_the_retry_budget(flow):
+def test_all_ungrounded_answers_fall_back_to_the_curated_list(flow):
+    """Replaces the test that pinned PhaseSchemaError after three ungrounded answers.
+
+    Phase 4.1 D-13 reverses the no-backfill rule on the Serper path: when the retry budget ends with no
+    surviving pick the Flow publishes the five curated stocks of the sector instead of failing the run.
+    """
     wire_tools(flow, market_tools(serper=SERPER_OK), phase=MARKET_PHASE)
     ungrounded = lambda: narrative_result(mkt_payload(mkt_entry("ZZZ")))  # noqa: E731
-    with pytest.raises(PhaseSchemaError) as info:
-        run_market(flow, ungrounded(), ungrounded(), ungrounded())
-    assert info.value.phase == MARKET_PHASE
-    assert info.value.fields == ["candidates"]
-    assert info.value.attempts == 3
-    assert flow.state.market_output.candidate_stocks[0].ticker == "AAA"  # fixture value, never replaced
+    kickoff = run_market(flow, ungrounded(), ungrounded(), ungrounded())
+    assert kickoff.await_count == 3
+    assert [c.ticker for c in flow.state.market_output.candidate_stocks] == ["AAPL", "MSFT", "GOOGL", "CRM", "ORCL"]
 
 
 def test_false_positive_cannot_set_largest(flow):
@@ -1277,7 +1279,7 @@ def test_market_corpus_reaches_execution_metrics(flow):
     with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=lambda s, p: s):
         out = flow.run_analysis({"sector": "Technology"})
     record = out["execution_metrics"]["market_corpus"]
-    assert record["source"] == "serper" and record["queries"][0].startswith("Technology sector stocks")
+    assert record["source"] == "serper" and record["queries"][0].startswith("technology stocks")
     assert len(record["queries"]) == 3
     assert "https://" not in json.dumps(record)
 

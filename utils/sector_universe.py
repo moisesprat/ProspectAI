@@ -10,6 +10,9 @@ matches) and are ETF-free. Consumers:
 - the ETF filter in ``utils.candidate_universe_filter``
 - the sector-membership check of search-grounded picks in ``utils.sector_membership``
   (``SECTOR_MEMBERSHIP`` and ``canonical_sector``, phase 4.1)
+- the curated fallback of ``utils.market_fallback`` (``FALLBACK_PICKS``, phase 4.1 D-13)
+- the Serper query terms of ``utils.market_records.serper_queries`` (``SEARCH_PHRASES`` and the
+  first ``FALLBACK_PICKS`` symbols, phase 4.1 D-14)
 
 Kept as a standalone module in phase 3.1 so that the universe does not depend on
 any one sentiment source (decision D-05). Do not reorder or edit entries
@@ -89,6 +92,42 @@ SECTOR_ALIASES: Dict[str, str] = {
 def canonical_sector(sector: str) -> str:
     """The package sector name for ``sector`` (the two SPA aliases resolve; any other name is returned as is)."""
     return SECTOR_ALIASES.get(sector, sector)
+
+
+# Hand-written curated stocks the Flow publishes when a Serper-path market answer leaves no
+# surviving pick (phase 4.1 D-13). Five distinct large companies per sector, each also in the
+# sector's SECTOR_TICKERS list (so the sector check exempts them, D-03) and none of the stale
+# symbols recorded in the phase's deferred items. The order matters: the first four also feed the
+# third Serper query (D-14). Re-run scripts/probe_sector_labels.py before editing. Same key order
+# as SECTOR_TICKERS.
+FALLBACK_PICKS: Dict[str, Tuple[str, ...]] = {
+    "Technology": ("AAPL", "MSFT", "GOOGL", "CRM", "ORCL"),
+    "Semiconductors": ("NVDA", "AMD", "AVGO", "QCOM", "INTC"),
+    "Healthcare": ("JNJ", "UNH", "LLY", "ABBV", "MRK"),
+    "Finance": ("JPM", "BAC", "WFC", "GS", "MS"),
+    "Energy": ("XOM", "CVX", "COP", "SLB", "EOG"),
+    "Consumer": ("WMT", "HD", "MCD", "NKE", "COST"),
+    "Industrials": ("CAT", "DE", "HON", "UPS", "LMT"),
+    "Real Estate": ("AMT", "PLD", "EQIX", "PSA", "CCI"),
+    "Utilities": ("NEE", "DUK", "AEP", "EXC", "SRE"),
+}
+
+
+# Plain-language phrase per sector for the Serper queries (phase 4.1 D-14). The SPA labels alone
+# pulled generic market pages with almost no on-sector ticker symbols in the 2026-11-13 Financials
+# runs. Hand-written; keep it in sync with the exact-query tests in tests/test_market_queries.py.
+# Same key order as SECTOR_TICKERS.
+SEARCH_PHRASES: Dict[str, str] = {
+    "Technology": "technology",
+    "Semiconductors": "semiconductor",
+    "Healthcare": "healthcare",
+    "Finance": "bank and financial services",
+    "Energy": "oil and gas energy",
+    "Consumer": "consumer retail and discretionary",
+    "Industrials": "industrial",
+    "Real Estate": "real estate REIT",
+    "Utilities": "electric and gas utility",
+}
 
 
 # Accepted yfinance labels per package sector, as (sectors, industries). The strings are verbatim

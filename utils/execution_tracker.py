@@ -133,6 +133,12 @@ class ExecutionTracker:
     the partial snapshot of a failed run. It holds validated tickers, fixed reason strings, yfinance
     labels cut to 40 characters, counts and the time budget, never exception text, corpus text or a
     URL. ``metrics_version`` stays 2.
+
+    ``market_fallback`` is a fourth additive field of v2 (phase 4.1, D-13): it appears only when the
+    market step published the curated fallback after a Serper-path answer left no surviving pick
+    (``set_market_fallback``), and it is part of the partial snapshot. It holds a fixed reason string,
+    the attempt count, the curated tickers and counts of closed-set drop reasons, never model-chosen
+    text, corpus text or a URL. ``metrics_version`` stays 2.
     """
 
     def __init__(self) -> None:
@@ -146,6 +152,7 @@ class ExecutionTracker:
         self._market_corpus: Optional[Dict[str, Any]] = None
         self._sentiment_lookup: Optional[Dict[str, Any]] = None
         self._sector_check: Optional[Dict[str, Any]] = None
+        self._market_fallback: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -174,6 +181,11 @@ class ExecutionTracker:
         """Store the sector-membership check record (None clears it)."""
         with self._lock:
             self._sector_check = copy.deepcopy(record) if record is not None else None
+
+    def set_market_fallback(self, record: Optional[Dict[str, Any]]) -> None:
+        """Store the curated market fallback record (None clears it)."""
+        with self._lock:
+            self._market_fallback = copy.deepcopy(record) if record is not None else None
 
     # ── Tool calls ─────────────────────────────────────────────────────────────
 
@@ -381,6 +393,7 @@ class ExecutionTracker:
             market_corpus = copy.deepcopy(self._market_corpus)
             sentiment_lookup = copy.deepcopy(self._sentiment_lookup)
             sector_check = copy.deepcopy(self._sector_check)
+            market_fallback = copy.deepcopy(self._market_fallback)
         by_phase: Dict[str, List[ToolCallRecord]] = {}
         for rec in records:
             by_phase.setdefault(rec.phase, []).append(rec)
@@ -488,6 +501,8 @@ class ExecutionTracker:
             metrics["sentiment_lookup"] = sentiment_lookup
         if sector_check is not None:
             metrics["sector_check"] = sector_check
+        if market_fallback is not None:
+            metrics["market_fallback"] = market_fallback
         return metrics
 
     @staticmethod

@@ -548,3 +548,45 @@ class TestSectorCheck:
         snap = tracker.snapshot()
         assert snap["sector_check"] == self.RECORD
         assert snap["partial"] is True
+
+
+class TestMarketFallback:
+    """The additive market_fallback field of metrics v2 (phase 4.1, D-13)."""
+
+    RECORD = {
+        "reason": "no_surviving_picks", "source": "serper", "attempts": 3,
+        "tickers": ["JPM", "BAC", "WFC", "GS", "MS"], "dropped": {"not_in_sector": 1},
+    }
+
+    def test_absent_until_set(self):
+        assert "market_fallback" not in _tracker_with_pipeline().to_dict()
+
+    def test_present_once_set_and_version_unchanged(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_market_fallback(self.RECORD)
+        d = tracker.to_dict()
+        assert d["market_fallback"] == self.RECORD
+        assert d["metrics_version"] == 2
+
+    def test_stored_and_returned_as_copies(self):
+        record = {**self.RECORD, "tickers": list(self.RECORD["tickers"])}
+        tracker = _tracker_with_pipeline()
+        tracker.set_market_fallback(record)
+        record["tickers"][0] = "ZZZ"
+        first = tracker.to_dict()
+        assert first["market_fallback"]["tickers"][0] == "JPM"
+        first["market_fallback"]["tickers"][0] = "YYY"
+        assert tracker.to_dict()["market_fallback"]["tickers"][0] == "JPM"
+
+    def test_none_clears_it(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_market_fallback(self.RECORD)
+        tracker.set_market_fallback(None)
+        assert "market_fallback" not in tracker.to_dict()
+
+    def test_in_the_partial_snapshot(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_market_fallback(self.RECORD)
+        snap = tracker.snapshot()
+        assert snap["market_fallback"] == self.RECORD
+        assert snap["partial"] is True

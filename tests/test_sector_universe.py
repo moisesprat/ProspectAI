@@ -9,7 +9,7 @@ import pytest
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.market_records import SUPPORTED_SECTORS, build_market_corpus
 from utils.sector_membership import classify
-from utils.sector_universe import SECTOR_MEMBERSHIP, SECTOR_TICKERS, canonical_sector
+from utils.sector_universe import SEARCH_PHRASES, SECTOR_MEMBERSHIP, SECTOR_TICKERS, canonical_sector
 from utils.ticker_matching import is_valid_ticker
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -194,3 +194,9 @@ def test_curated_tickers_the_map_alone_would_drop(ticker, canonical, sector, ind
     """Why D-03 exempts curated tickers: the map alone would drop these curated names."""
     assert ticker in SECTOR_TICKERS[canonical]
     assert classify(canonical, sector, industry) == "not_in_sector"
+
+
+def test_search_phrases_cover_the_nine_sectors_in_order():
+    """SEARCH_PHRASES (phase 4.1 D-14) has one non-empty phrase per curated sector, in the same order."""
+    assert list(SEARCH_PHRASES) == list(SECTOR_TICKERS)
+    assert all(isinstance(p, str) and p.strip() for p in SEARCH_PHRASES.values())
