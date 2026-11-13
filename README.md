@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.13.1**
+**Current release: v1.13.2**
 
 ### ⚠️ Important Disclaimer
 
@@ -312,7 +312,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Stock picks stay in the chosen sector
+### v1.13.2 — Stock picks stay in the chosen sector
 - A stock found in the web search is now kept only when its listed sector or industry belongs to the sector you chose, so a web-search mention of a company such as Apple or Nvidia no longer puts it in a Financials analysis.
 - The new check never sets aside a sector's well-known stocks, and it keeps a stock whose listed sector cannot be read, so a slow or failed lookup never stops the analysis.
 - The run record now lists the stocks the check set aside for being outside the sector, with their listed sector and industry.
@@ -338,9 +338,6 @@ twine upload dist/*
 - A sector fund or a market-wide fund picked as a stock is now set aside before the picks are checked, so it can no longer leave a run without stocks or lower the other picks' relevance.
 - Common capitalised words and abbreviations such as AI, CEO and EV in web search results no longer count as stock mentions unless they are written as a ticker, for example $AI or NYSE: AI.
 - An analysis for a sector the app does not support is now refused straight away instead of starting paid web searches, and the stored record of a run's web searches never keeps a web address.
-
-### v1.12.1 — Runs skip prompt caching
-- Analyses no longer use prompt caching. Every step of a run sends a different prompt, so a cached prompt was never reused and only added cost; each run now costs a little less, and reports are unchanged.
 
 ## Roadmap
 
