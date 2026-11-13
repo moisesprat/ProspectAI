@@ -42,7 +42,9 @@ Search text is untrusted (prompt injection): the corpus the LLM reads is capped 
 snippets, bounded length, link host only), and the LLM has no tool and no number field.
 
 Search and corpus bounds (change 02-23, G2/G3). The Flow runs three fixed Serper queries one
-after another (``serper_queries``; the model never picks a query). Their organic results are
+after another (``serper_queries``; the model never picks a query). The queries use a plain sector
+phrase instead of the SPA label and the third names four curated symbols of the sector, so on-sector
+tickers reach the corpus (phase 4.1 D-14); the corpus caps below are unchanged. Their organic results are
 merged rank by rank across the queries (rank 1 of each, then rank 2 of each, ...), a repeated
 link is removed (an entry with no link repeats when its text repeats), full URLs are scrubbed
 from the text, and the corpus stops at ``MAX_SNIPPETS`` (20) results of at most
@@ -111,7 +113,9 @@ from urllib.parse import urlparse
 from schemas.agent_outputs import CandidateStock, MarketAnalysisOutput, MarketNarrativeOutput
 from utils.candidate_universe_filter import excluded_tickers_for_sector
 from utils.phase_runner import PhaseOutputError
-from utils.sector_universe import SECTOR_ALIASES, SECTOR_TICKERS
+from utils.sector_universe import (
+    FALLBACK_PICKS, SEARCH_PHRASES, SECTOR_ALIASES, SECTOR_TICKERS, canonical_sector,
+)
 from utils.ticker_matching import is_valid_ticker, symbol_pattern
 
 logger = logging.getLogger(__name__)
@@ -140,6 +144,9 @@ MAX_RECORD_BYTES = 8192
 # Serper-derived string that reached the prompt uncut (phase 4 CORR-09).
 MAX_HOST_CHARS = 253
 
+# How many curated symbols the third Serper query names (phase 4.1 D-14).
+QUERY_SYMBOLS = 4
+
 _URL = re.compile(r"(?:https?://|www\.)\S*", re.IGNORECASE)
 
 
@@ -156,11 +163,29 @@ def is_supported_sector(sector: Any) -> bool:
 
 
 def serper_queries(sector: str, today: str) -> List[str]:
-    """The three fixed Serper queries of the market search, the original wording first."""
+    """The three fixed Serper queries of the market search (phase 4.1 D-14).
+
+    The SPA label alone ("Financials sector stocks ...") returned generic market pages that name
+    companies in prose and carry almost no on-sector ticker symbols (the 2026-11-13 live runs), so
+    the analyst had nothing on-sector to choose from. A supported sector now uses its plain phrase
+    from ``SEARCH_PHRASES``, and only the third query also names the first ``QUERY_SYMBOLS`` curated
+    symbols of the sector, so most of the corpus stays unbiased. Every query keeps the run date. The
+    text comes only from tables in code and the Flow's date, never from the model or the visitor. A
+    sector with no phrase keeps the original wording.
+    """
+    canonical = canonical_sector(sector)
+    phrase = SEARCH_PHRASES.get(canonical)
+    if phrase is None:
+        return [
+            f"{sector} sector stocks investors discussing {today}",
+            f"{sector} sector stocks to watch analyst picks {today}",
+            f"most discussed trending {sector} stocks this week {today}",
+        ]
+    symbols = " ".join(FALLBACK_PICKS[canonical][:QUERY_SYMBOLS])
     return [
-        f"{sector} sector stocks investors discussing {today}",
-        f"{sector} sector stocks to watch analyst picks {today}",
-        f"most discussed trending {sector} stocks this week {today}",
+        f"{phrase} stocks investors discussing {today}",
+        f"{phrase} stocks to watch analyst picks {today}",
+        f"most discussed trending {phrase} stocks {symbols} this week {today}",
     ]
 
 

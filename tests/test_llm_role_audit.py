@@ -776,9 +776,9 @@ SERPER_TOOL = "Search the internet with Serper"
 NEWS_TOOL = "lookup_news_sentiment"
 
 QUERIES_TECH = [
-    "Technology sector stocks investors discussing 2026-04-29",
-    "Technology sector stocks to watch analyst picks 2026-04-29",
-    "most discussed trending Technology stocks this week 2026-04-29",
+    "technology stocks investors discussing 2026-04-29",
+    "technology stocks to watch analyst picks 2026-04-29",
+    "most discussed trending technology stocks AAPL MSFT GOOGL CRM this week 2026-04-29",
 ]
 
 def _organic(*texts):
@@ -1279,7 +1279,7 @@ def test_market_corpus_reaches_execution_metrics(flow):
     with patch.object(flow, "_finalize_and_validate_portfolio", side_effect=lambda s, p: s):
         out = flow.run_analysis({"sector": "Technology"})
     record = out["execution_metrics"]["market_corpus"]
-    assert record["source"] == "serper" and record["queries"][0].startswith("Technology sector stocks")
+    assert record["source"] == "serper" and record["queries"][0].startswith("technology stocks")
     assert len(record["queries"]) == 3
     assert "https://" not in json.dumps(record)
 

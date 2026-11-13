@@ -11,6 +11,8 @@ matches) and are ETF-free. Consumers:
 - the sector-membership check of search-grounded picks in ``utils.sector_membership``
   (``SECTOR_MEMBERSHIP`` and ``canonical_sector``, phase 4.1)
 - the curated fallback of ``utils.market_fallback`` (``FALLBACK_PICKS``, phase 4.1 D-13)
+- the Serper query terms of ``utils.market_records.serper_queries`` (``SEARCH_PHRASES`` and the
+  first ``FALLBACK_PICKS`` symbols, phase 4.1 D-14)
 
 Kept as a standalone module in phase 3.1 so that the universe does not depend on
 any one sentiment source (decision D-05). Do not reorder or edit entries
@@ -108,6 +110,23 @@ FALLBACK_PICKS: Dict[str, Tuple[str, ...]] = {
     "Industrials": ("CAT", "DE", "HON", "UPS", "LMT"),
     "Real Estate": ("AMT", "PLD", "EQIX", "PSA", "CCI"),
     "Utilities": ("NEE", "DUK", "AEP", "EXC", "SRE"),
+}
+
+
+# Plain-language phrase per sector for the Serper queries (phase 4.1 D-14). The SPA labels alone
+# pulled generic market pages with almost no on-sector ticker symbols in the 2026-11-13 Financials
+# runs. Hand-written; keep it in sync with the exact-query tests in tests/test_market_queries.py.
+# Same key order as SECTOR_TICKERS.
+SEARCH_PHRASES: Dict[str, str] = {
+    "Technology": "technology",
+    "Semiconductors": "semiconductor",
+    "Healthcare": "healthcare",
+    "Finance": "bank and financial services",
+    "Energy": "oil and gas energy",
+    "Consumer": "consumer retail and discretionary",
+    "Industrials": "industrial",
+    "Real Estate": "real estate REIT",
+    "Utilities": "electric and gas utility",
 }
 
 
