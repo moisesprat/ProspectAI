@@ -27,6 +27,7 @@ Contract:
   attempt count and dotted field paths only, never input values or raw model
   output, and stay within 400 characters. They reach the public SSE error event.
 """
+import inspect
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple, Type, TypeVar, cast
 
@@ -173,7 +174,7 @@ async def run_phase(
     build_task: Callable[[str], Any],
     kickoff: Callable[[Any], Awaitable[Any]],
     model_cls: Type[_M],
-    validate: Optional[Callable[[_M], None]] = None,
+    validate: Optional[Callable[[_M], Optional[Awaitable[None]]]] = None,
     max_retries: int = MAX_SCHEMA_RETRIES,
     tracker: Any = None,
 ) -> Tuple[Any, _M]:
@@ -181,8 +182,10 @@ async def run_phase(
 
     ``build_task(feedback)`` builds a fresh task per attempt ("" on the first).
     ``kickoff(task)`` runs it. ``validate(model)`` may raise PhaseOutputError for
-    checks the schema cannot express. Attempts are counted here, per call, so one
-    phase never spends another phase's budget.
+    checks the schema cannot express; it may be a coroutine function, which is awaited, so a
+    validator that does blocking network I/O keeps it off the event loop (STALL-02; phase 4.1
+    sector check). A PhaseOutputError from an async validator spends the budget like a sync one.
+    Attempts are counted here, per call, so one phase never spends another phase's budget.
     """
     feedback = ""
     attempts = 0
@@ -194,7 +197,9 @@ async def run_phase(
             result = await kickoff(task)
             model = extract_model(result, model_cls, phase)
             if validate is not None:
-                validate(model)
+                outcome = validate(model)
+                if inspect.isawaitable(outcome):
+                    await outcome
         except PhaseOutputError as exc:
             failure = exc
             fields = exc.fields

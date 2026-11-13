@@ -68,8 +68,15 @@ an empty candidate list, and before relevance is scaled, so an ETF can never set
 largest count (gap review WR-01). The Flow's later ``filter_candidates`` call stays as a
 backstop.
 
+Sector membership (phase 4.1 D-07, D-09). On the serper path only, a pick that passes the three
+checks above can still be dropped with the reason ``not_in_sector``: its yfinance sector and
+industry prove it is outside the requested sector (``utils.sector_membership``). That check does
+network I/O, so it is a separate async step that runs before the retry decision and stores its
+verdicts in ``corpus["sector_check"]`` (``SECTOR_CHECK_KEY``); ``_picks`` stays pure and offline
+and only reads that memo. With no memo (the check did not run) ``_picks`` behaves exactly as before.
+
 The closed set of dropped-pick reasons is invalid_format, not_in_search_results,
-not_in_sector_universe, excluded_etf. A pick that fails is dropped with a warning that
+not_in_sector_universe, excluded_etf, not_in_sector. A pick that fails is dropped with a warning that
 carries the reason and the ticker cut to 20 characters shown with its repr, never corpus
 text. When none is left the phase answer is a validation failure that spends the bounded
 retry budget; the retry feedback is fixed text per source. The rule differs by source: on
@@ -80,8 +87,9 @@ real listed company. Per the operator decision narrowing D-03 (phase 4 CORR-06) 
 listing check here: a symbol yfinance cannot price is excluded by the technical phase
 (plan 02-15).
 
-``require_market_picks`` is the ``validate=`` callback for
-``utils.phase_runner.run_phase``.
+``require_market_picks`` is the synchronous format + grounding check; the Flow's ``validate=``
+callback for ``utils.phase_runner.run_phase`` is ``utils.sector_membership.validate_market_picks``,
+which runs the sector check first and then calls it.
 """
 import json
 import logging
@@ -100,6 +108,10 @@ from utils.ticker_matching import is_valid_ticker, symbol_pattern
 logger = logging.getLogger(__name__)
 
 PHASE = "market_analysis"
+
+# Key of the memo ``utils.sector_membership`` writes into the corpus and ``_picks`` reads
+# ({TICKER: {"verdict", "reason", "sector", "industry"}}); phase 4.1 D-07.
+SECTOR_CHECK_KEY = "sector_check"
 
 # Tool name the Flow looks up in TaskFactory (the Serper name is the crewai tool's own).
 SERPER_TOOL_NAME = "Search the internet with Serper"
@@ -349,14 +361,22 @@ _SOURCE_HINTS = {
 }
 
 
+def _sector_verdict(verdicts: Dict[str, Any], ticker: str) -> Optional[str]:
+    """The stored sector verdict for ``ticker``, or None when there is no well-formed entry."""
+    entry = verdicts.get(ticker)
+    return entry.get("verdict") if isinstance(entry, dict) else None
+
+
 def _picks(
     narrative: Optional[MarketNarrativeOutput], corpus: Dict[str, Any]
 ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """(kept picks as (TICKER, rationale), dropped picks as (ticker, reason)), in the LLM's order, de-duplicated.
 
     Every pick is checked in this order: the format check (all sources), then the source
-    rule, then the ETF exclusion (so an ungrounded ETF keeps its source reason). Reasons are
-    a closed set: invalid_format, not_in_search_results, not_in_sector_universe, excluded_etf.
+    rule, then the ETF exclusion (so an ungrounded ETF keeps its source reason), then, on the
+    serper path only, the sector verdict ``utils.sector_membership`` stored in the corpus memo
+    (read here, never computed: no I/O). Reasons are a closed set: invalid_format,
+    not_in_search_results, not_in_sector_universe, excluded_etf, not_in_sector.
     """
     source = corpus["source"]
     excluded = excluded_tickers_for_sector(corpus.get("sector", ""))
@@ -364,7 +384,10 @@ def _picks(
     tickers = [_ticker(item.ticker) for item in items]
     universe = set(corpus.get("universe", [])) if source == "unavailable" else set()
     counts: Dict[str, int] = {}
+    verdicts: Dict[str, Any] = {}
     if source == "serper":
+        memo = corpus.get(SECTOR_CHECK_KEY)
+        verdicts = memo if isinstance(memo, dict) else {}
         counts = symbol_mention_counts(
             [t for t in tickers if is_valid_ticker(t)], [s["text"] for s in corpus["snippets"]]
         )
@@ -382,6 +405,8 @@ def _picks(
             dropped[ticker] = "not_in_sector_universe"
         elif ticker in excluded:
             dropped[ticker] = "excluded_etf"
+        elif _sector_verdict(verdicts, ticker) == "not_in_sector":
+            dropped[ticker] = "not_in_sector"
         else:
             kept[ticker] = item.rationale
     return list(kept.items()), list(dropped.items())
@@ -392,19 +417,30 @@ def grounded_picks(narrative: Optional[MarketNarrativeOutput], corpus: Dict[str,
     return [ticker for ticker, _ in _picks(narrative, corpus)[0]]
 
 
-def _log_dropped(dropped: List[Tuple[str, str]]) -> None:
+def _log_dropped(dropped: List[Tuple[str, str]], corpus: Optional[Dict[str, Any]] = None) -> None:
     """One warning per dropped pick: the phase, the reason and the ticker cut to 20 characters (repr).
 
     The ticker is model output, so it is cut and escaped before it reaches a log line; corpus
-    text is never logged.
+    text is never logged. A ``not_in_sector`` line adds the yfinance sector and industry from the
+    memo (already cut to 40 characters, third-party strings, so repr-escaped; None when absent).
     """
+    memo = corpus.get(SECTOR_CHECK_KEY) if corpus is not None else None
+    memo = memo if isinstance(memo, dict) else {}
     for ticker, reason in dropped:
-        logger.warning("%s: pick dropped (%s): %s", PHASE, reason, repr(ticker[:20]))
+        if reason == "not_in_sector":
+            entry = memo.get(ticker)
+            entry = entry if isinstance(entry, dict) else {}
+            logger.warning(
+                "%s: pick dropped (%s): %s; yfinance sector %s, industry %s",
+                PHASE, reason, repr(ticker[:20]), repr(entry.get("sector")), repr(entry.get("industry")),
+            )
+        else:
+            logger.warning("%s: pick dropped (%s): %s", PHASE, reason, repr(ticker[:20]))
 
 
 def _no_picks_error(corpus: Dict[str, Any], dropped: List[Tuple[str, str]]) -> PhaseOutputError:
     """The shared failure when no pick can be published: fixed text per source, no ticker, no corpus text."""
-    _log_dropped(dropped)
+    _log_dropped(dropped, corpus)
     source = corpus["source"]
     if source == "unavailable":
         hint = _SOURCE_HINTS["universe" if corpus.get("universe") else "open"]
@@ -441,7 +477,7 @@ def merge_market(
     kept, dropped = _picks(narrative, corpus)
     if not kept:
         raise _no_picks_error(corpus, dropped)
-    _log_dropped(dropped)
+    _log_dropped(dropped, corpus)
     tickers = [t for t, _ in kept]
 
     source = corpus["source"]
