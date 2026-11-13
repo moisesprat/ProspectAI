@@ -754,7 +754,7 @@ class ProspectAIFlow(Flow[ProspectAIFlowState]):
         ctx = self._fmt_ctx("Market Data (collected by the pipeline)", market_narrative_context(corpus))
         result, narrative = await self._run_phase(
             phase, 0, MarketNarrativeOutput, build_args=(ctx,),
-            validate=lambda n: validate_market_picks(n, corpus),
+            validate=lambda n: validate_market_picks(n, corpus, tracker=tracker),
             start_tracker=False,
         )
         if corpus["source"] == "serper":

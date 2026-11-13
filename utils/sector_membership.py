@@ -52,6 +52,15 @@ cut to 40 characters and the drop line (``utils.market_records``) repr-escapes t
 
 The check emits no SSE step and no new event (no SSE contract change); the drop and skip lines
 are logs.
+
+Metrics record (D-10). When a tracker is passed (``tracker=``), ``check_sector_membership`` ends by
+calling ``tracker.set_sector_check(sector_check_record(corpus))``, also when nothing new was looked
+up, so ``execution_metrics.sector_check`` is present after every Serper-path market attempt for a
+mapped sector and absent otherwise. The record is built from explicit memo keys only: ``budget_sec``,
+``spent_sec``, ``curated_kept`` and ``members`` (counts), ``dropped`` (``ticker``, ``reason``
+not_in_sector, ``sector``, ``industry`` cut to ``FIELD_CHARS``) and ``skipped`` (``ticker``,
+``reason``), each list capped at ``MAX_RECORD_ENTRIES`` in memo order. No corpus text, URL or
+exception text can enter it.
 """
 from __future__ import annotations
 
@@ -72,6 +81,7 @@ logger = logging.getLogger(__name__)
 SECTOR_CHECK_BUDGET_SEC = 15.0
 SECTOR_CHECK_WORKERS = 5
 FIELD_CHARS = 40
+MAX_RECORD_ENTRIES = 15
 # Corpus key holding the seconds the run has already spent on lookups (the budget is run-level).
 SPENT_KEY = "sector_check_spent_sec"
 
@@ -220,20 +230,35 @@ async def _lookup_all(todo: list[str], budget: float) -> tuple[dict[str, dict], 
     return outcomes, spent
 
 
-async def check_sector_membership(narrative: MarketNarrativeOutput | None, corpus: dict) -> None:
-    """Write a sector verdict into ``corpus["sector_check"]`` for each grounded pick not yet in it.
+def sector_check_record(corpus: dict) -> dict:
+    """The public ``execution_metrics.sector_check`` record built from the corpus memo (D-10).
 
-    Returns at once unless the corpus source is serper and the alias-resolved sector has an entry
-    in ``SECTOR_MEMBERSHIP``. Curated picks get verdict "curated" with no call; the rest are looked
-    up in a dedicated pool under the run-level budget. Never raises: an unexpected failure leaves
-    every unresolved pick as skipped (kept).
+    Only explicit memo keys are read, so no corpus text, link or exception text can reach it.
+    Each list holds at most ``MAX_RECORD_ENTRIES`` entries, in memo order.
     """
-    if corpus.get("source") != "serper":
-        return
-    canonical = canonical_sector(corpus.get("sector", ""))
-    if canonical not in SECTOR_MEMBERSHIP:
-        return
-    memo = corpus.setdefault(SECTOR_CHECK_KEY, {})
+    memo = corpus.get(SECTOR_CHECK_KEY) or {}
+    entries = list(memo.items())
+    dropped = [
+        {"ticker": ticker, "reason": "not_in_sector",
+         "sector": entry.get("sector"), "industry": entry.get("industry")}
+        for ticker, entry in entries if entry.get("verdict") == "not_in_sector"
+    ]
+    skipped = [
+        {"ticker": ticker, "reason": entry.get("reason")}
+        for ticker, entry in entries if entry.get("verdict") == "skipped"
+    ]
+    return {
+        "budget_sec": SECTOR_CHECK_BUDGET_SEC,
+        "spent_sec": round(corpus.get(SPENT_KEY, 0.0), 3),
+        "curated_kept": sum(1 for _, e in entries if e.get("verdict") == "curated"),
+        "members": sum(1 for _, e in entries if e.get("verdict") == "member"),
+        "dropped": dropped[:MAX_RECORD_ENTRIES],
+        "skipped": skipped[:MAX_RECORD_ENTRIES],
+    }
+
+
+async def _update_memo(narrative: MarketNarrativeOutput | None, corpus: dict, canonical: str, memo: dict) -> None:
+    """Add a verdict to ``memo`` for each grounded pick not yet in it (see ``check_sector_membership``)."""
     curated = set(SECTOR_TICKERS.get(canonical, []))
     todo: list[str] = []
     for ticker in grounded_picks(narrative, corpus):
@@ -265,11 +290,35 @@ async def check_sector_membership(narrative: MarketNarrativeOutput | None, corpu
                 _skip(memo, ticker, "lookup_error", type(exc).__name__)
 
 
-async def validate_market_picks(narrative: MarketNarrativeOutput | None, corpus: dict) -> None:
+async def check_sector_membership(
+    narrative: MarketNarrativeOutput | None, corpus: dict, *, tracker: Any = None,
+) -> None:
+    """Write a sector verdict into ``corpus["sector_check"]`` for each grounded pick not yet in it.
+
+    Returns at once unless the corpus source is serper and the alias-resolved sector has an entry
+    in ``SECTOR_MEMBERSHIP``. Curated picks get verdict "curated" with no call; the rest are looked
+    up in a dedicated pool under the run-level budget. Never raises: an unexpected failure leaves
+    every unresolved pick as skipped (kept). When ``tracker`` is given, the memo is then published
+    as ``execution_metrics.sector_check`` (D-10), also when nothing new was looked up.
+    """
+    if corpus.get("source") != "serper":
+        return
+    canonical = canonical_sector(corpus.get("sector", ""))
+    if canonical not in SECTOR_MEMBERSHIP:
+        return
+    memo = corpus.setdefault(SECTOR_CHECK_KEY, {})
+    await _update_memo(narrative, corpus, canonical, memo)
+    if tracker is not None:
+        tracker.set_sector_check(sector_check_record(corpus))
+
+
+async def validate_market_picks(
+    narrative: MarketNarrativeOutput | None, corpus: dict, *, tracker: Any = None,
+) -> None:
     """The market phase's ``validate`` callback: the sector check (serper only), then the pick check.
 
     Zero surviving picks raise PhaseOutputError into the bounded retry (utils.phase_runner).
     """
     if corpus.get("source") == "serper":
-        await check_sector_membership(narrative, corpus)
+        await check_sector_membership(narrative, corpus, tracker=tracker)
     require_market_picks(narrative, corpus)

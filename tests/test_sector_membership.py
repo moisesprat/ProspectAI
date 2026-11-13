@@ -84,9 +84,9 @@ def _capture_corpus(monkeypatch):
     seen = []
     real = prospect_ai_flow.validate_market_picks
 
-    async def recorder(narrative, corpus):
+    async def recorder(narrative, corpus, **kwargs):
         seen.append(corpus)
-        return await real(narrative, corpus)
+        return await real(narrative, corpus, **kwargs)
 
     monkeypatch.setattr(prospect_ai_flow, "validate_market_picks", recorder)
     return seen
@@ -469,3 +469,114 @@ def test_lookups_fill_the_run_cache_the_fundamentals_phase_reads(monkeypatch, re
     assert corpus["sector_check"]["AAA"]["verdict"] == "member"
     assert yfinance_cache.get_info("AAA") == SOFTWARE
     assert fake.constructed == ["AAA"]
+
+
+# ─── execution_metrics.sector_check (plan 04.1-03, D-10) ──────────────────────
+
+def _tracked(flow):
+    from utils.execution_tracker import ExecutionTracker
+    flow._tracker = ExecutionTracker()
+    flow._tracker.start()
+    return flow._tracker
+
+
+def test_metrics_record_lists_the_drops_and_the_curated_kept(flow, monkeypatch, real_sector_check):
+    flow.state.sector = "Financials"
+    serper = _organic("JPM beats estimates", "AAPL and JPM lead the market", "NVDA and AAPL rally")
+    wire_tools(flow, market_tools(serper=serper), phase=MARKET_PHASE)
+    tracker = _tracked(flow)
+    fake_info(monkeypatch, {
+        "AAPL": {"sector": "Technology", "industry": "Consumer Electronics"},
+        "NVDA": {"sector": "Technology", "industry": "Semiconductors"},
+    })
+
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("NVDA"), mkt_entry("JPM"))))
+
+    record = tracker.to_dict()["sector_check"]
+    assert record["budget_sec"] == 15.0
+    assert 0 <= record["spent_sec"] < 15
+    assert record["curated_kept"] == 1
+    assert record["members"] == 0
+    assert record["dropped"] == [
+        {"ticker": "AAPL", "reason": "not_in_sector", "sector": "Technology", "industry": "Consumer Electronics"},
+        {"ticker": "NVDA", "reason": "not_in_sector", "sector": "Technology", "industry": "Semiconductors"},
+    ]
+    assert record["skipped"] == []
+    assert tracker.to_dict()["metrics_version"] == 2
+
+
+def test_metrics_record_lists_skips_with_their_reason(flow, monkeypatch, real_sector_check):
+    wire_tools(flow, market_tools(serper=_organic("AAA beats estimates", "AAA again")), phase=MARKET_PHASE)
+    tracker = _tracked(flow)
+    fake_info(monkeypatch, {"AAA": {"sector": None, "industry": None}})
+
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAA"))))
+
+    record = tracker.to_dict()["sector_check"]
+    assert record["skipped"] == [{"ticker": "AAA", "reason": "no_sector_data"}]
+    assert record["members"] == 0
+    assert record["dropped"] == []
+
+
+def test_metrics_record_is_absent_off_the_serper_path(flow, monkeypatch, real_sector_check):
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=None), phase=MARKET_PHASE)
+    tracker = _tracked(flow)
+    fake_info(monkeypatch, {})
+
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("JPM"))))
+
+    assert "sector_check" not in tracker.to_dict()
+
+
+def test_metrics_record_holds_no_corpus_text_and_is_bounded(flow, monkeypatch, real_sector_check):
+    import json
+    flow.state.sector = "Financials"
+    serper = _organic("JPM beats estimates", "AAPL and JPM lead the market")
+    wire_tools(flow, market_tools(serper=serper), phase=MARKET_PHASE)
+    tracker = _tracked(flow)
+    fake_info(monkeypatch, {"AAPL": {"sector": "Technology", "industry": "Consumer Electronics"}})
+    run_market(flow, narrative_result(mkt_payload(mkt_entry("AAPL"), mkt_entry("JPM"))))
+    text = json.dumps(tracker.to_dict()["sector_check"])
+    for forbidden in ("Headline", "http", "example.com"):
+        assert forbidden not in text
+
+    memo = {}
+    for i in range(20):
+        memo[f"D{i:02d}"] = {"verdict": "not_in_sector", "reason": "label_mismatch",
+                             "sector": "S" * 40, "industry": "I" * 40}
+        memo[f"K{i:02d}"] = {"verdict": "skipped", "reason": "no_sector_data", "sector": None, "industry": None}
+    record = sector_membership.sector_check_record({"sector_check": memo})
+    assert len(record["dropped"]) == 15
+    assert len(record["skipped"]) == 15
+    assert len(json.dumps(record)) < 4096
+
+
+def test_failed_market_phase_keeps_the_record_in_the_partial_snapshot(flow, monkeypatch, real_sector_check):
+    from utils.phase_runner import PhaseSchemaError
+    flow.state.sector = "Financials"
+    wire_tools(flow, market_tools(serper=_organic("AAPL beats estimates", "AAPL again")), phase=MARKET_PHASE)
+    tracker = _tracked(flow)
+    fake_info(monkeypatch, {"AAPL": {"sector": "Technology", "industry": "Consumer Electronics"}})
+    off = lambda: narrative_result(mkt_payload(mkt_entry("AAPL")))  # noqa: E731
+
+    with pytest.raises(PhaseSchemaError):
+        run_market(flow, off(), off(), off())
+
+    snap = tracker.snapshot()
+    assert snap["partial"] is True
+    assert [d["ticker"] for d in snap["sector_check"]["dropped"]] == ["AAPL"]
+
+
+def test_offline_stub_accepts_the_tracker_keyword(monkeypatch):
+    """The conftest stub of plan 04.1-01 takes (*args, **kwargs): a forwarded tracker looks nothing up."""
+    from utils.execution_tracker import ExecutionTracker
+    calls = fake_info(monkeypatch, {})
+    corpus = _serper_corpus("Technology", "ZZZ")
+    tracker = ExecutionTracker()
+
+    asyncio.run(sector_membership.validate_market_picks(_narrative("ZZZ"), corpus, tracker=tracker))
+
+    assert calls == []
+    assert "sector_check" not in corpus
+    assert "sector_check" not in tracker.to_dict()

@@ -504,3 +504,47 @@ class TestSentimentLookup:
         tracker.set_sentiment_lookup(self.RECORD)
         tracker.set_sentiment_lookup(None)
         assert "sentiment_lookup" not in tracker.to_dict()
+
+
+class TestSectorCheck:
+    """The additive sector_check field of metrics v2 (phase 4.1, D-10)."""
+
+    RECORD = {
+        "budget_sec": 15.0, "spent_sec": 0.42, "curated_kept": 1, "members": 0,
+        "dropped": [{"ticker": "AAPL", "reason": "not_in_sector",
+                     "sector": "Technology", "industry": "Consumer Electronics"}],
+        "skipped": [{"ticker": "AAA", "reason": "no_sector_data"}],
+    }
+
+    def test_absent_until_set(self):
+        assert "sector_check" not in _tracker_with_pipeline().to_dict()
+
+    def test_present_once_set_and_version_unchanged(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_sector_check(self.RECORD)
+        d = tracker.to_dict()
+        assert d["sector_check"] == self.RECORD
+        assert d["metrics_version"] == 2
+
+    def test_stored_and_returned_as_copies(self):
+        record = {**self.RECORD, "dropped": [dict(self.RECORD["dropped"][0])]}
+        tracker = _tracker_with_pipeline()
+        tracker.set_sector_check(record)
+        record["dropped"][0]["ticker"] = "ZZZ"
+        first = tracker.to_dict()
+        assert first["sector_check"]["dropped"][0]["ticker"] == "AAPL"
+        first["sector_check"]["dropped"][0]["ticker"] = "YYY"
+        assert tracker.to_dict()["sector_check"]["dropped"][0]["ticker"] == "AAPL"
+
+    def test_none_clears_it(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_sector_check(self.RECORD)
+        tracker.set_sector_check(None)
+        assert "sector_check" not in tracker.to_dict()
+
+    def test_in_the_partial_snapshot(self):
+        tracker = _tracker_with_pipeline()
+        tracker.set_sector_check(self.RECORD)
+        snap = tracker.snapshot()
+        assert snap["sector_check"] == self.RECORD
+        assert snap["partial"] is True
