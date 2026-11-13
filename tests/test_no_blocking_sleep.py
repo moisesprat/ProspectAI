@@ -154,6 +154,42 @@ def test_no_sleep_on_loop_full_run(flow):
     assert on_loop == []
 
 
+@pytest.mark.usefixtures("real_sector_check")
+def test_sector_lookup_never_runs_on_the_loop_thread(flow, monkeypatch):
+    """Phase 4.1 D-08: the sector check's yfinance lookups run on worker threads, never the loop."""
+    from utils import yfinance_cache
+
+    sleeps, loop_threads, lookup_threads = [], set(), set()
+
+    def get_info(ticker):
+        lookup_threads.add(threading.get_ident())
+        return {"sector": "Technology", "industry": "Software - Application"}
+
+    monkeypatch.setattr(yfinance_cache, "get_info", get_info)
+    results = {
+        0: narrative_result(mkt_payload(mkt_entry("AAA"), mkt_entry("BBB"))),
+        1: narrative_result(tech_payload(tech_narrative_entry("AAA"))),
+        2: narrative_result(narrative_payload(narrative_entry("AAA"))),
+        3: narrative_result(draft_payload(draft_entry("AAA"))),
+        4: _json_result(_critic()),
+        5: narrative_result(draft_payload(draft_entry("AAA"))),
+    }
+    serper_posts = [_serper_response(200, SERPER_BODY)] * 3
+    with patch.object(flow, "_make_crew", side_effect=_crew_factory(results, loop_threads)), \
+         patch.object(flow, "_slim_draft", return_value=""), \
+         patch.object(flow, "_critic_reference_table", return_value=""), \
+         patch.object(flow, "_gated_slim_critique", return_value=""), \
+         patch.object(time, "sleep", _sleep_recorder(sleeps)), \
+         patch("requests.post", side_effect=serper_posts):
+        flow.kickoff(inputs={"sector": "Technology", "today": "2026-04-29", "risk_profile": "conservative"})
+
+    assert flow.state.final_output is not None
+    assert len(loop_threads) == 1
+    assert lookup_threads
+    assert lookup_threads.isdisjoint(loop_threads)
+    assert [ident for ident, _, _ in sleeps if ident in loop_threads] == []
+
+
 def test_news_sentiment_refusal_in_a_full_run_never_sleeps(flow, monkeypatch):
     """The news lookup answers a rate limit: the run completes with null sentiment, the lookup
     stops after one request, and it never sleeps (plan 03.1-09, D-07)."""

@@ -193,13 +193,14 @@ async def _lookup_all(todo: list[str], budget: float) -> tuple[dict[str, dict], 
         max_workers=min(SECTOR_CHECK_WORKERS, len(todo)), thread_name_prefix="sector-check"
     )
     started = time.monotonic()
+    pending: set = set()
     futures: dict[Any, str] = {}
     outcomes: dict[str, dict] = {}
     try:
         for ticker in todo:
             future = loop.run_in_executor(pool, contextvars.copy_context().run, lookup_sector, ticker)
             futures[future] = ticker
-        done, _pending = await asyncio.wait(list(futures), timeout=budget)
+        done, pending = await asyncio.wait(list(futures), timeout=budget)
         for future in done:
             try:
                 outcomes[futures[future]] = future.result()
@@ -212,7 +213,11 @@ async def _lookup_all(todo: list[str], budget: float) -> tuple[dict[str, dict], 
             if not future.done():
                 future.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
-    return outcomes, time.monotonic() - started
+    spent = time.monotonic() - started
+    if pending:
+        # A timeout means the whole budget is spent, even if the loop's timer fired a clock tick early.
+        spent = max(spent, budget)
+    return outcomes, spent
 
 
 async def check_sector_membership(narrative: MarketNarrativeOutput | None, corpus: dict) -> None:

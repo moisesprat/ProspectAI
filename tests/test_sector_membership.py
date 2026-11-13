@@ -357,3 +357,115 @@ def test_no_value_is_invented_for_a_skipped_pick(monkeypatch, real_sector_check)
     without = {k: v for k, v in corpus.items() if k != "sector_check"}
     plain = merge_market("Technology", without, narrative, now).candidate_stocks[0]
     assert (with_check.mention_count, with_check.relevance_score) == (plain.mention_count, plain.relevance_score)
+
+
+# ─── Budget, pool, memo and run cache (D-08) ──────────────────────────────────
+
+def test_hung_lookup_is_skipped_at_the_budget_and_the_pick_is_kept(caplog, monkeypatch, real_sector_check):
+    import time
+    from utils.market_records import require_market_picks, grounded_picks
+    monkeypatch.setattr(sector_membership, "SECTOR_CHECK_BUDGET_SEC", 0.3)
+    release = threading.Event()
+    calls = []
+
+    def get_info(ticker):
+        calls.append(ticker)
+        if ticker == "AAA":
+            release.wait(10)
+            return {}
+        return SOFTWARE
+
+    monkeypatch.setattr(yfinance_cache, "get_info", get_info)
+    corpus = _serper_corpus("Technology", "AAA", "BBB")
+    narrative = _narrative("AAA", "BBB")
+    try:
+        with caplog.at_level("WARNING"):
+            started = time.monotonic()
+            asyncio.run(check_sector_membership(narrative, corpus))
+            elapsed = time.monotonic() - started
+        assert elapsed < 2
+        memo = corpus["sector_check"]
+        assert (memo["AAA"]["verdict"], memo["AAA"]["reason"]) == ("skipped", "timeout")
+        assert memo["BBB"]["verdict"] == "member"
+        assert _skip_lines(caplog) == ["market_analysis: sector_check_skipped (timeout): 'AAA'"]
+        require_market_picks(narrative, corpus)
+        assert grounded_picks(narrative, corpus) == ["AAA", "BBB"]
+    finally:
+        release.set()
+
+
+def test_spent_budget_skips_new_tickers_without_a_lookup(monkeypatch, real_sector_check):
+    monkeypatch.setattr(sector_membership, "SECTOR_CHECK_BUDGET_SEC", 0.3)
+    release = threading.Event()
+    calls = []
+
+    def get_info(ticker):
+        calls.append(ticker)
+        if ticker == "AAA":
+            release.wait(10)
+        return SOFTWARE
+
+    monkeypatch.setattr(yfinance_cache, "get_info", get_info)
+    corpus = _serper_corpus("Technology", "AAA", "BBB", "CCC")
+    try:
+        asyncio.run(check_sector_membership(_narrative("AAA", "BBB"), corpus))
+        before = list(calls)
+        asyncio.run(check_sector_membership(_narrative("CCC"), corpus))
+    finally:
+        release.set()
+
+    assert calls == before and "CCC" not in calls
+    entry = corpus["sector_check"]["CCC"]
+    assert (entry["verdict"], entry["reason"]) == ("skipped", "timeout")
+
+
+def test_each_ticker_is_looked_up_once_per_run(monkeypatch, real_sector_check):
+    from datetime import datetime, timezone
+    from utils.market_records import grounded_picks, merge_market
+    calls = fake_info(monkeypatch, {"AAA": SOFTWARE, "BBB": SOFTWARE})
+    corpus = _serper_corpus("Technology", "AAA", "BBB")
+    narrative = _narrative("AAA", "BBB")
+
+    asyncio.run(check_sector_membership(narrative, corpus))
+    asyncio.run(check_sector_membership(narrative, corpus))
+    grounded = grounded_picks(narrative, corpus)
+    kept = [t for t, _ in _picks(narrative, corpus)[0]]
+    published = [c.ticker for c in merge_market(
+        "Technology", corpus, narrative, datetime(2026, 4, 29, tzinfo=timezone.utc)).candidate_stocks]
+
+    assert sorted(t for t, _ in calls) == ["AAA", "BBB"]
+    assert grounded == kept == published == ["AAA", "BBB"]
+
+
+def test_lookups_run_in_parallel_on_at_most_five_workers(monkeypatch, real_sector_check):
+    tickers = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    barrier = threading.Barrier(5, timeout=2)
+    names = set()
+    lock = threading.Lock()
+
+    def get_info(ticker):
+        with lock:
+            names.add(threading.current_thread().name)
+        barrier.wait()
+        return SOFTWARE
+
+    monkeypatch.setattr(yfinance_cache, "get_info", get_info)
+    corpus = _serper_corpus("Technology", *tickers)
+
+    asyncio.run(check_sector_membership(_narrative(*tickers), corpus))
+
+    assert {corpus["sector_check"][t]["verdict"] for t in tickers} == {"member"}
+    assert names and all(n.startswith("sector-check") for n in names)
+    assert len(names) <= 5
+
+
+def test_lookups_fill_the_run_cache_the_fundamentals_phase_reads(monkeypatch, real_sector_check):
+    fake = _sequence_ticker([SOFTWARE])
+    monkeypatch.setattr(yfinance_cache.yf, "Ticker", fake)
+    corpus = _serper_corpus("Technology", "AAA")
+
+    asyncio.run(check_sector_membership(_narrative("AAA"), corpus))
+
+    assert corpus["sector_check"]["AAA"]["verdict"] == "member"
+    assert yfinance_cache.get_info("AAA") == SOFTWARE
+    assert fake.constructed == ["AAA"]
