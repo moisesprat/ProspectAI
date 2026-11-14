@@ -313,6 +313,10 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Analyses run in the hours after the market closes
+- An analysis started after the market closes, before Yahoo Finance records that day's closing price, no longer stops with "no valid current price" for every stock.
+- In that window each stock's price and indicators come from the most recent trading day that has a closing price, usually the day before. No price is filled in or estimated.
+
 ### v1.13.3 — Better stock searches, and a safe list when the search finds none
 - The web searches for each sector now use plain sector terms and name a few of the sector's best-known stocks, so an analysis such as Financials finds bank and financial stocks to choose from instead of general market news.
 - When none of the stocks chosen from the web search can be confirmed as part of the sector you picked, the analysis now continues with five well-known stocks of that sector instead of stopping with an error, and the market step's text says the stocks came from this list.

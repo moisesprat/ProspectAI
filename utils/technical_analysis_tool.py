@@ -4,6 +4,7 @@ Technical Analysis Tool - Calculates technical indicators using the ta package
 """
 
 import json
+import logging
 import os
 import sys
 from typing import Dict, Any, List
@@ -11,6 +12,11 @@ import pandas as pd
 from datetime import datetime
 from utils import yfinance_cache
 from utils.technical_interpretation_tool import TechnicalInterpretationTool
+
+logger = logging.getLogger(__name__)
+
+# A bar is usable only with all four prices; the indicators read High, Low and Close.
+_PRICE_COLUMNS = ("Open", "High", "Low", "Close")
 
 # Add parent directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -111,12 +117,27 @@ class TechnicalAnalysisTool(BaseTool):
             return {"error": f"Interpretation error: {e}"}
 
     def _fetch_history(self, ticker: str, period: str):
-        """Fetch raw OHLCV history. Returns DataFrame on success, error dict on failure."""
+        """Fetch OHLCV history. Returns DataFrame on success, error dict on failure.
+
+        Bars without all four prices are dropped. Yahoo can serve the latest
+        session's daily bar with a null close for hours after the close while its
+        volume is set; yfinance's auto-adjust then blanks Open, High and Low too, and
+        its keepna=False cleanup keeps the row because Volume is non-zero. As the last
+        bar it made current_price and every indicator's latest value NaN. The last
+        priced bar is the current one (stock_data.end_date names its date); no price
+        is filled in. No priced bar at all is an error for this ticker.
+        """
         try:
             hist = yfinance_cache.get_history(ticker, period, self.default_interval)
             if hist.empty:
                 return {"error": f"No data found for {ticker}"}
-            return hist
+            priced = hist.dropna(subset=[c for c in _PRICE_COLUMNS if c in hist.columns])
+            dropped = len(hist) - len(priced)
+            if dropped:
+                logger.info("dropped %d price bars without a full price for %s", dropped, repr(str(ticker)[:20]))
+            if priced.empty:
+                return {"error": f"No priced bars found for {ticker}"}
+            return priced
         except Exception as e:
             return {"error": f"Error fetching data for {ticker}: {str(e)}"}
 

@@ -192,6 +192,85 @@ class TestTechnicalDottedTicker:
         assert entry["stock_data"]["ticker"] == "BRK.B"
 
 
+# ── Bars without a price (Yahoo null-close latest bar) ────────────────────────
+#
+# Yahoo can serve the latest session's daily bar with close=None for hours after
+# the close while its volume is set. yfinance's auto-adjust then blanks Open,
+# High and Low as well, and keepna=False keeps the row because Volume is non-zero.
+# Taken as the last bar it made current_price NaN for every ticker, and the
+# technical phase refused to publish (live Financials run, 2026-11-14).
+
+_PRICE_COLS = ["Open", "High", "Low", "Close"]
+
+
+def _with_unpriced_bars(df: pd.DataFrame, positions, cols=_PRICE_COLS) -> pd.DataFrame:
+    """Copy of df with the price columns at ``positions`` set to NaN; Volume is kept."""
+    out = df.copy()
+    for pos in positions:
+        for col in cols:
+            out.iloc[pos, out.columns.get_loc(col)] = np.nan
+    return out
+
+
+def _run_entry(hist_df: pd.DataFrame, ticker: str = "JPM") -> dict:
+    with patch("yfinance.Ticker", return_value=_mock_ticker(hist_df)):
+        result = TechnicalAnalysisTool()._run(json.dumps([ticker]))
+    return result["technical_analysis"][0]
+
+
+class TestUnpricedBars:
+
+    def test_unpriced_last_bar_uses_last_complete_close(self):
+        df = _make_price_df()
+        entry = _run_entry(_with_unpriced_bars(df, [-1]))
+        assert "error" not in entry
+        sd = entry["stock_data"]
+        assert sd["current_price"] == pytest.approx(float(df["Close"].iloc[-2]))
+        assert sd["end_date"] == df.index[-2].strftime("%Y-%m-%d")
+        assert sd["data_points"] == len(df) - 1
+
+    def test_unpriced_last_bar_still_builds_a_technical_record(self):
+        from utils.technical_records import build_technical_records
+        entry = _run_entry(_with_unpriced_bars(_make_price_df(), [-1]))
+        sma_20 = entry["technical_indicators"]["trend"]["moving_averages"]["sma_20"]
+        assert sma_20 is not None and np.isfinite(sma_20)
+        assert "error" not in entry["interpretation"]
+        records, failed = build_technical_records({"technical_analysis": [entry]}, ["JPM"])
+        assert list(records) == ["JPM"]
+        assert failed == []
+
+    def test_close_only_null_bar_is_dropped(self):
+        # The raw Yahoo shape: open/high/low present, close null (auto_adjust=False).
+        df = _make_price_df()
+        entry = _run_entry(_with_unpriced_bars(df, [-1], cols=["Close"]))
+        assert entry["stock_data"]["current_price"] == pytest.approx(float(df["Close"].iloc[-2]))
+        assert entry["stock_data"]["data_points"] == len(df) - 1
+
+    def test_unpriced_bar_inside_the_series_is_dropped(self):
+        df = _make_price_df()
+        entry = _run_entry(_with_unpriced_bars(df, [100]))
+        sd = entry["stock_data"]
+        assert sd["current_price"] == pytest.approx(float(df["Close"].iloc[-1]))
+        assert sd["data_points"] == len(df) - 1
+        assert np.isfinite(entry["technical_indicators"]["trend"]["moving_averages"]["sma_20"])
+
+    def test_complete_history_is_unchanged(self):
+        df = _make_price_df()
+        sd = _run_entry(df)["stock_data"]
+        assert sd["data_points"] == len(df)
+        assert sd["current_price"] == pytest.approx(float(df["Close"].iloc[-1]))
+
+    def test_no_priced_bar_is_an_error_not_a_price(self):
+        from utils.technical_records import build_technical_records
+        df = _make_price_df()
+        entry = _run_entry(_with_unpriced_bars(df, range(len(df))))
+        assert entry["error"] == "No priced bars found for JPM"
+        assert "stock_data" not in entry
+        records, failed = build_technical_records({"technical_analysis": [entry]}, ["JPM"])
+        assert records == {}
+        assert [f.ticker for f in failed] == ["JPM"]
+
+
 # ── Status helper methods ─────────────────────────────────────────────────────
 
 class TestStatusMethods:
