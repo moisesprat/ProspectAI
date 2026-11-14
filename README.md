@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.13.3**
+**Current release: v1.13.4**
 
 ### ⚠️ Important Disclaimer
 
@@ -313,7 +313,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Analyses run in the hours after the market closes
+### v1.13.4 — Analyses run in the hours after the market closes
 - An analysis started after the market closes, before Yahoo Finance records that day's closing price, no longer stops with "no valid current price" for every stock.
 - In that window each stock's price and indicators come from the most recent trading day that has a closing price, usually the day before. No price is filled in or estimated.
 
@@ -338,10 +338,6 @@ twine upload dist/*
 - Each stock the analysis picks now gets a news sentiment score from Marketaux, based on recent articles about the company, and the report shows it next to the stock.
 - A stock with too few recent articles, or a day when the news source is unavailable or out of free requests, shows no score instead of an invented one, and the analysis still finishes.
 - Stock picks come from web search alone, and the old forum source that had stopped returning data is gone, so runs no longer wait on it.
-
-### v1.12.3 — Analyses that run at the same time stay separate
-- When several analyses run at the same moment, each now keeps its own price and company data, so one analysis starting can no longer discard data another is still using.
-- Within a single analysis nothing changes: each stock's data is still fetched once and reused across the steps.
 
 ## Roadmap
 
