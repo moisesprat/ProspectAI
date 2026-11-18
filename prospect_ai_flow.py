@@ -77,7 +77,7 @@ from utils.candidate_universe_filter import filter_candidates
 from utils.fundamental_grader_tool import fundamentals_status
 from utils import yfinance_cache
 from config.config import Config
-from prospect_ai_crew import TaskFactory
+from utils.task_factory import TaskFactory
 
 logger = logging.getLogger(__name__)
 
@@ -98,44 +98,6 @@ PHASES = [
     "critique_review",
     "final_strategy",
 ]
-
-
-def _parse_crew_result(crew_result) -> Dict[str, Any]:
-    """Extract a JSON dict from a CrewAI result object.
-
-    Handles pydantic task output, json_dict shortcut, markdown fences, and
-    plain JSON strings. Falls back to a minimal error dict on parse failure.
-    """
-    if hasattr(crew_result, "json_dict") and crew_result.json_dict:
-        return crew_result.json_dict
-
-    tasks_output = getattr(crew_result, "tasks_output", None)
-    if tasks_output:
-        last = tasks_output[-1]
-        if getattr(last, "pydantic", None):
-            return last.pydantic.model_dump(mode="json")
-        if getattr(last, "json_dict", None):
-            return last.json_dict
-
-    raw = getattr(crew_result, "raw", None) or str(crew_result)
-    cleaned = raw.strip()
-    for fence in ("```json", "```python", "```"):
-        if cleaned.startswith(fence):
-            cleaned = cleaned[len(fence):]
-            break
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return {
-            "pipeline_version": "2.0",
-            "parse_error": True,
-            "raw_output": raw,
-            "portfolio_summary": {"portfolio_rationale": raw[:500]},
-        }
 
 
 _VALID_PROFILES = frozenset({"conservative", "aggressive"})
