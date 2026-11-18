@@ -25,7 +25,7 @@ from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
 from config.config import AGENT_MODEL_ENV_KEYS, Config
-from prospect_ai_crew import TaskFactory
+from utils.task_factory import TaskFactory
 from prospect_ai_flow import PHASES
 
 HAIKU_55 = "claude-haiku-5-5"

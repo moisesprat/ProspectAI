@@ -27,7 +27,7 @@ RENDER_KWARGS = {"sector": "Technology", "today": "2026-04-29", "risk_profile": 
 
 
 def _phase_output_models():
-    from prospect_ai_crew import PHASE_OUTPUT_MODELS
+    from utils.task_factory import PHASE_OUTPUT_MODELS
 
     return PHASE_OUTPUT_MODELS
 
@@ -259,7 +259,7 @@ def test_dropping_a_required_field_is_caught(tmp_path):
 @pytest.fixture
 def real_factory(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
 
     return TaskFactory()
 
@@ -658,7 +658,7 @@ def test_no_case_b_branch_in_any_config_file():
 def test_final_strategy_allocator_is_flow_owned(monkeypatch):
     """CORR-04 (phase 4 D-07): the Flow calls the allocator; the final agent has no tools."""
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
     from utils.portfolio_allocator_tool import PortfolioAllocatorTool
 
     factory = TaskFactory()

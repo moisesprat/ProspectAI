@@ -441,7 +441,7 @@ class TestToolCallGuard:
     def test_no_phase_gives_its_agent_tools(self, monkeypatch):
         """Every phase is Flow-owned or tool-less: the LLM never calls a tool, so it cannot skip one."""
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        from prospect_ai_crew import TaskFactory
+        from utils.task_factory import TaskFactory
 
         factory = TaskFactory()
         for phase, cfg in factory._phase_config.items():

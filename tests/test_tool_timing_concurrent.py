@@ -101,7 +101,7 @@ class TestConcurrentPhaseAttribution:
 class TestTaskFactoryWiring:
     def test_every_phase_tool_marked_with_its_phase_and_idempotent(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        from prospect_ai_crew import TaskFactory
+        from utils.task_factory import TaskFactory
 
         tracker = ExecutionTracker()
         factory = TaskFactory(tracker_getter=lambda: tracker)
@@ -130,7 +130,7 @@ class TestTaskFactoryWiring:
 
     def test_zero_arg_factory_records_nothing_and_still_builds(self, monkeypatch):
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        from prospect_ai_crew import TaskFactory
+        from utils.task_factory import TaskFactory
 
         factory = TaskFactory()
         tool = factory.flow_tool("technical_analysis", "calculate_technical_indicators")

@@ -66,7 +66,7 @@ import httpx
 import smoke_haiku55 as _haiku
 from agents.caching_llm import make_caching_llm
 from config.config import Config
-from prospect_ai_crew import TaskFactory
+from utils.task_factory import TaskFactory
 
 _Record = _haiku._Record
 _install_recorder = _haiku._install_recorder
