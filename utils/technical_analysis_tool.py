@@ -5,24 +5,17 @@ Technical Analysis Tool - Calculates technical indicators using the ta package
 
 import json
 import logging
-import os
-import sys
 from typing import Dict, Any, List
 import pandas as pd
 from datetime import datetime
 from utils import yfinance_cache
+from utils.scoring_constants import ATR_RATIO_HIGH, ATR_RATIO_LOW
 from utils.technical_interpretation_tool import TechnicalInterpretationTool
 
 logger = logging.getLogger(__name__)
 
 # A bar is usable only with all four prices; the indicators read High, Low and Close.
 _PRICE_COLUMNS = ("Open", "High", "Low", "Close")
-
-# Add parent directory to path for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
 
 from crewai.tools import BaseTool
 
@@ -471,8 +464,8 @@ class TechnicalAnalysisTool(BaseTool):
         if pd.isna(atr) or current_price <= 0:
             return "Insufficient Data"
         atr_ratio = atr / current_price
-        if atr_ratio > 0.03:
+        if atr_ratio > ATR_RATIO_HIGH:
             return "High Volatility"
-        if atr_ratio < 0.01:
+        if atr_ratio < ATR_RATIO_LOW:
             return "Low Volatility"
         return "Normal Volatility"
