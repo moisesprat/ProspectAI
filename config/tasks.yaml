@@ -1,12 +1,12 @@
 # ProspectAI Task Configuration
 # Primary place to change task behavior (instructions, output schema, expected_output).
 # Use $sector and $today as template variables — they are substituted at runtime.
-# Context wiring (which prior tasks each task receives) is defined in prospect_ai_crew.py.
+# Context wiring (which prior tasks each task receives) is defined in prospect_ai_flow.py.
 #
 # output_example (TEST-01, D-11): a task may declare one JSON example of the answer the
 # LLM must give, as a YAML mapping. It is the single source for the prompt and for the
 # contract test (tests/test_task_output_specs.py), which validates it against the model in
-# prospect_ai_crew.PHASE_OUTPUT_MODELS, so an example that drifts from the schema fails CI.
+# utils.task_factory.PHASE_OUTPUT_MODELS, so an example that drifts from the schema fails CI.
 # Two variables are filled in by TaskConfigLoader.render:
 #   $output_example  the example as indented JSON
 #   $allowed_values  the exact values of every Literal field of the task's output model,

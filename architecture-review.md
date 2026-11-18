@@ -82,6 +82,8 @@ The `FundamentalGraderTool` emits `valuation_grade` values from the set `{"CHEAP
 
 **Fix:** Extract `_parse_result` as a module-level function (in `prospect_ai_flow.py` or `utils/pipeline_result_parser.py`). Extract task/agent factory logic into a `TaskFactory` class with no deprecation baggage. `ProspectAIFlow` should depend only on `TaskFactory`.
 
+- Resolved in phase 5: ProspectAIFlow imports TaskFactory from utils/task_factory.py; the legacy crew module and class are deleted and a hygiene test keeps them out.
+
 ---
 
 **F-04 | `agents/fundamental_analyst_agent.py`:20, `agents/investor_strategic_agent.py`:18, `agents/critic_agent.py`:16 | Three agents hardcode verbose/allow_delegation, bypassing YAML config**

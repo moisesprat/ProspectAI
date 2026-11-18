@@ -2,10 +2,12 @@
 
 SEC-05: the local Open WebUI secret is never tracked.
 D-05 (phase 3.1): the removed Reddit source and its client library do not creep back.
+DEBT-01, D-02 (phase 5): the removed legacy crew module and class do not return.
 """
 
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,8 @@ _HISTORY_DIRS = ("openspec/changes/archive/",)
 _README = "README.md"
 _README_HISTORY_HEADING = "## Release Notes"
 _REMOVED_SOURCE = re.compile(r"reddit|\bpraw\b", re.IGNORECASE)
+_REMOVED_CREW = re.compile(r"ProspectAICrew|prospect_ai_crew")
+_REMOVED_CREW_MODULE = "prospect_ai_crew"
 
 
 def _git(*args):
@@ -58,8 +62,8 @@ def test_webui_secret_key_is_ignored():
     assert result.returncode == 0, f"{SECRET_PATH} is not covered by .gitignore"
 
 
-def test_no_reddit_source_left():
-    """No tracked file outside the history allow-list mentions the removed source (D-05)."""
+def _offenders(pattern):
+    """Tracked files outside the history allow-list whose text matches `pattern`."""
     listing = _git("ls-files", "-z")
     assert listing.returncode == 0
     offenders = []
@@ -75,6 +79,22 @@ def test_no_reddit_source_left():
             continue
         if rel == _README:
             text = text.split(_README_HISTORY_HEADING)[0]
-        if _REMOVED_SOURCE.search(text):
+        if pattern.search(text):
             offenders.append(rel)
+    return offenders
+
+
+def test_no_reddit_source_left():
+    """No tracked file outside the history allow-list mentions the removed source (D-05)."""
+    offenders = _offenders(_REMOVED_SOURCE)
     assert not offenders, f"removed source still mentioned in: {sorted(offenders)}"
+
+
+def test_no_legacy_crew_module_left():
+    """The legacy crew class and module do not return (DEBT-01, D-02)."""
+    offenders = _offenders(_REMOVED_CREW)
+    assert not offenders, f"removed legacy crew still mentioned in: {sorted(offenders)}"
+    assert not (REPO_ROOT / f"{_REMOVED_CREW_MODULE}.py").exists(), "root crew module is back"
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        py_modules = tomllib.load(fh)["tool"]["setuptools"]["py-modules"]
+    assert _REMOVED_CREW_MODULE not in py_modules, f"py-modules lists the crew module: {py_modules}"

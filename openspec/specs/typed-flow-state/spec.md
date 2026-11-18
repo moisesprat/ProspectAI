@@ -2,7 +2,7 @@
 
 ## Overview
 
-This spec defines the requirements for storing and accessing inter-phase data in `ProspectAIFlow` as typed Pydantic models rather than raw JSON strings, eliminating silent re-parsing and restoring the validated data contracts that existed in `ProspectAICrew`.
+This spec defines the requirements for storing and accessing inter-phase data in `ProspectAIFlow` as typed Pydantic models rather than raw JSON strings, eliminating silent re-parsing and restoring the validated data contracts that existed in the legacy crew orchestrator.
 
 ---
 

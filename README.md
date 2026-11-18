@@ -270,12 +270,14 @@ ProspectAI/
 │   ├── fundamental_grader_tool.py      # Grades individual fundamental metrics
 │   ├── composite_score_tool.py         # 30/40/30 composite scoring
 │   ├── portfolio_allocator_tool.py     # Allocation math with a per-profile cap
+│   ├── task_factory.py                 # Agents, tasks and per-phase tools
+│   ├── pipeline_result_parser.py       # Raw CrewAI result to dict
 │   └── recommendation_validator.py    # Post-generation validation
 ├── scripts/
 │   └── deploy.sh                       # Bump version, build, publish to PyPI, deploy Modal
 ├── tests/
 ├── main.py                             # CLI entry point (prospectai command)
-├── prospect_ai_crew.py                 # CrewAI orchestration (6-task pipeline)
+├── prospect_ai_flow.py                 # CrewAI Flow orchestrator (six phases)
 ├── pyproject.toml
 └── README.md
 ```

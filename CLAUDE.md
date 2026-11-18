@@ -54,7 +54,7 @@ Custom Claude Code commands available in this project:
 | Variable | Required | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes (default provider) | LLM calls |
-| `MODEL` | No on Anthropic; yes with `--ollama` | Optional global model override (e.g. `claude-sonnet-4-6`). Unset, each agent uses its `config/agents.yaml` model (`claude-haiku-5-5` for market, technical and fundamental; `claude-sonnet-5-5` for investor_strategic and critic). Falls back to legacy `ANTHROPIC_MODEL` / `OLLAMA_MODEL` |
+| `MODEL` | No on Anthropic; yes with `--ollama` | Optional global model override (e.g. `claude-sonnet-5-5`). Unset, each agent uses its `config/agents.yaml` model (`claude-haiku-5-5` for market, technical and fundamental; `claude-sonnet-5-5` for investor_strategic and critic). Falls back to legacy `ANTHROPIC_MODEL` / `OLLAMA_MODEL` |
 | `SERPER_API_KEY` | Yes | Market discovery: the Flow's three fixed Serper searches (the only discovery source) |
 | `NEWS_SENTIMENT_API_KEY` | No | Per-ticker news sentiment from Marketaux (`utils/news_sentiment.py`). Absent means every sentiment is null and `sentiment_available` is false; the run still completes. The free tier's 100 requests a day can run out: the report then shows null sentiment and `execution_metrics.sentiment_lookup.stopped_reason` says why |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | Only with `--ollama` | Local Ollama inference |
@@ -121,7 +121,8 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 |---|---|
 | `main.py` | CLI entry point; validates `.env`, sets `MODEL_PROVIDER`, calls `ProspectAIFlow.run_analysis()` |
 | `prospect_ai_flow.py` | **Current orchestrator** — `ProspectAIFlow(Flow[ProspectAIFlowState])`: 6-phase CrewAI Flow, state model, context slimming helpers, `_extract_pydantic()` for schema validation |
-| `prospect_ai_crew.py` | `TaskFactory` — agent/task factory used by `ProspectAIFlow` (per-phase agent, `flow_tools` the Flow calls itself, empty `agent_tools`, `build_task()`) |
+| `utils/task_factory.py` | `TaskFactory` and `PHASE_OUTPUT_MODELS` — per-phase agent, `flow_tools` the Flow calls itself, empty `agent_tools`, `build_task()`; `_phase_config` is per run, never cached process-wide |
+| `utils/pipeline_result_parser.py` | `parse_pipeline_result` — raw CrewAI result to dict; no production caller (the Flow uses `utils/phase_runner.extract_model`) |
 | `agents/base_agent.py` | `BaseAgent` ABC; loads YAML config, `_get_llm()` returns `crewai.LLM` based on `MODEL_PROVIDER` |
 | `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
 | `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, thinking, prompt_caching, model, max_tokens |

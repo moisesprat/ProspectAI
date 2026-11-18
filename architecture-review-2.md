@@ -93,10 +93,12 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 **F-24 — Stale comment in `tasks.yaml` references removed orchestration**
 - Line 4 says "Context wiring defined in `prospect_ai_crew.py`". It is now in `prospect_ai_flow.py`.
 - Fix: Update comment or remove it.
+- Resolved in phase 5: the tasks.yaml comment now names prospect_ai_flow.py.
 
 **F-25 — Legacy `ProspectAICrew` carries ~290 lines of dead-code surface**
 - `_get_llm()`, `create_tasks()`, `run_analysis()` in `ProspectAICrew` are never called. `_parse_result` is a near-duplicate of `_parse_crew_result`.
 - Fix: Extract `TaskFactory` to `task_factory.py`, delete `ProspectAICrew` and its tests, or set a clear removal milestone.
+- Resolved in phase 5: TaskFactory is extracted to utils/task_factory.py and the legacy crew module and class are deleted; a hygiene test keeps them out.
 
 ### SUGGESTIONS
 
@@ -139,7 +141,7 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 
 ### Phase 3 — Long-term
 
-10. **F-25** — Retire `ProspectAICrew`. Extract `TaskFactory` to its own module. Remove deprecated class + tests.
+10. **F-25** — Retire `ProspectAICrew`. Extract `TaskFactory` to its own module. Remove deprecated class + tests. *(Resolved in phase 5: TaskFactory extracted to utils/task_factory.py; the legacy module deleted.)*
 11. **F-17** — Async-safe Reddit tool.
 12. **S-26** — Idempotent model env mutation in `main()`.
 13. **S-30** — Memoize `AgentConfigLoader`.
