@@ -127,8 +127,9 @@ The guardrail against the LLM inventing a 5th action is enforced independently o
 | `agents/critic_agent.py` | `CriticAgent(BaseAgent)` — adversarial reviewer |
 | `config/agents.yaml` | **Primary place to change agent behavior**: role, goal, backstory, thinking, prompt_caching, model, max_tokens |
 | `config/tasks.yaml` | Task descriptions and expected outputs with `$sector` / `$today` template variables |
-| `config/agent_config_loader.py` | Reads `agents.yaml`, exposes per-agent config dicts |
-| `config/task_config_loader.py` | `TaskConfigLoader.render(task_key, **kwargs)` — substitutes template variables |
+| `config/agent_config_loader.py` | Reads `agents.yaml`, exposes per-agent config dicts; parse cached via config/yaml_cache.py |
+| `config/task_config_loader.py` | `TaskConfigLoader.render(task_key, **kwargs)` — substitutes template variables; parse cached via config/yaml_cache.py |
+| `config/yaml_cache.py` | `load_yaml` / `clear_yaml_cache`: parsed YAML cached per process by path, mtime and size; each loader gets a deep copy; never caches agents or tools |
 | `config/config.py` | `Config` class: env var properties, `default_model_id()`, `model_id_for_agent(agent_key)` |
 | `schemas/agent_outputs.py` | Pydantic contracts: the narrative-only models the LLM answers, and the published output models the Flow assembles |
 | `utils/phase_runner.py` | `run_phase` — bounded schema retry with field-path feedback; `MAX_SCHEMA_RETRIES = 2`; `PhaseSchemaError` (names phase, attempts, field paths) |

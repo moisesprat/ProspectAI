@@ -28,6 +28,7 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 - Location: `utils/reddit_sentiment_tool.py` (SECTOR_TICKERS["Technology"])
 - "NET" appears twice. `mention_counts` de-dupes via dict, but the ranking loop may yield two NET entries in the top-5.
 - Fix: `list(dict.fromkeys(tickers))` to deduplicate on use, or remove the duplicate from the constant.
+- Resolved in phase 5: NET appears once in SECTOR_TICKERS["Technology"] (now in utils/sector_universe.py), and tests/test_single_definitions.py pins it.
 
 **F-21 — Schema literals misaligned with deterministic tool outputs**
 - Location: `schemas/agent_outputs.py:122-123` vs `utils/fundamental_grader_tool.py`
@@ -57,10 +58,12 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 **F-10 — Stale scaffolding in `technical_analyst_agent.py`** (still present)
 - `sys.path.insert` block, unused imports (`os`, `sys`, `datetime`, `Dict`, `Any`, `List`, `Optional`), redundant `from crewai import Agent` inside `create_agent()`.
 - Fix: Delete path manipulation and prune imports.
+- Resolved in phase 5: the path hack and the unused imports are removed, and a hygiene test keeps sys.path edits out of package code.
 
 **F-11 — Dead `execute_task()` in `InvestorStrategicAgent`** (still present)
 - Returns hardcoded empty dict, never called.
 - Fix: Delete the method.
+- Resolved in phase 5: the method is deleted and a hygiene test keeps it out.
 
 **F-12 — `_quality_map` defined twice in `prospect_ai_flow.py`** (still present)
 - Identical local dict in `_slim_fundamental` and `_critic_reference_table`.
@@ -69,6 +72,7 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 **F-13 — Unused constants in `config.py`** (still present)
 - `MARKET_DATA_SOURCES`, `TECHNICAL_INDICATORS`, `FUNDAMENTAL_METRICS`, `RISK_LEVELS`, `REWARD_LEVELS`, `OUTPUT_FORMAT`, `REPORT_TEMPLATE` — none referenced anywhere.
 - Fix: Delete all of them.
+- Resolved in phase 5: the seven constants are deleted and a hygiene test keeps them out.
 
 **F-14 — `CriticAgent` not exported from `agents/__init__.py`** (still present)
 - `agents.__all__` lists only the original four agents.
@@ -77,10 +81,12 @@ ProspectAI's recent fixes (F-01 through F-08, plus bucket auto-correction) have 
 **F-15 — `_AGENT_NAMES` duplicated** (still present)
 - `prospect_ai_flow.py:27-34` (module-level) and `prospect_ai_crew.py:272` (scoped in `run_analysis`).
 - Fix: Import from flow into crew, or delete after F-25 is resolved.
+- Resolved in phase 5: there is one _AGENT_NAMES, in prospect_ai_flow.py, pinned by tests/test_single_definitions.py.
 
 **F-16 — `validation_warnings` dict comprehension duplicated** (still present)
 - Identical four-key projection from `ValidationIssue` built twice in `run_analysis`.
 - Fix: Add `to_dict()` method to `ValidationIssue` and call once.
+- Resolved in phase 5: validation_warnings is built once, in ProspectAIFlow.run_analysis, and a test pins it. It stays published in the report and in the top-level result by contract.
 
 **F-17 — Synchronous `time.sleep` in Reddit tool** (still present)
 - `time.sleep(2)` per request and `time.sleep(60)` on rate-limit inside an async flow phase.

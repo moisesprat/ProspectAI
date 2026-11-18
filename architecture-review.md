@@ -100,6 +100,8 @@ The `FundamentalGraderTool` emits `valuation_grade` values from the set `{"CHEAP
 
 **Fix:** Extract both dicts to `utils/scoring_constants.py` and import from both tools. Add a consistency test.
 
+- Resolved in phase 5: the scoring tables have one home, utils/scoring_constants.py, and tests/test_single_definitions.py pins it.
+
 ---
 
 **F-06 | `utils/technical_analysis_tool.py`:449–455 | `_get_atr_status()` is a stub that always returns `"Normal Volatility"`**
@@ -108,6 +110,8 @@ The method has a single `return "Normal Volatility"` for all stocks. `TechnicalI
 
 **Fix:** Implement real ATR status using the same `atr_ratio` thresholds as `TechnicalInterpretationTool`. The function already receives the `atr` value; it needs `current_price` as a second parameter (available at the call site).
 
+- Resolved in phase 5: the ATR status is a real ATR-over-price classifier that reads the shared ATR_RATIO_HIGH and ATR_RATIO_LOW constants in utils/scoring_constants.py.
+
 ---
 
 **F-07 | `prospect_ai_crew.py`:94–138 | `_PHASE_CONFIG` dict rebuilt on every `build_task()` call, creating new tool instances each time**
@@ -115,6 +119,8 @@ The method has a single `return "Normal Volatility"` for all stocks. `TechnicalI
 `build_task()` is called six times per pipeline run. Each call reconstructs the full `_PHASE_CONFIG` dict, instantiating new tool objects. Tool initialization runs Pydantic model construction on every call.
 
 **Fix:** Move `_PHASE_CONFIG` to a class attribute or `@cached_property` initialized once in `__init__`.
+
+- Resolved in phase 5: the phase config is built once per TaskFactory, one TaskConfigLoader serves every build_task call, and the YAML parse is cached in config/yaml_cache.py.
 
 ---
 
@@ -136,6 +142,8 @@ The method has a single `return "Normal Volatility"` for all stocks. `TechnicalI
 
 **Fix:** Remove the second `"NET"` from the list.
 
+- Resolved in phase 5: NET appears once in SECTOR_TICKERS["Technology"], and tests/test_single_definitions.py pins it.
+
 ---
 
 **F-10 | `agents/technical_analyst_agent.py`:11–20 | Stale scaffolding: `sys.path` manipulation and 8 unused imports**
@@ -144,6 +152,8 @@ The method has a single `return "Normal Volatility"` for all stocks. `TechnicalI
 
 **Fix:** Remove lines 7–20 from `technical_analyst_agent.py`. Remove the duplicate inner import. Apply the same cleanup to `enhanced_pdf_generator.py`.
 
+- Resolved in phase 5: the path hack and the unused imports are removed, and a hygiene test keeps sys.path edits out of package code.
+
 ---
 
 **F-11 | `agents/investor_strategic_agent.py`:26–50 | Dead `execute_task()` method with TODO stub**
@@ -151,6 +161,8 @@ The method has a single `return "Normal Volatility"` for all stocks. `TechnicalI
 Returns a hardcoded dict and is never called anywhere. Predates the CrewAI task-based architecture.
 
 **Fix:** Delete lines 26–50 and the unused `from typing import Dict, Any, List` import.
+
+- Resolved in phase 5: the stub is deleted and a hygiene test keeps it out.
 
 ---
 
@@ -168,6 +180,8 @@ Returns a hardcoded dict and is never called anywhere. Predates the CrewAI task-
 
 **Fix:** Remove from `config.py`.
 
+- Resolved in phase 5: the seven constants are deleted and a hygiene test keeps them out.
+
 ---
 
 **F-14 | `agents/__init__.py` | `CriticAgent` not exported from agents package**
@@ -184,6 +198,8 @@ The agent name list is defined as a module-level constant in `prospect_ai_flow.p
 
 **Fix:** Import `_AGENT_NAMES` from `prospect_ai_flow.py` into `prospect_ai_crew.py`.
 
+- Resolved in phase 5: there is one _AGENT_NAMES, in prospect_ai_flow.py, pinned by tests/test_single_definitions.py.
+
 ---
 
 **F-16 | `prospect_ai_crew.py`:328–338 and `prospect_ai_flow.py`:467–476 | `validation_warnings` duplicated in result dict**
@@ -191,6 +207,8 @@ The agent name list is defined as a module-level constant in `prospect_ai_flow.p
 `validation_issues` appears at both `result["validation_warnings"]` (top-level) and `result["result"]["validation_warnings"]` (inside the structured payload).
 
 **Fix:** Remove the mutation that inserts it into `structured`. Read only from the top-level key.
+
+- Resolved in phase 5: validation_warnings is built once, in ProspectAIFlow.run_analysis, and a test pins it. It stays published in both the report and the top-level result, because removing either would change the stored-report and SSE contract.
 
 ---
 
@@ -239,6 +257,8 @@ Each `@listen` method manually passes the correct integer to `_emit_progress()`.
 886 lines not imported by any production code path. `reportlab` is not in `pyproject.toml`.
 
 **Fix:** Either connect to the pipeline (add `--pdf` CLI flag, add to optional dependencies, write a smoke test) or move to `scripts/` to signal it is not part of the core pipeline.
+
+- Resolved in phase 5: the generator is deleted together with the legacy extra that carried its dependencies.
 
 ---
 
