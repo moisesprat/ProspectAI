@@ -315,6 +315,12 @@ twine upload dist/*
 
 ## Release Notes
 
+### Unreleased — Cleaner package and consistent volatility labels
+- A stock's volatility label now uses the same cutoffs as its risk level: an average true range under 1.5% of the price is Low Volatility and above 3% is High Volatility, so a stock reported as low risk is no longer labelled Normal Volatility.
+- `TaskFactory` is now imported from `utils.task_factory`; the old `prospect_ai_crew` module is no longer part of the package.
+- The unused optional `legacy` dependencies (portkey-ai, plotly, reportlab) and the unused PDF report generator are removed.
+- Running several analyses in one process now reads the agent and task configuration files once instead of on every run.
+
 ### v1.13.4 — Analyses run in the hours after the market closes
 - An analysis started after the market closes, before Yahoo Finance records that day's closing price, no longer stops with "no valid current price" for every stock.
 - In that window each stock's price and indicators come from the most recent trading day that has a closing price, usually the day before. No price is filled in or estimated.
