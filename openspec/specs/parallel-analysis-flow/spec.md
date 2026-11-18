@@ -2,7 +2,7 @@
 
 ## Overview
 
-This spec defines the requirements for the `ProspectAIFlow` orchestration class, which parallelizes the Technical Analysis and Fundamental Analysis pipeline phases to reduce total analysis time. It replaces `ProspectAICrew` as the primary entry point while keeping `ProspectAICrew` importable for backward compatibility.
+This spec defines the requirements for the `ProspectAIFlow` orchestration class, which parallelizes the Technical Analysis and Fundamental Analysis pipeline phases to reduce total analysis time. It replaced the legacy crew orchestrator as the primary entry point; that orchestrator was removed in phase 5.
 
 ---
 
@@ -45,23 +45,15 @@ Each progress event emitted via `progress_callback` SHALL carry an explicit `tas
 - **THEN** a progress event with `task_index=2` and `agent="FundamentalAnalyst"` SHALL be emitted
 
 ### Requirement: ProspectAIFlow is the pipeline entry point
-A `ProspectAIFlow` class SHALL be the primary orchestration entry point, replacing `ProspectAICrew` as the object instantiated by `main.py` and `serve.py`.
+A `ProspectAIFlow` class SHALL be the primary orchestration entry point, replacing the legacy crew orchestrator as the object instantiated by `main.py` and `serve.py`.
 
 #### Scenario: CLI invocation
 - **WHEN** `main.py` runs with `--sector Technology`
-- **THEN** `ProspectAIFlow().run_analysis({"sector": "Technology"})` is called and returns the same result dict shape as the previous `ProspectAICrew.run_analysis()`
+- **THEN** `ProspectAIFlow().run_analysis({"sector": "Technology"})` is called and returns the same result dict shape as the legacy crew orchestrator's `run_analysis()`
 
 #### Scenario: Backend SSE invocation
 - **WHEN** `serve.py`'s `run()` thread calls `ProspectAIFlow(task_callback=..., step_callback=...).run_analysis({"sector": sector})`
 - **THEN** `task_callback` and `step_callback` fire for each agent phase, and `progress_callback` events include `task_index`
-
-### Requirement: ProspectAICrew is deprecated but not removed
-`ProspectAICrew` SHALL remain importable and functional but SHALL emit a `DeprecationWarning` on instantiation and carry a `# DEPRECATED` docstring noting its planned removal.
-
-#### Scenario: Importing the deprecated class
-- **WHEN** code instantiates `ProspectAICrew()`
-- **THEN** a `DeprecationWarning` is raised with the message "ProspectAICrew is deprecated; use ProspectAIFlow instead."
-- **AND** the instance is still usable (no functionality removed)
 
 ### Requirement: Pipeline output schema and agent behaviour are unchanged
 The structured output returned by `run_analysis()` SHALL be identical in shape to the existing `InvestorStrategicOutput` schema. No agent prompt, tool, or scoring formula SHALL change. The internal flow state representation (typed models vs strings) is an implementation detail and SHALL NOT affect the public return value.

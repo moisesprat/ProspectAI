@@ -118,7 +118,7 @@ class MomentumAnalysis(BaseModel):
 
 
 # TechnicalScore (an LLM-invented percentage, grade and recommendation, read only by
-# the dead enhanced_pdf_generator) and StockTechnicalAnalysis.technical_score were
+# a since-deleted PDF generator) and StockTechnicalAnalysis.technical_score were
 # removed in plan 02-15 (D-17, extends D-09). Stored payloads that still carry the
 # key load fine because unknown keys are ignored.
 

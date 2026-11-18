@@ -4,7 +4,8 @@ Technical Interpretation Tool — deterministic numeric computation only.
 Computes formula-based outputs from raw indicator values:
   - entry_zone_low / entry_zone_high  (SMA20 × 0.98 / SMA20)
   - momentum_score                    (weighted 0-10 across RSI, MACD, MA, Stochastic, ADX)
-  - risk_level                        (ATR / current_price thresholds)
+  - risk_level                        (ATR / current_price vs ATR_RATIO_HIGH / ATR_RATIO_LOW
+                                      in utils/scoring_constants.py)
 
 Scoring breakdown (max 10 pts):
   RSI       2.5 pts — full if 45-65, partial if trending, 0 if extreme
@@ -23,6 +24,8 @@ its own reasoning to decide overall_signal and investment action.
 
 import json
 from crewai.tools import BaseTool
+
+from utils.scoring_constants import ATR_RATIO_HIGH, ATR_RATIO_LOW
 
 
 class TechnicalInterpretationTool(BaseTool):
@@ -247,9 +250,9 @@ class TechnicalInterpretationTool(BaseTool):
 
             # ── Risk level (ATR / current_price) ─────────────────────────────
             atr_ratio = atr / current_price if current_price > 0 else 0
-            if atr_ratio > 0.03:
+            if atr_ratio > ATR_RATIO_HIGH:
                 risk_level = "High"
-            elif atr_ratio < 0.015:
+            elif atr_ratio < ATR_RATIO_LOW:
                 risk_level = "Low"
             else:
                 risk_level = "Medium"

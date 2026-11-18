@@ -1,3 +1,18 @@
+"""PHASE_OUTPUT_MODELS and TaskFactory, the per-run agent and task factory of ProspectAIFlow.
+
+Both were moved unchanged in phase 5 (DEBT-01) from the removed root module. The Flow
+imports TaskFactory into its own namespace (``from utils.task_factory import TaskFactory``)
+so ``patch("prospect_ai_flow.TaskFactory")`` keeps working.
+
+``TaskFactory._phase_config`` is built per instance on purpose: it holds Agents bound to this
+run's ``Config`` (DEPL-03), tools instrumented with this run's tracker getter, and the caller's
+sentiment cache, so it must never be cached process-wide (CORR-08).
+
+Only the parsed YAML is cached across runs (config/yaml_cache.py, phase 5 DEBT-04); the static
+phase table is the module constant ``PHASE_OUTPUT_MODELS``, built once at import. That is the
+narrowed reading of "does not rebuild phase config" the operator accepted at plan check on
+2026-11-17.
+"""
 from typing import Any, Callable, Optional
 
 from crewai import Task
@@ -59,6 +74,9 @@ class TaskFactory:
         """``sentiment_cache`` is the caller's store for the news-sentiment lookups (utils.news_sentiment):
         anything with ``get(key)`` and ``store[key] = value``; None means no caching."""
         self.config = config if config is not None else Config()
+        # One loader per factory: tasks.yaml is parsed once per process through
+        # config.yaml_cache, and render() only substitutes variables.
+        self._task_config = TaskConfigLoader()
         # Late-bound: the ExecutionTracker is created in run_analysis(), after the factory.
         self._tracker_getter = tracker_getter or (lambda: None)
 
@@ -161,7 +179,7 @@ class TaskFactory:
             raise ValueError(f"Unknown pipeline phase: {phase!r}")
         pc = self._phase_config[phase]
         output_model = PHASE_OUTPUT_MODELS[phase]
-        cfg = TaskConfigLoader().render(
+        cfg = self._task_config.render(
             phase, output_model=output_model, sector=sector, today=today, risk_profile=risk_profile,
         )
         description = cfg["description"]

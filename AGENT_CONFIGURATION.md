@@ -108,18 +108,31 @@ class NewsAnalystAgent(BaseAgent):
         )
 ```
 
-**Step 3** — Wire into `ProspectAICrew` in `prospect_ai_crew.py`:
+**Step 3** — Wire into `TaskFactory` in `utils/task_factory.py`:
+
+1. Construct the agent in `TaskFactory.__init__` and pass it the run's config (it receives `use_config`).
+2. Add its entry to `self._phase_config` (`agent`, `agent_tools`, `flow_tools`).
+3. Add its output model to `PHASE_OUTPUT_MODELS`.
+4. Add the task text to `config/tasks.yaml`.
+5. Add a phase method for it in `prospect_ai_flow.py`.
 
 ```python
 from agents.news_analyst_agent import NewsAnalystAgent
 
-class ProspectAICrew:
-    def __init__(self):
+class TaskFactory:
+    def __init__(self, config=None, tracker_getter=None, *, sentiment_cache=None):
         ...
         self.news_analyst = NewsAnalystAgent()
-```
+        self.news_analyst.use_config(self.config)
+        ...
+        self._phase_config["news_analysis"] = {
+            "agent":       self.news_analyst.get_agent(),
+            "agent_tools": [],
+            "flow_tools":  {},
+        }
 
-Then add a `Task` for it in `create_tasks()` with appropriate `context=`.
+PHASE_OUTPUT_MODELS["news_analysis"] = NewsNarrativeOutput
+```
 
 ## Modifying Existing Agents
 

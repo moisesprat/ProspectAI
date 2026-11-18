@@ -437,7 +437,7 @@ def test_only_yfinance_cache_imports_yfinance():
     files = []
     for sub in ("utils", "agents", "schemas", "config"):
         files.extend((root / sub).rglob("*.py"))
-    files.extend(root / name for name in ("prospect_ai_flow.py", "prospect_ai_crew.py", "main.py"))
+    files.extend(root / name for name in ("prospect_ai_flow.py", "main.py"))
     offenders = []
     for path in files:
         if path.name == "yfinance_cache.py" and path.parent.name == "utils":

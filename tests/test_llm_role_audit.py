@@ -293,7 +293,7 @@ def test_flow_passes_the_fetch_result_to_the_grader_and_tickers_to_fetch(flow):
 
 def test_fundamental_agent_has_no_tools(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
 
     factory = TaskFactory()
     task = factory.build_task(PHASE, "Technology", "2026-04-29", "=== ctx ===")
@@ -678,7 +678,7 @@ def test_technical_flow_tool_off_loop_and_timed(flow):
 
 def test_technical_agent_has_no_tools(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
     from schemas.agent_outputs import TechnicalNarrativeOutput
 
     factory = TaskFactory()
@@ -1339,7 +1339,7 @@ def test_market_emits_steps_start_and_one_task_complete(flow):
 
 def test_market_agent_has_no_tools(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
     from schemas.agent_outputs import MarketNarrativeOutput
 
     factory = TaskFactory()
@@ -2105,7 +2105,7 @@ def test_draft_tools_off_loop_and_timed(flow):
 
 def test_draft_agent_has_no_tools_and_the_flow_holds_both(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
     from schemas.agent_outputs import StrategyNarrativeOutput
 
     factory = TaskFactory()
@@ -2497,7 +2497,7 @@ def test_final_emits_the_contract_sequence_and_times_the_allocator(flow):
 
 def test_final_agent_has_no_tools_and_the_flow_holds_the_allocator(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
+    from utils.task_factory import TaskFactory
     from schemas.agent_outputs import StrategyNarrativeOutput
 
     factory = TaskFactory()

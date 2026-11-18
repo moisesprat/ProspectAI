@@ -506,3 +506,58 @@ class TestCompositeStrictInputs:
         out = self._raw({"ticker": "A", "average_sentiment": 0.0, "momentum_score": None,
                          "quality": "High", "growth": "High Growth"})
         assert "error" in out and "A" in out["error"]
+
+
+# ─── ATR thresholds (phase 5, D-03) ───
+
+_ATR_GRID = [
+    (0.005, "Low", "Low Volatility"),
+    (0.010, "Low", "Low Volatility"),
+    (0.012, "Low", "Low Volatility"),
+    (0.0149, "Low", "Low Volatility"),
+    (0.015, "Medium", "Normal Volatility"),
+    (0.0151, "Medium", "Normal Volatility"),
+    (0.02, "Medium", "Normal Volatility"),
+    (0.0299, "Medium", "Normal Volatility"),
+    (0.03, "Medium", "Normal Volatility"),
+    (0.0301, "High", "High Volatility"),
+    (0.05, "High", "High Volatility"),
+]
+
+
+@pytest.mark.parametrize("ratio,risk,status", _ATR_GRID)
+def test_atr_status_and_risk_level_agree(ratio, risk, status):
+    from utils.technical_interpretation_tool import TechnicalInterpretationTool
+
+    atr = ratio * 100.0
+    assert TechnicalAnalysisTool()._get_atr_status(atr, 100.0) == status
+    out = json.loads(TechnicalInterpretationTool()._run(
+        "AAA", json.dumps({"current_price": 100.0, "sma_20": 100.0, "atr": atr})))
+    assert out["risk_level"] == risk
+
+
+def test_atr_thresholds_are_the_shared_constants():
+    from utils import scoring_constants as sc
+    from utils import technical_analysis_tool as tat
+    from utils import technical_interpretation_tool as tit
+
+    assert sc.ATR_RATIO_HIGH == 0.03
+    assert sc.ATR_RATIO_LOW == 0.015
+    for mod in (tat, tit):
+        assert mod.ATR_RATIO_HIGH is sc.ATR_RATIO_HIGH
+        assert mod.ATR_RATIO_LOW is sc.ATR_RATIO_LOW
+
+
+def test_atr_code_has_no_threshold_literals():
+    import ast
+    import inspect
+    import textwrap
+    from utils.technical_interpretation_tool import TechnicalInterpretationTool
+
+    banned = {0.01, 0.015, 0.03}
+    for fn in (TechnicalAnalysisTool._get_atr_status, TechnicalInterpretationTool._run):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        found = [n.value for n in ast.walk(tree)
+                 if isinstance(n, ast.Constant) and isinstance(n.value, float)
+                 and n.value in banned]
+        assert not found, (fn.__qualname__, found)

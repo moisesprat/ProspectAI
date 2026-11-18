@@ -270,12 +270,14 @@ ProspectAI/
 │   ├── fundamental_grader_tool.py      # Grades individual fundamental metrics
 │   ├── composite_score_tool.py         # 30/40/30 composite scoring
 │   ├── portfolio_allocator_tool.py     # Allocation math with a per-profile cap
+│   ├── task_factory.py                 # Agents, tasks and per-phase tools
+│   ├── pipeline_result_parser.py       # Raw CrewAI result to dict
 │   └── recommendation_validator.py    # Post-generation validation
 ├── scripts/
 │   └── deploy.sh                       # Bump version, build, publish to PyPI, deploy Modal
 ├── tests/
 ├── main.py                             # CLI entry point (prospectai command)
-├── prospect_ai_crew.py                 # CrewAI orchestration (6-task pipeline)
+├── prospect_ai_flow.py                 # CrewAI Flow orchestrator (six phases)
 ├── pyproject.toml
 └── README.md
 ```
@@ -312,6 +314,12 @@ twine upload dist/*
 | The market step's text says its stocks come from a curated list | No stock found in the web search could be confirmed in the sector after the retries. Read `execution_metrics.market_fallback` (`tickers` are the curated stocks used, `dropped` counts why the chosen stocks were set aside) and `execution_metrics.market_corpus.queries` for what was searched |
 
 ## Release Notes
+
+### Unreleased — Cleaner package and consistent volatility labels
+- A stock's volatility label now uses the same cutoffs as its risk level: an average true range under 1.5% of the price is Low Volatility and above 3% is High Volatility, so a stock reported as low risk is no longer labelled Normal Volatility.
+- `TaskFactory` is now imported from `utils.task_factory`; the old `prospect_ai_crew` module is no longer part of the package.
+- The unused optional `legacy` dependencies (portkey-ai, plotly, reportlab) and the unused PDF report generator are removed.
+- Running several analyses in one process now reads the agent and task configuration files once instead of on every run.
 
 ### v1.13.4 — Analyses run in the hours after the market closes
 - An analysis started after the market closes, before Yahoo Finance records that day's closing price, no longer stops with "no valid current price" for every stock.

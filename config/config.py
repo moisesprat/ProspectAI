@@ -114,38 +114,3 @@ class Config:
     @property
     def effective_default_model_id(self) -> Optional[str]:
         return self.default_model_id()
-
-    # Data Sources Configuration
-    MARKET_DATA_SOURCES = [
-        "yahoo_finance",
-        "alpha_vantage",
-        "finnhub",
-    ]
-
-    # Technical Analysis Parameters
-    TECHNICAL_INDICATORS = [
-        "SMA",
-        "EMA",
-        "RSI",
-        "MACD",
-        "BB",
-        "ATR",
-    ]
-
-    # Fundamental Analysis Parameters
-    FUNDAMENTAL_METRICS = [
-        "P/E",
-        "P/B",
-        "ROE",
-        "ROA",
-        "Debt/Equity",
-        "Current Ratio",
-    ]
-
-    # Risk Assessment Parameters
-    RISK_LEVELS = ["Low", "Medium", "High"]
-    REWARD_LEVELS = ["Low", "Medium", "High"]
-
-    # Output Configuration
-    OUTPUT_FORMAT = "json"
-    REPORT_TEMPLATE = "comprehensive"

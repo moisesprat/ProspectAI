@@ -308,7 +308,7 @@ def test_prompt_enum_hints_match_schema():
     the rendered prompt carries exactly the schema's values.
     """
     from config.task_config_loader import TaskConfigLoader
-    from prospect_ai_crew import PHASE_OUTPUT_MODELS
+    from utils.task_factory import PHASE_OUTPUT_MODELS
     from schemas.agent_outputs import Action, ReviewFrequency
 
     text = TASKS_YAML.read_text(encoding="utf-8")

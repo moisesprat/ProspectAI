@@ -40,15 +40,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "pytest-cov>=7.1,<8", "pytest-socket>=0.8,<0.9"]
-# Declared, not removed: dropping these is DEBT-02 (Phase 5).
-legacy = ["portkey-ai>=2.3,<3", "plotly>=5.17,<6", "reportlab>=5.1,<6"]
 
 [project.scripts]
 prospectai = "main:main"
 
-# Root-level modules (main.py, prospect_ai_crew.py, prospect_ai_flow.py)
+# Root-level modules (main.py, prospect_ai_flow.py)
 [tool.setuptools]
-py-modules = ["main", "prospect_ai_crew", "prospect_ai_flow"]
+py-modules = ["main", "prospect_ai_flow"]
 
 # Subpackages — explicitly scoped to avoid picking up .venv or test noise
 [tool.setuptools.packages.find]

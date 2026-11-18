@@ -291,32 +291,6 @@ def test_extract_model_error_has_no_raw_text():
     assert "technical_analysis" in str(info.value)
 
 
-# ── TaskFactory wiring ─────────────────────────────────────────────────────────
-
-@pytest.fixture
-def real_factory(monkeypatch):
-    monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-    from prospect_ai_crew import TaskFactory
-
-    return TaskFactory()
-
-
-def test_agents_have_no_crewai_retry(real_factory):
-    agents = {cfg["agent"] for cfg in real_factory._phase_config.values()}
-    assert len(agents) == 5
-    assert all(a.max_retry_limit == 0 for a in agents)
-
-
-def test_build_task_appends_feedback_after_context(real_factory):
-    task = real_factory.build_task(
-        "technical_analysis", "Technology", "2026-04-29", "=== CTX ===\nctx",
-        feedback="FEEDBACK-BLOCK",
-    )
-    assert task.description.index("=== CTX ===") < task.description.index("FEEDBACK-BLOCK")
-    plain = real_factory.build_task("technical_analysis", "Technology", "2026-04-29", "=== CTX ===\nctx")
-    assert "FEEDBACK-BLOCK" not in plain.description
-
-
 # ── Flow integration (tracer) ──────────────────────────────────────────────────
 
 @pytest.fixture

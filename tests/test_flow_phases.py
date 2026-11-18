@@ -5,7 +5,7 @@ import threading
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prospect_ai_flow import MissingToolCallError, ProspectAIFlow, _parse_crew_result
+from prospect_ai_flow import MissingToolCallError, ProspectAIFlow
 from utils.execution_tracker import ExecutionTracker
 from schemas.agent_outputs import (
     MarketAnalysisOutput,
@@ -136,40 +136,6 @@ class TestEmitProgress:
         mock_result.raw = "output"
         mock_result.tasks_output = []
         flow._emit_progress(0, mock_result)  # must not raise
-
-
-# ─── _parse_crew_result ────────────────────────────────────────────────────────
-
-class TestParsCrewResult:
-    def test_parses_plain_json(self):
-        result = MagicMock()
-        result.json_dict = None
-        result.tasks_output = None
-        result.raw = json.dumps({"sector": "Technology", "positions": []})
-        out = _parse_crew_result(result)
-        assert out["sector"] == "Technology"
-
-    def test_json_dict_shortcut(self):
-        result = MagicMock()
-        result.json_dict = {"sector": "Finance"}
-        out = _parse_crew_result(result)
-        assert out["sector"] == "Finance"
-
-    def test_strips_markdown_fences(self):
-        result = MagicMock()
-        result.json_dict = None
-        result.tasks_output = None
-        result.raw = "```json\n" + json.dumps({"sector": "Energy"}) + "\n```"
-        out = _parse_crew_result(result)
-        assert out["sector"] == "Energy"
-
-    def test_parse_error_on_bad_raw(self):
-        result = MagicMock()
-        result.json_dict = None
-        result.tasks_output = None
-        result.raw = "not json"
-        out = _parse_crew_result(result)
-        assert out.get("parse_error") is True
 
 
 # ─── Phase methods ─────────────────────────────────────────────────────────────
@@ -475,7 +441,7 @@ class TestToolCallGuard:
     def test_no_phase_gives_its_agent_tools(self, monkeypatch):
         """Every phase is Flow-owned or tool-less: the LLM never calls a tool, so it cannot skip one."""
         monkeypatch.setenv("SERPER_API_KEY", "dummy-serper")
-        from prospect_ai_crew import TaskFactory
+        from utils.task_factory import TaskFactory
 
         factory = TaskFactory()
         for phase, cfg in factory._phase_config.items():
