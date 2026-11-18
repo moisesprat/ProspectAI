@@ -8,6 +8,8 @@ import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from config.yaml_cache import clear_yaml_cache, load_yaml
+
 class AgentConfigLoader:
     """Loads and manages agent configurations from YAML files"""
     
@@ -33,9 +35,8 @@ class AgentConfigLoader:
             if not self.config_path.exists():
                 raise FileNotFoundError(f"Configuration file not found: {self.config_path}")
             
-            with open(self.config_path, 'r', encoding='utf-8') as file:
-                config = yaml.safe_load(file)
-            
+            config = load_yaml(self.config_path)
+
             if not config or 'agents' not in config:
                 raise ValueError("Invalid configuration file: missing 'agents' section")
             
@@ -110,8 +111,9 @@ class AgentConfigLoader:
     
     def reload_config(self):
         """Reload the configuration from file (useful for development)"""
+        clear_yaml_cache()
         self.config_data = self._load_config()
-    
+
     def validate_config(self) -> bool:
         """Validate that the configuration has all required fields"""
         try:

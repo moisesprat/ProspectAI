@@ -9,8 +9,9 @@ from pathlib import Path
 from string import Template
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union, get_args, get_origin
 
-import yaml
 from pydantic import BaseModel
+
+from config.yaml_cache import load_yaml
 
 # Template variables a description may use besides sector/today/risk_profile.
 _GENERATED_VARS = ("output_example", "allowed_values")
@@ -73,8 +74,7 @@ class TaskConfigLoader:
     def _load_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():
             raise FileNotFoundError(f"Task config not found: {self.config_path}")
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        config = load_yaml(self.config_path)
         if not config or "tasks" not in config:
             raise ValueError("Invalid configuration: missing 'tasks' section")
         return config
