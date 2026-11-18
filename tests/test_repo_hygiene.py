@@ -4,6 +4,7 @@ SEC-05: the local Open WebUI secret is never tracked.
 D-05 (phase 3.1): the removed Reddit source and its client library do not creep back.
 DEBT-01, D-02 (phase 5): the removed legacy crew module and class do not return.
 D-05, D-06 (phase 5): no path hacks in package code; the removed dead code stays removed.
+D-04 (phase 5): the unused legacy extra stays removed.
 """
 
 import ast
@@ -31,6 +32,7 @@ _README_HISTORY_HEADING = "## Release Notes"
 _REMOVED_SOURCE = re.compile(r"reddit|\bpraw\b", re.IGNORECASE)
 _REMOVED_CREW = re.compile(r"ProspectAICrew|prospect_ai_crew")
 _REMOVED_CREW_MODULE = "prospect_ai_crew"
+_REMOVED_DEPENDENCIES = re.compile(r"portkey|plotly|reportlab", re.IGNORECASE)
 _REMOVED_PDF_GENERATOR = re.compile(r"enhanced_pdf_generator")
 _REMOVED_CONFIG_CONSTANTS = (
     "MARKET_DATA_SOURCES",
@@ -159,3 +161,12 @@ def test_removed_dead_code_stays_removed():
     left = [name for name in _REMOVED_CONFIG_CONSTANTS if hasattr(Config, name)]
     assert not left, f"removed Config constants are back: {left}"
     assert not hasattr(InvestorStrategicAgent, "execute_task"), "execute_task stub is back"
+
+
+def test_removed_dependencies_stay_removed():
+    """portkey-ai, plotly and reportlab, and the legacy extra that held them, stay gone (D-04)."""
+    offenders = _offenders(_REMOVED_DEPENDENCIES)
+    assert not offenders, f"removed dependencies still mentioned in: {sorted(offenders)}"
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    assert "legacy" not in extras, f"legacy extra is back: {sorted(extras)}"
