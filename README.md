@@ -8,7 +8,7 @@
 
 ProspectAI is a multi-agent investment analysis system built on the CrewAI framework. It leverages five specialized AI agents running a six-task pipeline to produce investment recommendations through a systematic analysis workflow. The system supports Anthropic Claude models (default) and local Ollama models.
 
-**Current release: v1.13.4**
+**Current release: v1.14.0**
 
 ### ⚠️ Important Disclaimer
 
@@ -315,7 +315,7 @@ twine upload dist/*
 
 ## Release Notes
 
-### Unreleased — Cleaner package and consistent volatility labels
+### v1.14.0 — Cleaner package and consistent volatility labels
 - A stock's volatility label now uses the same cutoffs as its risk level: an average true range under 1.5% of the price is Low Volatility and above 3% is High Volatility, so a stock reported as low risk is no longer labelled Normal Volatility.
 - `TaskFactory` is now imported from `utils.task_factory`; the old `prospect_ai_crew` module is no longer part of the package.
 - The unused optional `legacy` dependencies (portkey-ai, plotly, reportlab) and the unused PDF report generator are removed.
@@ -341,11 +341,6 @@ twine upload dist/*
 - Sector funds such as XLF and XLY are no longer picked as stocks for Financials and Consumer Discretionary.
 - Share-class tickers such as BRK.B now get their price and company data.
 - The search text the model reads now has a fixed size limit.
-
-### v1.13.0 — News sentiment for each picked stock
-- Each stock the analysis picks now gets a news sentiment score from Marketaux, based on recent articles about the company, and the report shows it next to the stock.
-- A stock with too few recent articles, or a day when the news source is unavailable or out of free requests, shows no score instead of an invented one, and the analysis still finishes.
-- Stock picks come from web search alone, and the old forum source that had stopped returning data is gone, so runs no longer wait on it.
 
 ## Roadmap
 
